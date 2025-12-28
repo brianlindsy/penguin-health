@@ -128,18 +128,12 @@ def process_file(bucket, key, config, org_id, env_config):
 def validate_document(data, filename, config, org_id, env_config):
     """
     Run all validation rules against a document
+
+    Now uses full text content instead of structured forms.
+    The text field contains all extracted content from the encounter.
     """
-    # Extract form fields using organization-specific mappings
-    forms = data.get('forms', {})
-    field_mappings = config.get('field_mappings', {})
-
-    # Get field values from forms only
-    fields = extract_fields(forms, field_mappings)
-
-    # Add computed fields (organization-specific logic)
-    computed_fields = config.get('computed_fields', {})
-    if computed_fields:
-        fields = add_computed_fields(fields, forms, computed_fields)
+    # Fields dict is now empty - LLM will use full text instead
+    fields = {}
 
     # Run validation rules
     rule_results = []

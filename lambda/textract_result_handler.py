@@ -103,19 +103,19 @@ def get_source_file_from_metadata(job_id, config):
 
 def get_textract_results(job_id):
     """
-    Retrieve results from completed Textract document analysis job
+    Retrieve results from completed Textract text detection job
     Handles pagination for multi-page documents
     """
     try:
-        # Get the document analysis results
-        response = textract_client.get_document_analysis(JobId=job_id)
+        # Get the text detection results
+        response = textract_client.get_document_text_detection(JobId=job_id)
 
         # Handle pagination if document has multiple pages
         pages = [response]
         next_token = response.get('NextToken')
 
         while next_token:
-            response = textract_client.get_document_analysis(
+            response = textract_client.get_document_text_detection(
                 JobId=job_id,
                 NextToken=next_token
             )
@@ -215,86 +215,55 @@ def process_and_store_results(job_id, source_file_key, config):
 
 def split_into_encounters_text_based(extracted_data, delimiter_field='Consumer Service ID:'):
     """
-    Split encounters using text-based line matching as fallback.
-    More reliable when Textract fails to detect all delimiter fields as key-value pairs.
+    Split encounters by finding the delimiter text in lines.
+    Each encounter gets all text from one delimiter to the next.
     """
-    raw_lines = extracted_data.get('raw_lines', [])
-    forms = extracted_data.get('forms', {})
+    lines = extracted_data.get('lines', [])
 
     # Find all lines containing the delimiter
-    delimiter_lines = []
-    for idx, line in enumerate(raw_lines):
+    delimiter_indices = []
+    for idx, line in enumerate(lines):
         if delimiter_field in line.get('text', ''):
-            delimiter_lines.append({
-                'line_index': idx,
-                'page': line.get('page', 1),
-                'y_position': line.get('geometry', {}).get('BoundingBox', {}).get('Top', 0),
-                'line': line
-            })
+            delimiter_indices.append(idx)
 
-    print(f"DEBUG: Text-based splitting found {len(delimiter_lines)} delimiter lines")
+    print(f"Found {len(delimiter_indices)} encounters (delimiter: '{delimiter_field}')")
 
-    if len(delimiter_lines) <= 1:
-        return [extracted_data]
+    # If no delimiters or only one, return the whole document as single encounter
+    if len(delimiter_indices) <= 1:
+        return [{
+            'text': extracted_data['text'],
+            'metadata': {
+                **extracted_data.get('metadata', {}),
+                'encounter_index': 0,
+                'is_split_encounter': False,
+                'line_count': len(lines)
+            }
+        }]
 
-    # Sort by page and Y-position
-    delimiter_lines.sort(key=lambda x: (x['page'], x['y_position']))
-
-    # Create encounters based on line ranges
+    # Create encounters based on delimiter positions
     encounters = []
-    for i in range(len(delimiter_lines)):
-        start_idx = delimiter_lines[i]['line_index']
-        end_idx = delimiter_lines[i + 1]['line_index'] if i + 1 < len(delimiter_lines) else len(raw_lines)
+    for i in range(len(delimiter_indices)):
+        start_idx = delimiter_indices[i]
+        end_idx = delimiter_indices[i + 1] if i + 1 < len(delimiter_indices) else len(lines)
 
         # Get lines for this encounter
-        encounter_lines = raw_lines[start_idx:end_idx]
+        encounter_lines = lines[start_idx:end_idx]
+        encounter_text = '\n'.join([line['text'] for line in encounter_lines])
 
-        # Determine page boundaries
-        start_page = delimiter_lines[i]['page']
-        start_y = delimiter_lines[i]['y_position']
-        end_page = delimiter_lines[i + 1]['page'] if i + 1 < len(delimiter_lines) else start_page + 10
-        end_y = delimiter_lines[i + 1]['y_position'] if i + 1 < len(delimiter_lines) else 1.0
-
-        boundary = {
-            'encounter_index': i,
-            'page': start_page,
-            'y_start': start_y,
-            'y_end': end_y,
-            'next_page': end_page
+        encounter_data = {
+            'text': encounter_text,
+            'metadata': {
+                **extracted_data.get('metadata', {}),
+                'encounter_index': i,
+                'is_split_encounter': True,
+                'line_count': len(encounter_lines),
+                'start_line': start_idx,
+                'end_line': end_idx
+            }
         }
 
-        # Assign forms based on geometry
-        encounter_forms = {}
-        for form_key, form_data in forms.items():
-            form_page = form_data.get('page', 1)
-            form_y = form_data.get('geometry', {}).get('BoundingBox', {}).get('Top', 0)
-            if belongs_to_encounter(form_page, form_y, boundary):
-                encounter_forms[form_key] = form_data
-
-        # Assign tables based on geometry
-        encounter_tables = []
-        tables = extracted_data.get('tables', [])
-        for table in tables:
-            table_page = table.get('page', 1)
-            table_y = table.get('geometry', {}).get('BoundingBox', {}).get('Top', 0)
-            if belongs_to_encounter(table_page, table_y, boundary):
-                # Remove geometry before adding
-                clean_table = {
-                    'rows': table['rows'],
-                    'confidence': table.get('confidence', 0)
-                }
-                encounter_tables.append(clean_table)
-
-        print(f"Encounter {i}: Assigned {len(encounter_forms)} forms, {len(encounter_tables)} tables")
-
-        encounter_data = create_encounter_from_forms_and_lines(
-            encounter_forms,
-            encounter_lines,
-            extracted_data,
-            i,
-            encounter_tables if encounter_tables else None
-        )
         encounters.append(encounter_data)
+        print(f"Encounter {i}: {len(encounter_lines)} lines")
 
     return encounters
 
@@ -303,99 +272,31 @@ def split_into_encounters(extracted_data, is_irp=False):
     """
     Split a multi-encounter document into separate encounters
 
-    For regular charts: attempts form-based splitting first, falls back to text-based
-    For IRP documents: typically single encounter, returns as-is
+    For regular charts: Split by 'Consumer Service ID:' delimiter
+    For IRP documents: Return as single encounter
     """
     if is_irp:
         # IRP documents are typically single encounter
-        return [extracted_data]
+        return [{
+            'text': extracted_data['text'],
+            'metadata': {
+                **extracted_data.get('metadata', {}),
+                'encounter_index': 0,
+                'is_split_encounter': False
+            }
+        }]
 
-    # Try text-based splitting as fallback when forms don't capture all delimiters
     return split_into_encounters_text_based(extracted_data, 'Consumer Service ID:')
-
-
-def belongs_to_encounter(item_page, item_y, boundary):
-    """
-    Determine if an item (form field or text line) belongs to an encounter
-    based on its page and Y-position
-    """
-    # Item is on the same page as encounter start
-    if item_page == boundary['page']:
-        # Check if Y position is after encounter start
-        if item_y >= boundary['y_start']:
-            # If there's a next encounter on the same page, check we're before it
-            if boundary['next_page'] == boundary['page']:
-                return item_y < boundary['y_end']
-            else:
-                # Next encounter is on a different page, so include everything after start
-                return True
-        else:
-            return False
-    # Item is on a page between encounter start and next encounter
-    elif item_page > boundary['page'] and item_page < boundary['next_page']:
-        return True
-    # Item is on the same page as next encounter
-    elif item_page == boundary['next_page'] and boundary['next_page'] != boundary['page']:
-        # Include items before the next encounter starts
-        return item_y < boundary['y_end']
-    else:
-        return False
-
-
-def create_encounter_from_forms_and_lines(encounter_forms, encounter_lines, original_data, encounter_index, encounter_tables=None):
-    """
-    Create an encounter data structure from a subset of forms and text lines
-    This properly splits the text field per encounter based on geometry
-    """
-    # Build the text field from only the lines that belong to this encounter
-    encounter_text = '\n'.join([line['text'] for line in encounter_lines])
-
-    # Remove geometry data from forms before storing (keep only value, confidence, and original_key)
-    clean_forms = {}
-    for key, data in encounter_forms.items():
-        clean_forms[key] = {
-            'value': data.get('value', ''),
-            'confidence': data.get('confidence', 0),
-            'original_key': data.get('original_key', key)  # Preserve original_key for rules engine
-        }
-
-    # Clean up raw_lines to remove geometry (optional - can keep for debugging)
-    clean_lines = []
-    for line in encounter_lines:
-        clean_lines.append({
-            'text': line['text'],
-            'confidence': line['confidence']
-        })
-
-    encounter_data = {
-        'text': encounter_text,
-        'forms': clean_forms,
-        'raw_lines': clean_lines,
-        'metadata': {
-            **original_data.get('metadata', {}),
-            'encounter_index': encounter_index,
-            'is_split_encounter': True,
-            'line_count': len(encounter_lines),
-            'form_count': len(encounter_forms)
-        }
-    }
-
-    # Add tables if present
-    if encounter_tables:
-        encounter_data['tables'] = encounter_tables
-        encounter_data['metadata']['table_count'] = len(encounter_tables)
-
-    return encounter_data
 
 
 def process_textract_response(response):
     """
-    Extract forms and text from Textract document analysis response
+    Extract all text content from Textract response in reading order
+    Keep it simple - just get all the text organized by page and position
     """
     extracted_data = {
         'text': '',
-        'forms': {},
-        'raw_lines': [],
+        'lines': [],
         'metadata': {
             'document_pages': response.get('DocumentMetadata', {}).get('Pages', 0),
             'extraction_timestamp': datetime.utcnow().isoformat(),
@@ -403,117 +304,30 @@ def process_textract_response(response):
         }
     }
 
-    # Create a map of block IDs to blocks for easy lookup
-    blocks_map = {}
-    for block in response['Blocks']:
-        blocks_map[block['Id']] = block
-
-    # Extract forms (key-value pairs)
-    for block in response['Blocks']:
-        if block['BlockType'] == 'KEY_VALUE_SET':
-            if block.get('EntityTypes') and 'KEY' in block['EntityTypes']:
-                key_text = get_text(block, blocks_map)
-                value_block = get_value_block(block, blocks_map)
-                value_text = get_text(value_block, blocks_map) if value_block else ''
-
-                if key_text:
-                    # Store with geometry for splitting
-                    extracted_data['forms'][key_text] = {
-                        'value': value_text,
-                        'confidence': block.get('Confidence', 0),
-                        'geometry': block.get('Geometry', {}),
-                        'page': block.get('Page', 1),
-                        'original_key': key_text
-                    }
-
-    # Extract tables
-    tables = extract_tables(response['Blocks'], blocks_map)
-    if tables:
-        extracted_data['tables'] = tables
-
-    # Extract text lines with geometry information
+    # Extract all LINE blocks (this includes text from tables, forms, everything)
+    # Sort by page and Y-position to maintain reading order
+    lines = []
     for block in response['Blocks']:
         if block['BlockType'] == 'LINE':
-            line_data = {
-                'text': block['Text'],
-                'confidence': block['Confidence'],
-                'geometry': block.get('Geometry', {}),
-                'page': block.get('Page', 1)
-            }
-            extracted_data['raw_lines'].append(line_data)
-            extracted_data['text'] += block['Text'] + '\n'
+            page = block.get('Page', 1)
+            y_pos = block.get('Geometry', {}).get('BoundingBox', {}).get('Top', 0)
 
-    print(f"Extracted {len(extracted_data['forms'])} forms, {len(extracted_data['raw_lines'])} text lines")
+            lines.append({
+                'text': block['Text'],
+                'page': page,
+                'y_position': y_pos,
+                'confidence': block.get('Confidence', 0)
+            })
+
+    # Sort by page, then Y-position (reading order)
+    lines.sort(key=lambda x: (x['page'], x['y_position']))
+
+    # Store sorted lines
+    extracted_data['lines'] = lines
+    extracted_data['text'] = '\n'.join([line['text'] for line in lines])
+
+    print(f"Extracted {len(lines)} lines from {extracted_data['metadata']['document_pages']} pages")
 
     return extracted_data
 
 
-def extract_tables(blocks, blocks_map):
-    """Extract table data from Textract blocks"""
-    tables = []
-
-    for block in blocks:
-        if block['BlockType'] == 'TABLE':
-            table_data = {
-                'rows': [],
-                'page': block.get('Page', 1),
-                'geometry': block.get('Geometry', {}),
-                'confidence': block.get('Confidence', 0)
-            }
-
-            # Get all cells for this table
-            if 'Relationships' in block:
-                for relationship in block['Relationships']:
-                    if relationship['Type'] == 'CHILD':
-                        cells = {}
-                        for cell_id in relationship['Ids']:
-                            cell_block = blocks_map.get(cell_id)
-                            if cell_block and cell_block['BlockType'] == 'CELL':
-                                row_index = cell_block.get('RowIndex', 1) - 1
-                                col_index = cell_block.get('ColumnIndex', 1) - 1
-                                cell_text = get_text(cell_block, blocks_map)
-
-                                if row_index not in cells:
-                                    cells[row_index] = {}
-                                cells[row_index][col_index] = cell_text
-
-                        # Convert cells dict to rows array
-                        for row_idx in sorted(cells.keys()):
-                            row = []
-                            for col_idx in sorted(cells[row_idx].keys()):
-                                row.append(cells[row_idx][col_idx])
-                            table_data['rows'].append(row)
-
-            if table_data['rows']:
-                tables.append(table_data)
-
-    return tables
-
-
-def get_text(block, blocks_map):
-    """Get text from a block"""
-    text = ''
-    if 'Relationships' in block:
-        for relationship in block['Relationships']:
-            if relationship['Type'] == 'CHILD':
-                for child_id in relationship['Ids']:
-                    child_block = blocks_map.get(child_id)
-                    if child_block:
-                        # Handle both WORD and SELECTION_ELEMENT (checkbox) blocks
-                        if child_block['BlockType'] == 'WORD':
-                            text += child_block['Text'] + ' '
-                        elif child_block['BlockType'] == 'SELECTION_ELEMENT':
-                            # Add checkbox state
-                            selection_status = child_block.get('SelectionStatus', 'NOT_SELECTED')
-                            text += f'[{selection_status}] '
-    return text.strip()
-
-
-def get_value_block(key_block, blocks_map):
-    """Get the value block associated with a key block"""
-    if 'Relationships' in key_block:
-        for relationship in key_block['Relationships']:
-            if relationship['Type'] == 'VALUE':
-                for value_id in relationship['Ids']:
-                    return blocks_map.get(value_id)
-    return None

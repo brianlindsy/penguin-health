@@ -107,17 +107,17 @@ def lambda_handler(event, context):
 
 def start_textract_analysis(file_key, config):
     """
-    Start asynchronous Textract document analysis with forms only
+    Start asynchronous Textract text detection
+    Simple text extraction without forms/tables analysis
     """
     try:
-        response = textract_client.start_document_analysis(
+        response = textract_client.start_document_text_detection(
             DocumentLocation={
                 'S3Object': {
                     'Bucket': config['BUCKET_NAME'],
                     'Name': file_key
                 }
             },
-            FeatureTypes=['FORMS', 'TABLES'],
             NotificationChannel={
                 'SNSTopicArn': config['SNS_TOPIC_ARN'],
                 'RoleArn': config['SNS_ROLE_ARN']
@@ -125,7 +125,7 @@ def start_textract_analysis(file_key, config):
         )
 
         job_id = response['JobId']
-        print(f"Started Textract job {job_id} for {file_key}")
+        print(f"Started Textract text detection job {job_id} for {file_key}")
         return job_id
 
     except Exception as e:
