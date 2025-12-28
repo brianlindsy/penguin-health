@@ -103,19 +103,19 @@ def get_source_file_from_metadata(job_id, config):
 
 def get_textract_results(job_id):
     """
-    Retrieve results from completed Textract text detection job
+    Retrieve results from completed Textract document analysis job
     Handles pagination for multi-page documents
     """
     try:
-        # Get the text detection results
-        response = textract_client.get_document_text_detection(JobId=job_id)
+        # Get the document analysis results
+        response = textract_client.get_document_analysis(JobId=job_id)
 
         # Handle pagination if document has multiple pages
         pages = [response]
         next_token = response.get('NextToken')
 
         while next_token:
-            response = textract_client.get_document_text_detection(
+            response = textract_client.get_document_analysis(
                 JobId=job_id,
                 NextToken=next_token
             )
@@ -215,28 +215,30 @@ def process_and_store_results(job_id, source_file_key, config):
 
 def split_into_encounters_text_based(extracted_data, delimiter_field='Consumer Service ID:'):
     """
-    Split encounters by finding the delimiter text in lines.
+    Split encounters by finding the delimiter in the text.
     Each encounter gets all text from one delimiter to the next.
     """
-    lines = extracted_data.get('lines', [])
+    full_text = extracted_data.get('text', '')
 
-    # Find all lines containing the delimiter
+    # Split by lines and find delimiter
+    text_lines = full_text.split('\n')
     delimiter_indices = []
-    for idx, line in enumerate(lines):
-        if delimiter_field in line.get('text', ''):
+
+    for idx, line in enumerate(text_lines):
+        if delimiter_field in line:
             delimiter_indices.append(idx)
 
     print(f"Found {len(delimiter_indices)} encounters (delimiter: '{delimiter_field}')")
 
-    # If no delimiters or only one, return the whole document as single encounter
+    # If no delimiters or only one, return whole document as single encounter
     if len(delimiter_indices) <= 1:
         return [{
-            'text': extracted_data['text'],
+            'text': full_text,
             'metadata': {
                 **extracted_data.get('metadata', {}),
                 'encounter_index': 0,
                 'is_split_encounter': False,
-                'line_count': len(lines)
+                'line_count': len(text_lines)
             }
         }]
 
@@ -244,11 +246,11 @@ def split_into_encounters_text_based(extracted_data, delimiter_field='Consumer S
     encounters = []
     for i in range(len(delimiter_indices)):
         start_idx = delimiter_indices[i]
-        end_idx = delimiter_indices[i + 1] if i + 1 < len(delimiter_indices) else len(lines)
+        end_idx = delimiter_indices[i + 1] if i + 1 < len(delimiter_indices) else len(text_lines)
 
-        # Get lines for this encounter
-        encounter_lines = lines[start_idx:end_idx]
-        encounter_text = '\n'.join([line['text'] for line in encounter_lines])
+        # Get text lines for this encounter
+        encounter_lines = text_lines[start_idx:end_idx]
+        encounter_text = '\n'.join(encounter_lines)
 
         encounter_data = {
             'text': encounter_text,
@@ -291,8 +293,8 @@ def split_into_encounters(extracted_data, is_irp=False):
 
 def process_textract_response(response):
     """
-    Extract all text content from Textract response in reading order
-    Keep it simple - just get all the text organized by page and position
+    Extract text content with proper key-value formatting from FORMS
+    Falls back to LINE blocks if no forms detected
     """
     extracted_data = {
         'text': '',
@@ -304,30 +306,85 @@ def process_textract_response(response):
         }
     }
 
-    # Extract all LINE blocks (this includes text from tables, forms, everything)
-    # Sort by page and Y-position to maintain reading order
-    lines = []
+    blocks_map = {}
     for block in response['Blocks']:
-        if block['BlockType'] == 'LINE':
-            page = block.get('Page', 1)
-            y_pos = block.get('Geometry', {}).get('BoundingBox', {}).get('Top', 0)
+        blocks_map[block['Id']] = block
 
-            lines.append({
-                'text': block['Text'],
-                'page': page,
-                'y_position': y_pos,
-                'confidence': block.get('Confidence', 0)
-            })
+    # Extract key-value pairs from FORMS
+    form_pairs = []
+    for block in response['Blocks']:
+        if block['BlockType'] == 'KEY_VALUE_SET' and block.get('EntityTypes') and 'KEY' in block['EntityTypes']:
+            key_text = get_text_from_block(block, blocks_map)
+            value_block = get_value_block(block, blocks_map)
+            value_text = get_text_from_block(value_block, blocks_map) if value_block else ''
 
-    # Sort by page, then Y-position (reading order)
-    lines.sort(key=lambda x: (x['page'], x['y_position']))
+            if key_text:
+                page = block.get('Page', 1)
+                y_pos = block.get('Geometry', {}).get('BoundingBox', {}).get('Top', 0)
+                form_pairs.append({
+                    'key': key_text,
+                    'value': value_text,
+                    'page': page,
+                    'y_position': y_pos
+                })
 
-    # Store sorted lines
-    extracted_data['lines'] = lines
-    extracted_data['text'] = '\n'.join([line['text'] for line in lines])
+    # Sort by page and Y-position
+    form_pairs.sort(key=lambda x: (x['page'], x['y_position']))
 
-    print(f"Extracted {len(lines)} lines from {extracted_data['metadata']['document_pages']} pages")
+    # Build formatted text from forms (key: value format)
+    if form_pairs:
+        text_lines = []
+        for pair in form_pairs:
+            if pair['value']:
+                text_lines.append(f"{pair['key']} {pair['value']}")
+            else:
+                text_lines.append(pair['key'])
+        extracted_data['text'] = '\n'.join(text_lines)
+        print(f"Extracted {len(form_pairs)} form key-value pairs")
+    else:
+        # Fallback to LINE blocks if no forms detected
+        lines = []
+        for block in response['Blocks']:
+            if block['BlockType'] == 'LINE':
+                page = block.get('Page', 1)
+                y_pos = block.get('Geometry', {}).get('BoundingBox', {}).get('Top', 0)
+                lines.append({
+                    'text': block['Text'],
+                    'page': page,
+                    'y_position': y_pos
+                })
+
+        lines.sort(key=lambda x: (x['page'], x['y_position']))
+        extracted_data['text'] = '\n'.join([line['text'] for line in lines])
+        extracted_data['lines'] = lines
+        print(f"No forms found, extracted {len(lines)} text lines")
 
     return extracted_data
+
+
+def get_text_from_block(block, blocks_map):
+    """Get text from a block by following CHILD relationships"""
+    if not block:
+        return ''
+
+    text = ''
+    if 'Relationships' in block:
+        for relationship in block['Relationships']:
+            if relationship['Type'] == 'CHILD':
+                for child_id in relationship['Ids']:
+                    child = blocks_map.get(child_id)
+                    if child and child['BlockType'] == 'WORD':
+                        text += child['Text'] + ' '
+    return text.strip()
+
+
+def get_value_block(key_block, blocks_map):
+    """Get the VALUE block associated with a KEY block"""
+    if 'Relationships' in key_block:
+        for relationship in key_block['Relationships']:
+            if relationship['Type'] == 'VALUE':
+                for value_id in relationship['Ids']:
+                    return blocks_map.get(value_id)
+    return None
 
 
