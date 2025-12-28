@@ -118,30 +118,6 @@ package_lambda() {
     print_success "Package created: lambda-package.zip ($(du -h lambda-package.zip | cut -f1))"
 }
 
-# Package all Lambda functions
-package_all_lambdas() {
-    print_info "Packaging all Lambda functions..."
-
-    # Create temporary build directory
-    BUILD_DIR=$(mktemp -d)
-
-    # Copy all lambda code
-    cp -r lambda/* "$BUILD_DIR/"
-
-    # Create deployment package
-    cd "$BUILD_DIR"
-    zip -r lambda-package.zip . -q
-    cd - > /dev/null
-
-    # Move package to project root
-    mv "$BUILD_DIR/lambda-package.zip" .
-
-    # Clean up
-    rm -rf "$BUILD_DIR"
-
-    print_success "Package created: lambda-package.zip ($(du -h lambda-package.zip | cut -f1))"
-}
-
 # Deploy specific function using AWS CLI
 deploy_function() {
     local function_name=$1
@@ -218,15 +194,15 @@ deploy_all() {
     print_info "Timestamp: $TIMESTAMP"
     echo ""
 
-    # Package all functions once
-    package_all_lambdas
-
-    # Deploy each function with the same package
+    # Deploy each function with its own package
     for function_name in "${LAMBDA_FUNCTIONS[@]}"; do
         echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         print_info "Deploying: $function_name"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        # Package this specific function
+        package_lambda "$function_name"
 
         # Update function code
         print_info "Updating function code..."
@@ -252,12 +228,12 @@ deploy_all() {
         # Tag the deployed function
         tag_function "$function_name"
 
+        # Clean up this function's package
+        rm -f lambda-package.zip
+
         print_success "✨ Successfully deployed $function_name"
         echo ""
     done
-
-    # Clean up package
-    rm -f lambda-package.zip
 
     # Show deployment summary
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

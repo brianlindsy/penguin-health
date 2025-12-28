@@ -151,6 +151,19 @@ def process_and_store_results(job_id, source_file_key, config):
             print(f"Textract job {job_id} status: {textract_response['JobStatus']}")
             return False
 
+        # Save raw Textract response to S3 for debugging
+        filename = source_file_key.split('/')[-1].replace('.pdf', '')
+        timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
+        raw_response_key = f"textract-raw-responses/{filename}-{timestamp}-raw.json"
+
+        s3_client.put_object(
+            Bucket=config['BUCKET_NAME'],
+            Key=raw_response_key,
+            Body=json.dumps(textract_response, indent=2, default=str),
+            ContentType='application/json'
+        )
+        print(f"Saved raw Textract response to: {raw_response_key}")
+
         # Extract structured data
         extracted_data = process_textract_response(textract_response)
 
@@ -388,6 +401,30 @@ def process_textract_response(response):
 
     # Extract forms (key-value pairs)
     print(f"DEBUG TEXTRACT: Processing {len(response['Blocks'])} blocks")
+
+    # Count different block types
+    block_type_counts = {}
+    key_value_set_count = 0
+    key_blocks_found = 0
+    value_blocks_found = 0
+    keys_with_text = 0
+    keys_without_text = 0
+
+    for block in response['Blocks']:
+        block_type = block['BlockType']
+        block_type_counts[block_type] = block_type_counts.get(block_type, 0) + 1
+
+        if block_type == 'KEY_VALUE_SET':
+            key_value_set_count += 1
+            entity_types = block.get('EntityTypes', [])
+            if 'KEY' in entity_types:
+                key_blocks_found += 1
+            if 'VALUE' in entity_types:
+                value_blocks_found += 1
+
+    print(f"DEBUG TEXTRACT: Block type counts: {json.dumps(block_type_counts, indent=2)}")
+    print(f"DEBUG TEXTRACT: KEY_VALUE_SET blocks: {key_value_set_count} (KEY: {key_blocks_found}, VALUE: {value_blocks_found})")
+
     form_count = 0
 
     for block in response['Blocks']:
@@ -397,11 +434,11 @@ def process_textract_response(response):
                 value_block = get_value_block(block, blocks_map)
                 value_text = get_text(value_block, blocks_map) if value_block else ''
 
-                # Debug log for Consumer Service ID or similar fields
-                if key_text and ('consumer' in key_text.lower() or 'service' in key_text.lower() or 'id' in key_text.lower()):
-                    print(f"DEBUG TEXTRACT: Found potential ID field - Key: '{key_text}', Value: '{value_text}'")
-
+                # Log ALL key-value pairs found
                 if key_text:
+                    keys_with_text += 1
+                    print(f"DEBUG TEXTRACT: Extracted Key='{key_text}' Value='{value_text}' (Confidence: {block.get('Confidence', 0):.1f}%)")
+
                     form_count += 1
                     # Store with geometry for splitting
                     extracted_data['forms'][key_text] = {
@@ -411,8 +448,12 @@ def process_textract_response(response):
                         'page': block.get('Page', 1),
                         'original_key': key_text
                     }
+                else:
+                    keys_without_text += 1
+                    print(f"DEBUG TEXTRACT: SKIPPED key block (no text extracted) - Block ID: {block.get('Id')}, Value: '{value_text}'")
 
-    print(f"DEBUG TEXTRACT: Extracted {form_count} form key-value pairs")
+    print(f"DEBUG TEXTRACT: Summary - Keys with text: {keys_with_text}, Keys without text: {keys_without_text}")
+    print(f"DEBUG TEXTRACT: Final extracted form count: {form_count}")
 
     # Extract text lines with geometry information
     for block in response['Blocks']:
