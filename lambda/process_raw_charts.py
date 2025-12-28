@@ -117,7 +117,7 @@ def start_textract_analysis(file_key, config):
                     'Name': file_key
                 }
             },
-            FeatureTypes=['FORMS'],
+            FeatureTypes=['FORMS', 'TABLES'],
             NotificationChannel={
                 'SNSTopicArn': config['SNS_TOPIC_ARN'],
                 'RoleArn': config['SNS_ROLE_ARN']
