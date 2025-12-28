@@ -151,19 +151,6 @@ def process_and_store_results(job_id, source_file_key, config):
             print(f"Textract job {job_id} status: {textract_response['JobStatus']}")
             return False
 
-        # Save raw Textract response to S3 for debugging
-        filename = source_file_key.split('/')[-1].replace('.pdf', '')
-        timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
-        raw_response_key = f"textract-raw-responses/{filename}-{timestamp}-raw.json"
-
-        s3_client.put_object(
-            Bucket=config['BUCKET_NAME'],
-            Key=raw_response_key,
-            Body=json.dumps(textract_response, indent=2, default=str),
-            ContentType='application/json'
-        )
-        print(f"Saved raw Textract response to: {raw_response_key}")
-
         # Extract structured data
         extracted_data = process_textract_response(textract_response)
 
@@ -284,11 +271,28 @@ def split_into_encounters_text_based(extracted_data, delimiter_field='Consumer S
             if belongs_to_encounter(form_page, form_y, boundary):
                 encounter_forms[form_key] = form_data
 
+        # Assign tables based on geometry
+        encounter_tables = []
+        tables = extracted_data.get('tables', [])
+        for table in tables:
+            table_page = table.get('page', 1)
+            table_y = table.get('geometry', {}).get('BoundingBox', {}).get('Top', 0)
+            if belongs_to_encounter(table_page, table_y, boundary):
+                # Remove geometry before adding
+                clean_table = {
+                    'rows': table['rows'],
+                    'confidence': table.get('confidence', 0)
+                }
+                encounter_tables.append(clean_table)
+
+        print(f"Encounter {i}: Assigned {len(encounter_forms)} forms, {len(encounter_tables)} tables")
+
         encounter_data = create_encounter_from_forms_and_lines(
             encounter_forms,
             encounter_lines,
             extracted_data,
-            i
+            i,
+            encounter_tables if encounter_tables else None
         )
         encounters.append(encounter_data)
 
@@ -338,7 +342,7 @@ def belongs_to_encounter(item_page, item_y, boundary):
         return False
 
 
-def create_encounter_from_forms_and_lines(encounter_forms, encounter_lines, original_data, encounter_index):
+def create_encounter_from_forms_and_lines(encounter_forms, encounter_lines, original_data, encounter_index, encounter_tables=None):
     """
     Create an encounter data structure from a subset of forms and text lines
     This properly splits the text field per encounter based on geometry
@@ -376,6 +380,11 @@ def create_encounter_from_forms_and_lines(encounter_forms, encounter_lines, orig
         }
     }
 
+    # Add tables if present
+    if encounter_tables:
+        encounter_data['tables'] = encounter_tables
+        encounter_data['metadata']['table_count'] = len(encounter_tables)
+
     return encounter_data
 
 
@@ -400,33 +409,6 @@ def process_textract_response(response):
         blocks_map[block['Id']] = block
 
     # Extract forms (key-value pairs)
-    print(f"DEBUG TEXTRACT: Processing {len(response['Blocks'])} blocks")
-
-    # Count different block types
-    block_type_counts = {}
-    key_value_set_count = 0
-    key_blocks_found = 0
-    value_blocks_found = 0
-    keys_with_text = 0
-    keys_without_text = 0
-
-    for block in response['Blocks']:
-        block_type = block['BlockType']
-        block_type_counts[block_type] = block_type_counts.get(block_type, 0) + 1
-
-        if block_type == 'KEY_VALUE_SET':
-            key_value_set_count += 1
-            entity_types = block.get('EntityTypes', [])
-            if 'KEY' in entity_types:
-                key_blocks_found += 1
-            if 'VALUE' in entity_types:
-                value_blocks_found += 1
-
-    print(f"DEBUG TEXTRACT: Block type counts: {json.dumps(block_type_counts, indent=2)}")
-    print(f"DEBUG TEXTRACT: KEY_VALUE_SET blocks: {key_value_set_count} (KEY: {key_blocks_found}, VALUE: {value_blocks_found})")
-
-    form_count = 0
-
     for block in response['Blocks']:
         if block['BlockType'] == 'KEY_VALUE_SET':
             if block.get('EntityTypes') and 'KEY' in block['EntityTypes']:
@@ -434,12 +416,7 @@ def process_textract_response(response):
                 value_block = get_value_block(block, blocks_map)
                 value_text = get_text(value_block, blocks_map) if value_block else ''
 
-                # Log ALL key-value pairs found
                 if key_text:
-                    keys_with_text += 1
-                    print(f"DEBUG TEXTRACT: Extracted Key='{key_text}' Value='{value_text}' (Confidence: {block.get('Confidence', 0):.1f}%)")
-
-                    form_count += 1
                     # Store with geometry for splitting
                     extracted_data['forms'][key_text] = {
                         'value': value_text,
@@ -448,12 +425,11 @@ def process_textract_response(response):
                         'page': block.get('Page', 1),
                         'original_key': key_text
                     }
-                else:
-                    keys_without_text += 1
-                    print(f"DEBUG TEXTRACT: SKIPPED key block (no text extracted) - Block ID: {block.get('Id')}, Value: '{value_text}'")
 
-    print(f"DEBUG TEXTRACT: Summary - Keys with text: {keys_with_text}, Keys without text: {keys_without_text}")
-    print(f"DEBUG TEXTRACT: Final extracted form count: {form_count}")
+    # Extract tables
+    tables = extract_tables(response['Blocks'], blocks_map)
+    if tables:
+        extracted_data['tables'] = tables
 
     # Extract text lines with geometry information
     for block in response['Blocks']:
@@ -472,6 +448,48 @@ def process_textract_response(response):
     return extracted_data
 
 
+def extract_tables(blocks, blocks_map):
+    """Extract table data from Textract blocks"""
+    tables = []
+
+    for block in blocks:
+        if block['BlockType'] == 'TABLE':
+            table_data = {
+                'rows': [],
+                'page': block.get('Page', 1),
+                'geometry': block.get('Geometry', {}),
+                'confidence': block.get('Confidence', 0)
+            }
+
+            # Get all cells for this table
+            if 'Relationships' in block:
+                for relationship in block['Relationships']:
+                    if relationship['Type'] == 'CHILD':
+                        cells = {}
+                        for cell_id in relationship['Ids']:
+                            cell_block = blocks_map.get(cell_id)
+                            if cell_block and cell_block['BlockType'] == 'CELL':
+                                row_index = cell_block.get('RowIndex', 1) - 1
+                                col_index = cell_block.get('ColumnIndex', 1) - 1
+                                cell_text = get_text(cell_block, blocks_map)
+
+                                if row_index not in cells:
+                                    cells[row_index] = {}
+                                cells[row_index][col_index] = cell_text
+
+                        # Convert cells dict to rows array
+                        for row_idx in sorted(cells.keys()):
+                            row = []
+                            for col_idx in sorted(cells[row_idx].keys()):
+                                row.append(cells[row_idx][col_idx])
+                            table_data['rows'].append(row)
+
+            if table_data['rows']:
+                tables.append(table_data)
+
+    return tables
+
+
 def get_text(block, blocks_map):
     """Get text from a block"""
     text = ''
@@ -480,8 +498,14 @@ def get_text(block, blocks_map):
             if relationship['Type'] == 'CHILD':
                 for child_id in relationship['Ids']:
                     child_block = blocks_map.get(child_id)
-                    if child_block and child_block['BlockType'] == 'WORD':
-                        text += child_block['Text'] + ' '
+                    if child_block:
+                        # Handle both WORD and SELECTION_ELEMENT (checkbox) blocks
+                        if child_block['BlockType'] == 'WORD':
+                            text += child_block['Text'] + ' '
+                        elif child_block['BlockType'] == 'SELECTION_ELEMENT':
+                            # Add checkbox state
+                            selection_status = child_block.get('SelectionStatus', 'NOT_SELECTED')
+                            text += f'[{selection_status}] '
     return text.strip()
 
 
