@@ -446,9 +446,7 @@ def evaluate_llm_rule(rule_config, fields, data=None):
         print(f"DEBUG LLM: Parsed status: {status}")
         print(f"DEBUG LLM: Parsed reasoning: {reasoning[:100]}...")
 
-        # Store reasoning in fields for message formatting
-        fields['llm_reasoning'] = reasoning
-
+        # Use reasoning for message formatting without modifying fields
         final_message = messages_config.get(status.lower(), reasoning)
         print(f"DEBUG LLM: Final message: {final_message}")
 
@@ -586,9 +584,7 @@ Chart Data:
             status = 'SKIP'
             reasoning = f'LLM response format unclear: {llm_response}'
 
-        # Store reasoning in fields for message formatting
-        fields['llm_reasoning'] = reasoning
-
+        # Use reasoning for message formatting without modifying fields
         return status, messages_config.get(status.lower(), reasoning)
 
     except Exception as e:
