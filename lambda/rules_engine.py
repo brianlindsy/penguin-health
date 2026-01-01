@@ -129,11 +129,13 @@ def validate_document(data, filename, config, org_id, env_config):
     """
     Run all validation rules against a document
 
-    Now uses full text content instead of structured forms.
+    Extracts field values from text using field_mappings.
     The text field contains all extracted content from the encounter.
     """
-    # Fields dict is now empty - LLM will use full text instead
-    fields = {}
+    # Extract fields from text using field_mappings
+    text = data.get('text', '')
+    field_mappings = config.get('field_mappings', {})
+    fields = extract_fields_from_text(text, field_mappings)
 
     # Run validation rules
     rule_results = []
@@ -165,6 +167,45 @@ def validate_document(data, filename, config, org_id, env_config):
         'rules': rule_results,
         'field_values': fields
     }
+
+
+def extract_fields_from_text(text, field_mappings):
+    """
+    Extract field values from text using simple pattern matching
+
+    For each field mapping (e.g., "document_id": "Consumer Service ID:"):
+    - Searches for lines containing the key
+    - Extracts the value after the key on the same line
+    """
+    fields = {}
+
+    if not text or not field_mappings:
+        return fields
+
+    # Split text into lines
+    lines = text.split('\n')
+
+    # For each field mapping, search for the key in the text
+    for field_name, key_pattern in field_mappings.items():
+        value = None
+
+        # Search through lines for the key pattern
+        for line in lines:
+            if key_pattern in line:
+                # Extract the value after the key pattern
+                parts = line.split(key_pattern, 1)
+                if len(parts) > 1:
+                    value = parts[1].strip()
+                    print(f"Extracted {field_name}: '{value}' from key '{key_pattern}'")
+                    break
+
+        # Store the value (or None if not found)
+        fields[field_name] = value if value else None
+
+        if value is None:
+            print(f"Field '{field_name}' not found (looking for key: '{key_pattern}')")
+
+    return fields
 
 
 def extract_fields(forms, field_mappings):
