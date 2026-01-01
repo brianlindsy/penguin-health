@@ -328,15 +328,16 @@ def evaluate_rule(rule_config, fields, data=None, env_config=None):
 
     try:
         if rule_type == 'llm':
-            status, message = evaluate_llm_rule(rule_config, fields, data)
+            status, message, reasoning = evaluate_llm_rule(rule_config, fields, data)
         elif rule_type == 'llm_irp':
-            status, message = evaluate_llm_irp_rule(rule_config, fields, data, env_config['ORGANIZATION_ID'], env_config)
+            status, message, reasoning = evaluate_llm_irp_rule(rule_config, fields, data, env_config['ORGANIZATION_ID'], env_config)
         else:
             status = 'SKIP'
             message = f'Unsupported rule type: {rule_type}. Only "llm" and "llm_irp" are supported.'
+            reasoning = None
 
         result['status'] = status
-        result['message'] = format_message(message, fields, rule_config)
+        result['message'] = format_message(message, fields, rule_config, reasoning)
 
     except Exception as e:
         result['status'] = 'ERROR'
@@ -446,17 +447,18 @@ def evaluate_llm_rule(rule_config, fields, data=None):
         print(f"DEBUG LLM: Parsed status: {status}")
         print(f"DEBUG LLM: Parsed reasoning: {reasoning[:100]}...")
 
-        # Use reasoning for message formatting without modifying fields
+        # Get message template and return reasoning separately
         final_message = messages_config.get(status.lower(), reasoning)
         print(f"DEBUG LLM: Final message: {final_message}")
 
-        return status, final_message
+        return status, final_message, reasoning
 
     except Exception as e:
         print(f"DEBUG LLM ERROR: {str(e)}")
         import traceback
         print(f"DEBUG LLM TRACEBACK: {traceback.format_exc()}")
-        return 'ERROR', f'LLM evaluation error: {str(e)}'
+        error_msg = f'LLM evaluation error: {str(e)}'
+        return 'ERROR', error_msg, error_msg
 
 
 def evaluate_llm_irp_rule(rule_config, fields, data, org_id, env_config):
@@ -478,29 +480,34 @@ def evaluate_llm_irp_rule(rule_config, fields, data, org_id, env_config):
     ]
 
     if service_type in excluded_service_types:
-        return 'SKIP', messages_config.get('skip', f'Service type "{service_type}" is excluded from IRP validation')
+        skip_msg = f'Service type "{service_type}" is excluded from IRP validation'
+        return 'SKIP', messages_config.get('skip', skip_msg), skip_msg
 
     # Check if consumer_name field exists in the chart
     consumer_name = fields.get('consumer_name')
     if not consumer_name:
-        return 'SKIP', messages_config.get('skip', 'Consumer name not found in chart')
+        skip_msg = 'Consumer name not found in chart'
+        return 'SKIP', messages_config.get('skip', skip_msg), skip_msg
 
     # Query DynamoDB IRP table for matching consumer and organization
     try:
         irp_data = get_irp_for_consumer(consumer_name, org_id, env_config)
 
         if not irp_data:
-            return 'SKIP', messages_config.get('skip', f'No IRP found for consumer: {consumer_name}')
+            skip_msg = f'No IRP found for consumer: {consumer_name}'
+            return 'SKIP', messages_config.get('skip', skip_msg), skip_msg
 
         # Get plan of care text from IRP
         plan_of_care_text = irp_data.get('plan_of_care_text', '')
 
         if not plan_of_care_text:
-            return 'SKIP', messages_config.get('skip', 'IRP found but plan of care text is empty')
+            skip_msg = 'IRP found but plan of care text is empty'
+            return 'SKIP', messages_config.get('skip', skip_msg), skip_msg
 
     except Exception as e:
         print(f"Error retrieving IRP: {str(e)}")
-        return 'SKIP', f'Error retrieving IRP: {str(e)}'
+        error_msg = f'Error retrieving IRP: {str(e)}'
+        return 'SKIP', error_msg, error_msg
 
     # Get the chart text
     chart_text = ''
@@ -584,12 +591,13 @@ Chart Data:
             status = 'SKIP'
             reasoning = f'LLM response format unclear: {llm_response}'
 
-        # Use reasoning for message formatting without modifying fields
-        return status, messages_config.get(status.lower(), reasoning)
+        # Get message template and return reasoning separately
+        return status, messages_config.get(status.lower(), reasoning), reasoning
 
     except Exception as e:
         print(f"Error calling LLM for IRP rule: {str(e)}")
-        return 'ERROR', f'LLM IRP evaluation error: {str(e)}'
+        error_msg = f'LLM IRP evaluation error: {str(e)}'
+        return 'ERROR', error_msg, error_msg
 
 
 def get_irp_for_consumer(consumer_name, org_id, env_config):
@@ -631,9 +639,9 @@ def get_irp_for_consumer(consumer_name, org_id, env_config):
         raise e
 
 
-def format_message(message, fields, rule_config):
+def format_message(message, fields, rule_config, reasoning=None):
     """
-    Format message template with field values
+    Format message template with field values and LLM reasoning
     """
     if not message:
         return message
@@ -643,6 +651,10 @@ def format_message(message, fields, rule_config):
         placeholder = '{' + key + '}'
         if placeholder in message:
             message = message.replace(placeholder, str(value) if value else 'N/A')
+
+    # Replace {llm_reasoning} placeholder if present
+    if '{llm_reasoning}' in message:
+        message = message.replace('{llm_reasoning}', str(reasoning) if reasoning else 'N/A')
 
     # Replace special placeholders
     if '{actual_value}' in message:
