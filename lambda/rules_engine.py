@@ -28,6 +28,10 @@ def lambda_handler(event, context):
     if 'config' in event:
         env_config.update(event['config'])
 
+    # Generate unique validation run ID
+    validation_run_id = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
+    print(f"Starting validation run: {validation_run_id}")
+
     try:
         config = load_configuration(env_config['ORGANIZATION_ID'], env_config)
         # Process all files in processed folder
@@ -45,11 +49,19 @@ def lambda_handler(event, context):
         for obj in response['Contents']:
             key = obj['Key']
             if key.endswith('.json') and '/raw/' not in key:
-                process_file(env_config['BUCKET_NAME'], key, config, env_config['ORGANIZATION_ID'], env_config)
+                process_file(env_config['BUCKET_NAME'], key, config, env_config['ORGANIZATION_ID'], env_config, validation_run_id)
+
+        # Generate CSV report from DynamoDB results
+        print(f"Generating CSV report for run: {validation_run_id}")
+        csv_report = generate_csv_from_dynamodb(validation_run_id, env_config)
+        save_csv_to_s3(csv_report, validation_run_id, env_config)
 
         return {
             'statusCode': 200,
-            'body': json.dumps('Validation completed successfully')
+            'body': json.dumps({
+                'message': 'Validation completed successfully',
+                'validation_run_id': validation_run_id
+            })
         }
 
     except Exception as e:
@@ -84,7 +96,7 @@ def load_configuration(org_id, env_config):
         raise e
 
 
-def process_file(bucket, key, config, org_id, env_config):
+def process_file(bucket, key, config, org_id, env_config, validation_run_id):
     """
     Process a single JSON file from S3
     """
@@ -94,19 +106,10 @@ def process_file(bucket, key, config, org_id, env_config):
         data = json.loads(response['Body'].read().decode('utf-8'))
 
         # Validate the document
-        results = validate_document(data, key, config, org_id, env_config)
+        results = validate_document(data, key, config, org_id, env_config, validation_run_id)
 
         # Store results in DynamoDB
         store_results(results, env_config)
-
-        # Also save results to S3 for reference
-        results_key = key.replace(env_config['TEXTRACT_PROCESSED'], 'validation-results/').replace('.json', '-validation.json')
-        s3_client.put_object(
-            Bucket=bucket,
-            Key=results_key,
-            Body=json.dumps(results, indent=2, default=str),
-            ContentType='application/json'
-        )
 
         print(f"Validated {key}: {results['summary']}")
 
@@ -125,7 +128,7 @@ def process_file(bucket, key, config, org_id, env_config):
         raise e
 
 
-def validate_document(data, filename, config, org_id, env_config):
+def validate_document(data, filename, config, org_id, env_config, validation_run_id):
     """
     Run all validation rules against a document
 
@@ -153,6 +156,7 @@ def validate_document(data, filename, config, org_id, env_config):
     skipped = sum(1 for r in rule_results if r['status'] == 'SKIP')
 
     return {
+        'validation_run_id': validation_run_id,
         'organization_id': org_id,
         'document_id': fields.get('document_id', 'UNKNOWN'),
         'filename': filename,
@@ -686,13 +690,92 @@ def store_results(results, env_config):
         item['gsi1pk'] = f"DATE#{results['validation_timestamp'][:10]}"
         item['gsi1sk'] = f"DOC#{results['document_id']}"
 
+        # Add GSI2 keys for querying by validation run
+        item['gsi2pk'] = f"RUN#{results['validation_run_id']}"
+        item['gsi2sk'] = f"DOC#{results['document_id']}"
+
         # Add organization key for filtering
         item['organization_id'] = results.get('organization_id', 'unknown')
 
         table.put_item(Item=item)
 
-        print(f"Stored results for document {results['document_id']} in DynamoDB")
+        print(f"Stored results for document {results['document_id']} in DynamoDB (run: {results['validation_run_id']})")
 
     except Exception as e:
         print(f"Error storing results in DynamoDB: {str(e)}")
         # Don't raise - continue even if DynamoDB fails
+
+
+def generate_csv_from_dynamodb(validation_run_id, env_config):
+    """
+    Query all validation results for this run from DynamoDB and generate CSV
+
+    CSV columns: Service ID, Consumer Name, Rule Name, Status, Reasoning
+    """
+    import csv
+    import io
+
+    try:
+        table = dynamodb.Table(env_config['DYNAMODB_TABLE'])
+
+        # Query using GSI2 to get all results for this validation run
+        response = table.query(
+            IndexName='gsi2',
+            KeyConditionExpression='gsi2pk = :run_key',
+            ExpressionAttributeValues={
+                ':run_key': f"RUN#{validation_run_id}"
+            }
+        )
+
+        items = response.get('Items', [])
+        print(f"Found {len(items)} documents for validation run {validation_run_id}")
+
+        # Generate CSV
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(['Service ID', 'Consumer Name', 'Rule Name', 'Status', 'Reasoning'])
+
+        for item in items:
+            # Extract field values
+            field_values = item.get('field_values', {})
+            service_id = field_values.get('document_id', 'N/A') if field_values else 'N/A'
+            consumer_name = field_values.get('consumer_name', 'N/A') if field_values else 'N/A'
+
+            # Each rule becomes a row in the CSV
+            for rule in item.get('rules', []):
+                writer.writerow([
+                    service_id,
+                    consumer_name,
+                    rule.get('rule_name', 'N/A'),
+                    rule.get('status', 'N/A'),
+                    rule.get('message', 'N/A')
+                ])
+
+        csv_content = output.getvalue()
+        print(f"Generated CSV with {len(items)} documents")
+        return csv_content
+
+    except Exception as e:
+        print(f"Error generating CSV from DynamoDB: {str(e)}")
+        raise e
+
+
+def save_csv_to_s3(csv_content, validation_run_id, env_config):
+    """
+    Save CSV report to S3
+    """
+    try:
+        csv_key = f"validation-reports/{validation_run_id}-validation-report.csv"
+
+        s3_client.put_object(
+            Bucket=env_config['BUCKET_NAME'],
+            Key=csv_key,
+            Body=csv_content,
+            ContentType='text/csv'
+        )
+
+        print(f"Saved CSV report to s3://{env_config['BUCKET_NAME']}/{csv_key}")
+
+    except Exception as e:
+        print(f"Error saving CSV to S3: {str(e)}")
+        raise e
