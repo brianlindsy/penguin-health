@@ -758,9 +758,13 @@ def generate_csv_from_dynamodb(validation_run_id, env_config):
                 # For PASS status, only show "PASS" without reasoning
                 if status == 'PASS':
                     rule_statuses[rule_name] = 'PASS'
-                # For FAIL/SKIP/ERROR, include the message/reasoning if available
+                # For FAIL/SKIP/ERROR with message
                 elif message and message != status:
-                    rule_statuses[rule_name] = f"{status}: {message}"
+                    # If message already starts with status, don't duplicate it
+                    if message.upper().startswith(status.upper()):
+                        rule_statuses[rule_name] = message
+                    else:
+                        rule_statuses[rule_name] = f"{status}: {message}"
                 else:
                     rule_statuses[rule_name] = status
 
