@@ -426,7 +426,7 @@ def evaluate_llm_rule(rule_config, fields, data=None):
 
         if llm_response_lower.startswith('pass'):
             status = 'PASS'
-            reasoning = llm_response.split('-', 1)[1].strip() if '-' in llm_response else llm_response
+            reasoning = None  # No reasoning needed for PASS
         elif llm_response_lower.startswith('fail'):
             status = 'FAIL'
             reasoning = llm_response.split('-', 1)[1].strip() if '-' in llm_response else llm_response
@@ -439,10 +439,14 @@ def evaluate_llm_rule(rule_config, fields, data=None):
             reasoning = f'LLM response format unclear: {llm_response}'
 
         print(f"DEBUG LLM: Parsed status: {status}")
-        print(f"DEBUG LLM: Parsed reasoning: {reasoning[:100]}...")
+        if reasoning:
+            print(f"DEBUG LLM: Parsed reasoning: {reasoning[:100]}...")
+        else:
+            print(f"DEBUG LLM: No reasoning (PASS status)")
 
         # Get message template and return reasoning separately
-        final_message = messages_config.get(status.lower(), reasoning)
+        # For PASS, use template message without reasoning
+        final_message = messages_config.get(status.lower(), status if status == 'PASS' else reasoning)
         print(f"DEBUG LLM: Final message: {final_message}")
 
         return status, final_message, reasoning
@@ -574,7 +578,7 @@ Chart Data:
 
         if llm_response_lower.startswith('pass'):
             status = 'PASS'
-            reasoning = "Verified"
+            reasoning = ""  # No reasoning needed for PASS
         elif llm_response_lower.startswith('fail'):
             status = 'FAIL'
             reasoning = llm_response.split('-', 1)[1].strip() if '-' in llm_response else llm_response
@@ -586,7 +590,8 @@ Chart Data:
             reasoning = f'LLM response format unclear: {llm_response}'
 
         # Get message template and return reasoning separately
-        return status, messages_config.get(status.lower(), reasoning), reasoning
+        # For PASS, use template message without reasoning
+        return status, messages_config.get(status.lower(), status), reasoning
 
     except Exception as e:
         print(f"Error calling LLM for IRP rule: {str(e)}")
@@ -748,9 +753,13 @@ def generate_csv_from_dynamodb(validation_run_id, env_config):
             for rule in item.get('rules', []):
                 rule_name = rule.get('rule_name', 'Unknown')
                 status = rule.get('status', 'N/A')
-                # If there's a message/reasoning, append it to status
                 message = rule.get('message', '')
-                if message and message != status:
+
+                # For PASS status, only show "PASS" without reasoning
+                if status == 'PASS':
+                    rule_statuses[rule_name] = 'PASS'
+                # For FAIL/SKIP/ERROR, include the message/reasoning if available
+                elif message and message != status:
                     rule_statuses[rule_name] = f"{status}: {message}"
                 else:
                     rule_statuses[rule_name] = status
