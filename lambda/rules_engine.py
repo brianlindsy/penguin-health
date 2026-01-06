@@ -81,16 +81,6 @@ def load_configuration(org_id, env_config):
 
         print(f"Loaded configuration for {org_id}: {len(config.get('rules', []))} rules")
         return config
-
-    except s3_client.exceptions.NoSuchKey:
-        print(f"No configuration found for {org_id}, using default")
-        # Return empty config - will skip all rules
-        return {
-            'organization_id': org_id,
-            'field_mappings': {},
-            'value_lists': {},
-            'rules': []
-        }
     except Exception as e:
         print(f"Error loading configuration: {str(e)}")
         raise e
@@ -584,7 +574,7 @@ Chart Data:
 
         if llm_response_lower.startswith('pass'):
             status = 'PASS'
-            reasoning = llm_response.split('-', 1)[1].strip() if '-' in llm_response else llm_response
+            reasoning = "Verified"
         elif llm_response_lower.startswith('fail'):
             status = 'FAIL'
             reasoning = llm_response.split('-', 1)[1].strip() if '-' in llm_response else llm_response
@@ -710,7 +700,7 @@ def generate_csv_from_dynamodb(validation_run_id, env_config):
     """
     Query all validation results for this run from DynamoDB and generate CSV
 
-    CSV columns: Service ID, Consumer Name, Rule Name, Status, Reasoning
+    CSV format: One row per service_id with separate columns for each rule's status
     """
     import csv
     import io
@@ -730,29 +720,50 @@ def generate_csv_from_dynamodb(validation_run_id, env_config):
         items = response.get('Items', [])
         print(f"Found {len(items)} documents for validation run {validation_run_id}")
 
-        # Generate CSV
+        # First pass: collect all unique rule names to create column headers
+        all_rule_names = set()
+        for item in items:
+            for rule in item.get('rules', []):
+                rule_name = rule.get('rule_name', 'Unknown')
+                all_rule_names.add(rule_name)
+
+        # Sort rule names for consistent column ordering
+        sorted_rule_names = sorted(all_rule_names)
+
+        # Generate CSV header: Service ID, Consumer Name, then one column per rule
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(['Service ID', 'Consumer Name', 'Rule Name', 'Status', 'Reasoning'])
+        header = ['Service ID', 'Consumer Name'] + sorted_rule_names
+        writer.writerow(header)
 
+        # Second pass: write one row per service_id
         for item in items:
             # Extract field values
             field_values = item.get('field_values', {})
             service_id = field_values.get('document_id', 'N/A') if field_values else 'N/A'
             consumer_name = field_values.get('consumer_name', 'N/A') if field_values else 'N/A'
 
-            # Each rule becomes a row in the CSV
+            # Build a map of rule_name -> status for this document
+            rule_statuses = {}
             for rule in item.get('rules', []):
-                writer.writerow([
-                    service_id,
-                    consumer_name,
-                    rule.get('rule_name', 'N/A'),
-                    rule.get('status', 'N/A'),
-                    rule.get('message', 'N/A')
-                ])
+                rule_name = rule.get('rule_name', 'Unknown')
+                status = rule.get('status', 'N/A')
+                # If there's a message/reasoning, append it to status
+                message = rule.get('message', '')
+                if message and message != status:
+                    rule_statuses[rule_name] = f"{status}: {message}"
+                else:
+                    rule_statuses[rule_name] = status
+
+            # Build row with status for each rule (in same order as header)
+            row = [service_id, consumer_name]
+            for rule_name in sorted_rule_names:
+                row.append(rule_statuses.get(rule_name, 'N/A'))
+
+            writer.writerow(row)
 
         csv_content = output.getvalue()
-        print(f"Generated CSV with {len(items)} documents")
+        print(f"Generated CSV with {len(items)} rows (one per service_id) and {len(sorted_rule_names)} rule columns")
         return csv_content
 
     except Exception as e:
