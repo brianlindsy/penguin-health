@@ -304,8 +304,8 @@ def split_into_encounters(extracted_data, is_irp=False):
 
 def process_textract_response(response):
     """
-    Extract text content with proper key-value formatting from FORMS
-    Falls back to LINE blocks if no forms detected
+    Extract text content from LINE blocks
+    LINE blocks capture all text including delimiters that may not be in FORMS
     """
     extracted_data = {
         'text': '',
@@ -317,58 +317,23 @@ def process_textract_response(response):
         }
     }
 
-    blocks_map = {}
+    # Extract from LINE blocks (captures all text in reading order)
+    lines = []
     for block in response['Blocks']:
-        blocks_map[block['Id']] = block
+        if block['BlockType'] == 'LINE':
+            page = block.get('Page', 1)
+            y_pos = block.get('Geometry', {}).get('BoundingBox', {}).get('Top', 0)
+            lines.append({
+                'text': block['Text'],
+                'page': page,
+                'y_position': y_pos
+            })
 
-    # Extract key-value pairs from FORMS
-    form_pairs = []
-    for block in response['Blocks']:
-        if block['BlockType'] == 'KEY_VALUE_SET' and block.get('EntityTypes') and 'KEY' in block['EntityTypes']:
-            key_text = get_text_from_block(block, blocks_map)
-            value_block = get_value_block(block, blocks_map)
-            value_text = get_text_from_block(value_block, blocks_map) if value_block else ''
-
-            if key_text:
-                page = block.get('Page', 1)
-                y_pos = block.get('Geometry', {}).get('BoundingBox', {}).get('Top', 0)
-                form_pairs.append({
-                    'key': key_text,
-                    'value': value_text,
-                    'page': page,
-                    'y_position': y_pos
-                })
-
-    # Sort by page and Y-position
-    form_pairs.sort(key=lambda x: (x['page'], x['y_position']))
-
-    # Build formatted text from forms (key: value format)
-    if form_pairs:
-        text_lines = []
-        for pair in form_pairs:
-            if pair['value']:
-                text_lines.append(f"{pair['key']} {pair['value']}")
-            else:
-                text_lines.append(pair['key'])
-        extracted_data['text'] = '\n'.join(text_lines)
-        print(f"Extracted {len(form_pairs)} form key-value pairs")
-    else:
-        # Fallback to LINE blocks if no forms detected
-        lines = []
-        for block in response['Blocks']:
-            if block['BlockType'] == 'LINE':
-                page = block.get('Page', 1)
-                y_pos = block.get('Geometry', {}).get('BoundingBox', {}).get('Top', 0)
-                lines.append({
-                    'text': block['Text'],
-                    'page': page,
-                    'y_position': y_pos
-                })
-
-        lines.sort(key=lambda x: (x['page'], x['y_position']))
-        extracted_data['text'] = '\n'.join([line['text'] for line in lines])
-        extracted_data['lines'] = lines
-        print(f"No forms found, extracted {len(lines)} text lines")
+    # Sort by page and Y-position to maintain reading order
+    lines.sort(key=lambda x: (x['page'], x['y_position']))
+    extracted_data['text'] = '\n'.join([line['text'] for line in lines])
+    extracted_data['lines'] = lines
+    print(f"Extracted {len(lines)} text lines from LINE blocks")
 
     return extracted_data
 
