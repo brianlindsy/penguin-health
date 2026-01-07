@@ -151,9 +151,6 @@ def process_and_store_results(job_id, source_file_key, config):
             print(f"Textract job {job_id} status: {textract_response['JobStatus']}")
             return False
 
-        # Extract structured data
-        extracted_data = process_textract_response(textract_response)
-
         # Determine if this is an IRP document based on source folder
         is_irp = 'irp/' in source_file_key
         processed_folder = config['TEXTRACT_IRP_PROCESSED'] if is_irp else config['TEXTRACT_PROCESSED']
@@ -163,16 +160,19 @@ def process_and_store_results(job_id, source_file_key, config):
         filename = source_file_key.split('/')[-1].replace('.pdf', '')
         timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
 
-        # Save raw extracted text to textract-raw folder
+        # Save raw Textract response to textract-raw folder
         raw_folder = "textract-raw/irp/" if is_irp else "textract-raw/"
-        raw_text_key = f"{raw_folder}{filename}-{timestamp}.txt"
+        raw_response_key = f"{raw_folder}{filename}-{timestamp}.json"
         s3_client.put_object(
             Bucket=config['BUCKET_NAME'],
-            Key=raw_text_key,
-            Body=extracted_data.get('text', ''),
-            ContentType='text/plain'
+            Key=raw_response_key,
+            Body=json.dumps(textract_response, indent=2),
+            ContentType='application/json'
         )
-        print(f"Saved raw text to: {raw_text_key}")
+        print(f"Saved raw Textract response to: {raw_response_key}")
+
+        # Extract structured data
+        extracted_data = process_textract_response(textract_response)
 
         # Split into encounters if this is a multi-encounter document
         encounters = split_into_encounters(extracted_data, is_irp)
