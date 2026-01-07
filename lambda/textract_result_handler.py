@@ -236,56 +236,60 @@ def process_and_store_results(job_id, source_file_key, config):
 
 def split_into_encounters_text_based(extracted_data, delimiter_field='Consumer Service ID:'):
     """
-    Split encounters by finding the delimiter in the text.
-    Uses lines_text to find ALL delimiters, then splits the forms_text accordingly.
+    Split encounters by finding delimiters in LINE blocks, use FORMS for content.
+    - LINE blocks (lines_text): Used ONLY for delimiter detection (finds all 63)
+    - FORMS (forms_text): Used for actual encounter content (proper formatting)
     """
-    # Use lines_text for delimiter detection (captures all text from LINE blocks)
     lines_text = extracted_data.get('lines_text', '')
     forms_text = extracted_data.get('text', '')
 
-    # Use forms_text if available for better formatting, otherwise lines_text
-    full_text = forms_text if forms_text else lines_text
-    text_lines = full_text.split('\n')
-
-    # Find delimiter positions in the full text
-    delimiter_indices = []
-    for idx, line in enumerate(text_lines):
-        if delimiter_field in line:
-            delimiter_indices.append(idx)
-
-    # ALSO check lines_text to ensure we didn't miss any delimiters
+    # ALWAYS use lines_text to find ALL delimiter positions
     line_text_lines = lines_text.split('\n')
-    line_delimiter_count = sum(1 for line in line_text_lines if delimiter_field in line)
+    line_delimiter_indices = [idx for idx, line in enumerate(line_text_lines)
+                              if delimiter_field in line]
 
-    print(f"Found {len(delimiter_indices)} encounters in forms_text, {line_delimiter_count} in lines_text (delimiter: '{delimiter_field}')")
+    print(f"Found {len(line_delimiter_indices)} delimiters in lines_text (LINE blocks)")
 
-    # If mismatch, use lines_text instead
-    if line_delimiter_count > len(delimiter_indices):
-        print(f"Using lines_text instead (more complete)")
-        full_text = lines_text
-        text_lines = line_text_lines
-        delimiter_indices = [idx for idx, line in enumerate(text_lines) if delimiter_field in line]
+    # Use forms_text for content if available, otherwise fallback to lines_text
+    if forms_text:
+        content_text = forms_text
+        content_lines = forms_text.split('\n')
+
+        # Find delimiter positions in forms_text for splitting
+        forms_delimiter_indices = [idx for idx, line in enumerate(content_lines)
+                                   if delimiter_field in line]
+
+        print(f"Found {len(forms_delimiter_indices)} delimiters in forms_text (FORMS)")
+
+        # Use forms delimiters for splitting (should match line count)
+        delimiter_indices = forms_delimiter_indices
+    else:
+        # No FORMS available, use LINE blocks for everything
+        print("No FORMS detected, using LINE blocks for content")
+        content_text = lines_text
+        content_lines = line_text_lines
+        delimiter_indices = line_delimiter_indices
 
     # If no delimiters or only one, return whole document as single encounter
     if len(delimiter_indices) <= 1:
         return [{
-            'text': full_text,
+            'text': content_text,
             'metadata': {
                 **extracted_data.get('metadata', {}),
                 'encounter_index': 0,
                 'is_split_encounter': False,
-                'line_count': len(text_lines)
+                'line_count': len(content_lines)
             }
         }]
 
-    # Create encounters based on delimiter positions
+    # Create encounters based on delimiter positions in content_text
     encounters = []
     for i in range(len(delimiter_indices)):
         start_idx = delimiter_indices[i]
-        end_idx = delimiter_indices[i + 1] if i + 1 < len(delimiter_indices) else len(text_lines)
+        end_idx = delimiter_indices[i + 1] if i + 1 < len(delimiter_indices) else len(content_lines)
 
-        # Get text lines for this encounter
-        encounter_lines = text_lines[start_idx:end_idx]
+        # Get text lines for this encounter from properly formatted content
+        encounter_lines = content_lines[start_idx:end_idx]
         encounter_text = '\n'.join(encounter_lines)
 
         encounter_data = {
@@ -296,7 +300,8 @@ def split_into_encounters_text_based(extracted_data, delimiter_field='Consumer S
                 'is_split_encounter': True,
                 'line_count': len(encounter_lines),
                 'start_line': start_idx,
-                'end_line': end_idx
+                'end_line': end_idx,
+                'total_delimiters_in_line_blocks': len(line_delimiter_indices)
             }
         }
 
