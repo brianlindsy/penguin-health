@@ -163,6 +163,17 @@ def process_and_store_results(job_id, source_file_key, config):
         filename = source_file_key.split('/')[-1].replace('.pdf', '')
         timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
 
+        # Save raw extracted text to textract-raw folder
+        raw_folder = "textract-raw/irp/" if is_irp else "textract-raw/"
+        raw_text_key = f"{raw_folder}{filename}-{timestamp}.txt"
+        s3_client.put_object(
+            Bucket=config['BUCKET_NAME'],
+            Key=raw_text_key,
+            Body=extracted_data.get('text', ''),
+            ContentType='text/plain'
+        )
+        print(f"Saved raw text to: {raw_text_key}")
+
         # Split into encounters if this is a multi-encounter document
         encounters = split_into_encounters(extracted_data, is_irp)
 
