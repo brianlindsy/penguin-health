@@ -181,7 +181,17 @@ def process_and_store_results(job_id, source_file_key, config):
         if len(encounters) > 1:
             print(f"Split document into {len(encounters)} encounters")
             for idx, encounter in enumerate(encounters):
-                encounter_id = encounter.get('forms', {}).get('Consumer Service ID:', {}).get('value', f'encounter-{idx+1}')
+                # Extract Consumer Service ID from the encounter text
+                encounter_id = f'encounter-{idx+1}'
+                encounter_text = encounter.get('text', '')
+                for line in encounter_text.split('\n'):
+                    if 'Consumer Service ID:' in line:
+                        # Extract the ID value after the delimiter
+                        parts = line.split('Consumer Service ID:', 1)
+                        if len(parts) > 1:
+                            encounter_id = parts[1].strip().split()[0]  # Get first word after delimiter
+                        break
+
                 # Sanitize encounter_id for filename
                 safe_encounter_id = encounter_id.replace('/', '-').replace(' ', '-')
                 output_key = f"{processed_folder}{filename}-{safe_encounter_id}-{timestamp}.json"
