@@ -237,19 +237,34 @@ def process_and_store_results(job_id, source_file_key, config):
 def split_into_encounters_text_based(extracted_data, delimiter_field='Consumer Service ID:'):
     """
     Split encounters by finding the delimiter in the text.
-    Each encounter gets all text from one delimiter to the next.
+    Uses lines_text to find ALL delimiters, then splits the forms_text accordingly.
     """
-    full_text = extracted_data.get('text', '')
+    # Use lines_text for delimiter detection (captures all text from LINE blocks)
+    lines_text = extracted_data.get('lines_text', '')
+    forms_text = extracted_data.get('text', '')
 
-    # Split by lines and find delimiter
+    # Use forms_text if available for better formatting, otherwise lines_text
+    full_text = forms_text if forms_text else lines_text
     text_lines = full_text.split('\n')
-    delimiter_indices = []
 
+    # Find delimiter positions in the full text
+    delimiter_indices = []
     for idx, line in enumerate(text_lines):
         if delimiter_field in line:
             delimiter_indices.append(idx)
 
-    print(f"Found {len(delimiter_indices)} encounters (delimiter: '{delimiter_field}')")
+    # ALSO check lines_text to ensure we didn't miss any delimiters
+    line_text_lines = lines_text.split('\n')
+    line_delimiter_count = sum(1 for line in line_text_lines if delimiter_field in line)
+
+    print(f"Found {len(delimiter_indices)} encounters in forms_text, {line_delimiter_count} in lines_text (delimiter: '{delimiter_field}')")
+
+    # If mismatch, use lines_text instead
+    if line_delimiter_count > len(delimiter_indices):
+        print(f"Using lines_text instead (more complete)")
+        full_text = lines_text
+        text_lines = line_text_lines
+        delimiter_indices = [idx for idx, line in enumerate(text_lines) if delimiter_field in line]
 
     # If no delimiters or only one, return whole document as single encounter
     if len(delimiter_indices) <= 1:
@@ -314,8 +329,9 @@ def split_into_encounters(extracted_data, is_irp=False):
 
 def process_textract_response(response):
     """
-    Extract text content from LINE blocks
-    LINE blocks capture all text including delimiters that may not be in FORMS
+    Extract text content from both LINE blocks and FORMS
+    - LINE blocks: Complete text for encounter splitting
+    - FORMS: Structured key-value pairs for better formatting
     """
     extracted_data = {
         'text': '',
@@ -327,7 +343,45 @@ def process_textract_response(response):
         }
     }
 
-    # Extract from LINE blocks (captures all text in reading order)
+    blocks_map = {}
+    for block in response['Blocks']:
+        blocks_map[block['Id']] = block
+
+    # Extract key-value pairs from FORMS for structured data
+    form_pairs = []
+    for block in response['Blocks']:
+        if block['BlockType'] == 'KEY_VALUE_SET' and block.get('EntityTypes') and 'KEY' in block['EntityTypes']:
+            key_text = get_text_from_block(block, blocks_map)
+            value_block = get_value_block(block, blocks_map)
+            value_text = get_text_from_block(value_block, blocks_map) if value_block else ''
+
+            if key_text:
+                page = block.get('Page', 1)
+                y_pos = block.get('Geometry', {}).get('BoundingBox', {}).get('Top', 0)
+                form_pairs.append({
+                    'key': key_text,
+                    'value': value_text,
+                    'page': page,
+                    'y_position': y_pos
+                })
+
+    # Sort by page and Y-position
+    form_pairs.sort(key=lambda x: (x['page'], x['y_position']))
+
+    # Build formatted text from forms (key: value format) if available
+    if form_pairs:
+        text_lines = []
+        for pair in form_pairs:
+            if pair['value']:
+                text_lines.append(f"{pair['key']} {pair['value']}")
+            else:
+                text_lines.append(pair['key'])
+        forms_text = '\n'.join(text_lines)
+        print(f"Extracted {len(form_pairs)} form key-value pairs")
+    else:
+        forms_text = ''
+
+    # ALSO extract from LINE blocks (for encounter delimiter detection)
     lines = []
     for block in response['Blocks']:
         if block['BlockType'] == 'LINE':
@@ -341,9 +395,15 @@ def process_textract_response(response):
 
     # Sort by page and Y-position to maintain reading order
     lines.sort(key=lambda x: (x['page'], x['y_position']))
-    extracted_data['text'] = '\n'.join([line['text'] for line in lines])
+    lines_text = '\n'.join([line['text'] for line in lines])
     extracted_data['lines'] = lines
     print(f"Extracted {len(lines)} text lines from LINE blocks")
+
+    # Use FORMS text if available (better formatting), otherwise use LINE text
+    extracted_data['text'] = forms_text if forms_text else lines_text
+
+    # Store raw LINE text separately for delimiter detection
+    extracted_data['lines_text'] = lines_text
 
     return extracted_data
 
