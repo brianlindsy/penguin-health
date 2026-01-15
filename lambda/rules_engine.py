@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
 bedrock_runtime = boto3.client('bedrock-runtime', region_name='us-east-1')
+bedrock_agent_runtime = boto3.client('bedrock-agent-runtime', region_name='us-east-1')
 
 def lambda_handler(event, context):
     """
@@ -375,6 +376,7 @@ def evaluate_rule(rule_config, fields, data=None, env_config=None):
 def evaluate_llm_rule(rule_config, fields, data=None):
     """
     Evaluate a rule using AWS Bedrock LLM
+    Supports optional RAG mode using RetrieveAndGenerate API
     """
     llm_config = rule_config.get('llm_config', {})
     messages_config = rule_config.get('messages', {})
@@ -382,8 +384,11 @@ def evaluate_llm_rule(rule_config, fields, data=None):
     model_id = llm_config.get('model_id', 'openai.gpt-oss-120b-1:0')
     system_prompt = llm_config.get('system_prompt', '')
     question = llm_config.get('question', '')
+    use_rag = llm_config.get('use_rag', False)
+    knowledge_base_id = llm_config.get('knowledge_base_id', os.environ.get('AAYSQ1VIAN'))
 
     print(f"DEBUG LLM: Evaluating rule {rule_config.get('id')} - {rule_config.get('name')}")
+    print(f"DEBUG LLM: RAG mode: {use_rag}")
 
     # Get the full text from the document
     chart_text = ''
@@ -401,32 +406,61 @@ def evaluate_llm_rule(rule_config, fields, data=None):
     print(f"DEBUG LLM: User message length: {len(user_message)} characters")
 
     try:
-        # Call Bedrock with OpenAI model
-        request_body = {
-            "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt
+        # If RAG mode is enabled, use RetrieveAndGenerate API
+        if use_rag:
+            if not knowledge_base_id:
+                raise ValueError("use_rag is enabled but no knowledge_base_id provided")
+
+            print(f"DEBUG LLM: Using RAG with Knowledge Base: {knowledge_base_id}")
+
+            # Construct RAG query that includes system prompt context
+            rag_query = f"{system_prompt}\n\n{question}\n\nChart Data:\n{chart_text}"
+
+            # Build model ARN
+            model_arn = f"arn:aws:bedrock:us-east-1::foundation-model/{model_id}"
+
+            response = bedrock_agent_runtime.retrieve_and_generate(
+                input={
+                    'text': rag_query
                 },
-                {
-                    "role": "user",
-                    "content": user_message
+                retrieveAndGenerateConfiguration={
+                    'type': 'KNOWLEDGE_BASE',
+                    'knowledgeBaseConfiguration': {
+                        'knowledgeBaseId': knowledge_base_id,
+                        'modelArn': model_arn
+                    }
                 }
-            ],
-            "max_tokens": 500,
-            "temperature": 0
-        }
+            )
 
-        print(f"DEBUG LLM: Calling Bedrock with model: {model_id}")
-        print(f"DEBUG LLM: System prompt length: {len(system_prompt)} characters")
+            llm_response = response.get('output', {}).get('text', '')
+            print(f"DEBUG LLM RAG: Retrieved {len(response.get('citations', []))} citations")
+        else:
+            # Standard direct model invocation
+            request_body = {
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": user_message
+                    }
+                ],
+                "max_tokens": 500,
+                "temperature": 0
+            }
 
-        response = bedrock_runtime.invoke_model(
-            modelId=model_id,
-            body=json.dumps(request_body)
-        )
+            print(f"DEBUG LLM: Calling Bedrock with model: {model_id}")
+            print(f"DEBUG LLM: System prompt length: {len(system_prompt)} characters")
 
-        response_body = json.loads(response['body'].read())
-        llm_response = response_body['choices'][0]['message']['content']
+            response = bedrock_runtime.invoke_model(
+                modelId=model_id,
+                body=json.dumps(request_body)
+            )
+
+            response_body = json.loads(response['body'].read())
+            llm_response = response_body['choices'][0]['message']['content']
 
         print(f"DEBUG LLM: Raw response from Bedrock: {llm_response[:200]}...")  # First 200 chars
 
