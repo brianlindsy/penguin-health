@@ -385,7 +385,7 @@ def evaluate_llm_rule(rule_config, fields, data=None):
     system_prompt = llm_config.get('system_prompt', '')
     question = llm_config.get('question', '')
     use_rag = llm_config.get('use_rag', False)
-    knowledge_base_id = llm_config.get('knowledge_base_id', os.environ.get('AAYSQ1VIAN'))
+    knowledge_base_id = llm_config.get('knowledge_base_id', os.environ.get('KNOWLEDGE_BASE_ID'))
 
     print(f"DEBUG LLM: Evaluating rule {rule_config.get('id')} - {rule_config.get('name')}")
     print(f"DEBUG LLM: RAG mode: {use_rag}")
