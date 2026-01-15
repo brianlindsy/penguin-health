@@ -419,25 +419,16 @@ def evaluate_llm_rule(rule_config, fields, data=None):
             # Build model ARN
             model_arn = f"arn:aws:bedrock:us-east-1::foundation-model/{model_id}"
 
-            # Build configuration
+            # Configuration optimized for OpenAI models
             kb_config = {
                 'knowledgeBaseId': knowledge_base_id,
-                'modelArn': model_arn
-            }
-
-            # For non-Claude models, provide custom prompt templates
-            if not model_id.startswith('anthropic.claude'):
-                print(f"DEBUG LLM RAG: Using custom prompt templates for {model_id}")
-                kb_config['orchestrationConfiguration'] = {
-                    'queryTransformationConfiguration': {
-                        'type': 'QUERY_DECOMPOSITION'
-                    }
-                }
-                kb_config['generationConfiguration'] = {
+                'modelArn': model_arn,
+                'generationConfiguration': {
                     'promptTemplate': {
                         'textPromptTemplate': f"{system_prompt}\n\nUse the following context from retrieved documents to answer the question.\n\nContext:\n$search_results$\n\nQuestion: {question}\n\nChart Data:\n{chart_text}\n\nProvide your answer in the format: Pass/Fail/Skip - explanation"
                     }
                 }
+            }
 
             response = bedrock_agent_runtime.retrieve_and_generate(
                 input={
