@@ -425,12 +425,12 @@ def evaluate_llm_rule(rule_config, fields, data=None):
                 'modelArn': model_arn,
                 'orchestrationConfiguration': {
                     'promptTemplate': {
-                        'textPromptTemplate': f"$conversation_history$\n\n{system_prompt}\n\nYou are analyzing medical chart documentation to validate compliance with clinical rules.\n\nUse the retrieved knowledge base context to inform your analysis:\n$search_results$\n\nQuestion: {question}\n\nChart Data:\n{chart_text}\n\n$output_format_instructions$\n\nProvide your answer in the format: Pass/Fail/Skip - explanation"
+                        'textPromptTemplate': f"$conversation_history$\n\n{system_prompt}\n\nYou are analyzing medical chart documentation to validate compliance with clinical rules.\n\nQuery: $query$\n\nUse the retrieved knowledge base context to inform your analysis:\n$search_results$\n\nQuestion: {question}\n\nChart Data:\n{chart_text}\n\n$output_format_instructions$\n\nProvide your answer in the format: Pass/Fail/Skip - explanation"
                     }
                 },
                 'generationConfiguration': {
                     'promptTemplate': {
-                        'textPromptTemplate': f"{system_prompt}\n\nUse the following context from retrieved documents to answer the question.\n\nContext:\n$search_results$\n\nQuestion: {question}\n\nChart Data:\n{chart_text}\n\nProvide your answer in the format: Pass/Fail/Skip - explanation"
+                        'textPromptTemplate': f"{system_prompt}\n\nQuery: $query$\n\nUse the following context from retrieved documents to answer the question.\n\nContext:\n$search_results$\n\nQuestion: {question}\n\nChart Data:\n{chart_text}\n\nProvide your answer in the format: Pass/Fail/Skip - explanation"
                     }
                 }
             }
