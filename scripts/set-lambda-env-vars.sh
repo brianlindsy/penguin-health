@@ -39,6 +39,7 @@ LAMBDA_FUNCTIONS=(
     "process-raw-charts"
     "textract-result-handler"
     "rules-engine"
+    "rules-engine-rag"
     "irp-processor"
 )
 
@@ -87,6 +88,20 @@ EOF
     "DYNAMODB_IRP_TABLE": "$DYNAMODB_IRP_TABLE",
     "ORGANIZATION_ID": "$ORGANIZATION_ID",
     "TEXTRACT_PROCESSED": "$TEXTRACT_PROCESSED"
+  }
+}
+EOF
+            ;;
+        "rules-engine-rag")
+            cat > "$temp_file" <<EOF
+{
+  "Variables": {
+    "BUCKET_NAME": "$BUCKET_NAME",
+    "DYNAMODB_TABLE": "$DYNAMODB_TABLE",
+    "DYNAMODB_IRP_TABLE": "$DYNAMODB_IRP_TABLE",
+    "ORGANIZATION_ID": "$ORGANIZATION_ID",
+    "TEXTRACT_PROCESSED": "$TEXTRACT_PROCESSED",
+    "KNOWLEDGE_BASE_ID": "$KNOWLEDGE_BASE_ID"
   }
 }
 EOF

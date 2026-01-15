@@ -28,6 +28,7 @@ LAMBDA_FUNCTIONS=(
     "process-raw-charts"
     "textract-result-handler"
     "rules-engine"
+    "rules-engine-rag"
     "irp-processor"
 )
 
@@ -43,6 +44,9 @@ get_handler() {
             ;;
         "rules-engine")
             echo "rules_engine.lambda_handler"
+            ;;
+        "rules-engine-rag")
+            echo "rules_engine_rag.lambda_handler"
             ;;
         "irp-processor")
             echo "irp_processor.lambda_handler"
