@@ -3,6 +3,7 @@ import boto3
 import os
 from datetime import datetime
 from decimal import Decimal
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
@@ -130,15 +131,46 @@ def validate_document(data, filename, config, org_id, env_config, validation_run
     field_mappings = config.get('field_mappings', {})
     fields = extract_fields_from_text(text, field_mappings)
 
-    # Run validation rules
-    rule_results = []
+    # Filter enabled rules
+    enabled_rules = [rule for rule in config.get('rules', []) if rule.get('enabled', True)]
 
-    for rule_config in config.get('rules', []):
-        if not rule_config.get('enabled', True):
-            continue
+    if not enabled_rules:
+        rule_results = []
+    else:
+        # Run validation rules in parallel using ThreadPoolExecutor
+        print(f"Evaluating {len(enabled_rules)} rules in parallel...")
+        max_workers = min(20, len(enabled_rules))  # Cap at 20 concurrent threads
 
-        result = evaluate_rule(rule_config, fields, data, env_config)
-        rule_results.append(result)
+        rule_results = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all rule evaluations
+            future_to_rule = {
+                executor.submit(
+                    evaluate_rule,
+                    rule_config,
+                    fields,
+                    data,
+                    env_config
+                ): rule_config
+                for rule_config in enabled_rules
+            }
+
+            # Collect results as they complete
+            for future in as_completed(future_to_rule):
+                rule_config = future_to_rule[future]
+                try:
+                    result = future.result()
+                    rule_results.append(result)
+                except Exception as e:
+                    # Handle any exceptions from rule evaluation
+                    print(f"Error evaluating rule {rule_config.get('id')}: {str(e)}")
+                    rule_results.append({
+                        'rule_id': rule_config.get('id'),
+                        'rule_name': rule_config.get('name'),
+                        'category': rule_config.get('category'),
+                        'status': 'ERROR',
+                        'message': f'Exception during parallel execution: {str(e)}'
+                    })
 
     # Calculate summary
     passed = sum(1 for r in rule_results if r['status'] == 'PASS')
