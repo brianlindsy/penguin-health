@@ -26,7 +26,9 @@ DESCRIPTION="$GIT_TAG ($GIT_COMMIT) - $(git log -1 --pretty=%s 2>/dev/null | hea
 # Lambda functions list
 LAMBDA_FUNCTIONS=(
     "process-raw-charts"
+    "process-raw-charts-multi-org"
     "textract-result-handler"
+    "textract-result-handler-multi-org"
     "rules-engine"
     "rules-engine-rag"
     "irp-processor"
@@ -39,8 +41,14 @@ get_handler() {
         "process-raw-charts")
             echo "process_raw_charts.lambda_handler"
             ;;
+        "process-raw-charts-multi-org")
+            echo "process_raw_charts_multi_org.lambda_handler"
+            ;;
         "textract-result-handler")
             echo "textract_result_handler.lambda_handler"
+            ;;
+        "textract-result-handler-multi-org")
+            echo "textract_result_handler_multi_org.lambda_handler"
             ;;
         "rules-engine")
             echo "rules_engine.lambda_handler"
@@ -106,6 +114,16 @@ package_lambda() {
         print_error "Handler file not found: lambda/${handler_file}.py"
         rm -rf "$BUILD_DIR"
         exit 1
+    fi
+
+    # Special handling for functions that need multi_org_config dependency
+    if [ "$function_name" == "rules-engine-rag" ] || [ "$function_name" == "textract-result-handler-multi-org" ]; then
+        if [ -f "lambda/multi_org_config.py" ]; then
+            cp "lambda/multi_org_config.py" "$BUILD_DIR/"
+            print_info "Packaged: multi_org_config.py (dependency)"
+        else
+            print_warning "multi_org_config.py not found - function may fail at runtime"
+        fi
     fi
 
     # Create deployment package
