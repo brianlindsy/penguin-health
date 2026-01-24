@@ -5,7 +5,6 @@ from datetime import datetime
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from multi_org_config import (
-    extract_org_id_from_bucket,
     build_env_config,
     load_org_rules
 )
@@ -19,127 +18,23 @@ def lambda_handler(event, context):
     """
     Multi-organization Lambda function to validate processed JSON documents
 
-    Supports two invocation modes:
-    1. Batch mode (recommended): Triggered by batch-complete.json manifest file
-       - Processes all encounters from a PDF together
-       - Generates single CSV report per PDF
-    2. Legacy mode: Manual invocation or processes all files in folder
-       - Used for migration period and manual runs
-
-    Organization detection:
-    - S3 bucket name (penguin-health-{org-id})
-    - Event parameter (event['organization_id'])
-    - Environment variable (ORGANIZATION_ID) - legacy support
-    """
-    # Determine organization ID
-    org_id = None
-    bucket_name = None
-
-    # Method 1: From S3 event (batch manifest trigger)
-    if 'Records' in event and len(event['Records']) > 0:
-        bucket_name = event['Records'][0]['s3']['bucket']['name']
-        s3_key = event['Records'][0]['s3']['object']['key']
-        org_id = extract_org_id_from_bucket(bucket_name)
-
-        # Check if this is a batch manifest trigger
-        if s3_key.endswith('-batch-complete.json'):
-            print(f"Batch mode triggered by manifest: {s3_key}")
-            return handle_batch_manifest(bucket_name, s3_key, org_id, event, context)
-        else:
-            # Legacy: individual JSON file trigger (should not happen with new S3 config)
-            print(f"WARNING: Individual file trigger detected: {s3_key} (legacy mode)")
-            print(f"Detected org_id from S3 event bucket: {org_id}")
-
-    # Method 2: From direct invocation with organization_id
-    elif 'organization_id' in event:
-        org_id = event['organization_id']
-        print(f"Using org_id from event parameter: {org_id}")
-
-    # Method 3: From event config (backwards compatibility)
-    elif 'config' in event and 'ORGANIZATION_ID' in event['config']:
-        org_id = event['config']['ORGANIZATION_ID']
-        print(f"Using org_id from event config: {org_id}")
-
-    # Method 4: From environment variable (legacy support)
-    elif os.environ.get('ORGANIZATION_ID'):
-        org_id = os.environ.get('ORGANIZATION_ID')
-        print(f"Using org_id from environment variable: {org_id}")
-
-    if not org_id:
-        raise ValueError("Could not determine organization ID from event or environment")
-
-    # Fall through to legacy mode
-    print(f"Legacy mode: Processing all files for organization: {org_id}")
-    return handle_legacy_mode(org_id, event, context)
-
-
-def handle_batch_manifest(bucket_name, manifest_key, org_id, event, context):
-    """
-    Process batch of encounters using manifest file
-    All encounters get the same validation_run_id for consolidated CSV reporting
-    """
-    try:
-        print(f"Processing batch for organization: {org_id}")
-
-        # Load organization-specific configuration
-        env_config = build_env_config(org_id)
-
-        # Read manifest file
-        response = s3_client.get_object(Bucket=bucket_name, Key=manifest_key)
-        manifest = json.loads(response['Body'].read().decode('utf-8'))
-
-        # Validate manifest
-        if not manifest.get('is_batch_manifest'):
-            raise ValueError(f"Invalid manifest file: {manifest_key}")
-
-        batch_id = manifest['batch_id']
-        encounter_files = manifest['encounter_files']
-        encounter_count = manifest['encounter_count']
-
-        print(f"Batch ID: {batch_id}")
-        print(f"Processing {encounter_count} encounters from: {manifest.get('source_pdf')}")
-
-        # Use batch_id as validation_run_id (ensures all encounters grouped together)
-        validation_run_id = batch_id
-
-        # Load rules from DynamoDB
-        config = load_org_rules(org_id)
-
-        # Process each encounter file with same validation_run_id
-        for idx, encounter_key in enumerate(encounter_files):
-            print(f"Validating encounter {idx+1}/{encounter_count}: {encounter_key}")
-            process_file(bucket_name, encounter_key, config, org_id, env_config, validation_run_id)
-
-        # Generate single CSV report for entire batch
-        print(f"Generating consolidated CSV report for batch: {validation_run_id}")
-        csv_report = generate_csv_from_dynamodb(validation_run_id, env_config)
-        save_csv_to_s3(csv_report, validation_run_id, env_config)
-
-        # Clean up: delete manifest file
-        s3_client.delete_object(Bucket=bucket_name, Key=manifest_key)
-        print(f"Deleted manifest file: {manifest_key}")
-
-        return {
-            'statusCode': 200,
-            'body': json.dumps({
-                'message': f'Batch validation completed successfully',
-                'batch_id': batch_id,
-                'validation_run_id': validation_run_id,
-                'encounters_processed': encounter_count
-            })
+    Event structure:
+    {
+        "organization_id": "community-health",  # Required
+        "config": {  # Optional overrides
+            "textract_processed": "textract-processed/"
         }
+    }
 
-    except Exception as e:
-        print(f"Error in handle_batch_manifest: {str(e)}")
-        raise e
-
-
-def handle_legacy_mode(org_id, event, context):
+    Returns:
+        dict: Status with validation_run_id and processing results
     """
-    Legacy mode: Process all files in textract-processed/ folder
-    Used for manual invocations or migration period
-    """
-    print(f"Processing for organization: {org_id}")
+    # Validate required parameter
+    if 'organization_id' not in event:
+        raise ValueError("Missing required parameter: organization_id")
+
+    org_id = event['organization_id']
+    print(f"Processing validation for organization: {org_id}")
 
     # Load organization-specific configuration from DynamoDB
     env_config = build_env_config(org_id)
@@ -153,8 +48,9 @@ def handle_legacy_mode(org_id, event, context):
     print(f"Starting validation run: {validation_run_id} for org: {org_id}")
 
     try:
-        # Load rules from DynamoDB (not S3)
+        # Load rules from DynamoDB
         config = load_org_rules(org_id)
+
         # Process all files in processed folder
         response = s3_client.list_objects_v2(
             Bucket=env_config['BUCKET_NAME'],
@@ -164,16 +60,23 @@ def handle_legacy_mode(org_id, event, context):
         if 'Contents' not in response:
             return {
                 'statusCode': 200,
-                'body': json.dumps('No files to validate')
-        }
+                'organization_id': org_id,
+                'message': 'No files to validate',
+                'validation_run_id': validation_run_id,
+                'files_processed': 0
+            }
 
+        files_processed = 0
         for obj in response['Contents']:
             key = obj['Key']
-            # Skip manifest files and raw files
-            if key.endswith('-batch-complete.json') or '/raw/' in key:
+
+            # Skip manifest files, folders, and raw files
+            if key.endswith('/') or key.endswith('-batch-complete.json') or '/raw/' in key:
                 continue
+
             if key.endswith('.json'):
-                process_file(env_config['BUCKET_NAME'], key, config, env_config['ORGANIZATION_ID'], env_config, validation_run_id)
+                process_file(env_config['BUCKET_NAME'], key, config, org_id, env_config, validation_run_id)
+                files_processed += 1
 
         # Generate CSV report from DynamoDB results
         print(f"Generating CSV report for run: {validation_run_id}")
@@ -182,20 +85,19 @@ def handle_legacy_mode(org_id, event, context):
 
         return {
             'statusCode': 200,
-            'body': json.dumps({
-                'message': 'Validation completed successfully',
-                'validation_run_id': validation_run_id
-            })
+            'organization_id': org_id,
+            'message': 'Validation completed successfully',
+            'validation_run_id': validation_run_id,
+            'files_processed': files_processed
         }
 
     except Exception as e:
-        print(f"Error in handle_legacy_mode: {str(e)}")
+        print(f"Error validating for organization {org_id}: {str(e)}")
         raise e
 
 
-# NOTE: load_configuration() function removed
-# Now using load_org_rules() from multi_org_config module
-# which loads rules from DynamoDB instead of S3
+# Removed handle_batch_manifest and handle_legacy_mode functions
+# Lambda now only accepts organization_id in event for simplified invocation
 
 
 def process_file(bucket, key, config, org_id, env_config, validation_run_id):

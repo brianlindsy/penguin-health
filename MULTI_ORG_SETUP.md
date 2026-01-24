@@ -8,7 +8,7 @@ The system supports unlimited organizations, each with:
 - Dedicated S3 bucket for complete data isolation
 - Organization-specific validation rules stored in DynamoDB
 - Independent IRP (Individual Recovery Plan) configurations
-- Automatic processing via Lambda triggers
+- On-demand Lambda invocation (EventBridge, Step Functions, or manual)
 
 ## Architecture
 
@@ -70,10 +70,11 @@ This migrates existing organization configuration from JSON files to DynamoDB. E
 ./scripts/deploy.sh --function rules-engine-rag
 ```
 
-The Lambda now automatically:
-- Detects organization from S3 bucket name
+The Lambdas now accept organization_id as a parameter:
+- Requires `organization_id` in event payload
 - Loads configuration from DynamoDB
 - Processes charts with org-specific rules
+- See [LAMBDA_INVOCATION.md](LAMBDA_INVOCATION.md) for invocation examples
 
 ---
 
@@ -91,8 +92,7 @@ This single command:
 3. ✓ Enables versioning and encryption
 4. ✓ Creates organization record in DynamoDB
 5. ✓ Creates default IRP configuration
-6. ✓ Configures S3 → Lambda event trigger
-7. ✓ Grants Lambda permissions
+6. ✓ Grants S3 write permissions to textract-result-handler-multi-org
 
 ### Manual Steps (if needed)
 
@@ -228,15 +228,29 @@ table.update_item(
 
 ## Testing
 
-### Upload a Test Document
+### Upload a Test Document and Invoke Processing
 
 ```bash
-aws s3 cp test-chart.pdf s3://penguin-health-community-health/charts/
+# Upload PDF to S3
+aws s3 cp test-chart.pdf s3://penguin-health-community-health/textract-to-be-processed/
+
+# Invoke processing Lambda
+aws lambda invoke \
+  --function-name process-raw-charts-multi-org \
+  --payload '{"organization_id":"community-health"}' \
+  response.json
+
+# Check response
+cat response.json
 ```
+
+For complete invocation examples including EventBridge, Step Functions, and multi-org batch processing, see [LAMBDA_INVOCATION.md](LAMBDA_INVOCATION.md).
 
 ### Monitor Lambda Processing
 
 ```bash
+aws logs tail /aws/lambda/process-raw-charts-multi-org --follow
+aws logs tail /aws/lambda/textract-result-handler-multi-org --follow
 aws logs tail /aws/lambda/rules-engine-rag --follow
 ```
 
@@ -318,22 +332,22 @@ If missing, recreate:
 ./scripts/multi-org/add-rule.py xyz rule-config.json
 ```
 
-### S3 Event Not Triggering Lambda
+### Lambda Not Processing Files
 
-**Check permissions:**
+**Check if Lambda was invoked:**
 ```bash
-aws lambda get-policy --function-name rules-engine-rag
+aws logs tail /aws/lambda/process-raw-charts-multi-org --follow
 ```
 
-**Re-grant permission:**
+**Manually invoke Lambda:**
 ```bash
-aws lambda add-permission \
-  --function-name rules-engine-rag \
-  --statement-id "AllowS3Invoke-xyz" \
-  --action "lambda:InvokeFunction" \
-  --principal s3.amazonaws.com \
-  --source-arn "arn:aws:s3:::penguin-health-xyz"
+aws lambda invoke \
+  --function-name process-raw-charts-multi-org \
+  --payload '{"organization_id":"xyz"}' \
+  response.json
 ```
+
+See [LAMBDA_INVOCATION.md](LAMBDA_INVOCATION.md) for complete troubleshooting and invocation examples.
 
 ---
 
@@ -356,6 +370,12 @@ python3 scripts/multi-org/migrate-config-to-dynamodb.py
 ```bash
 # Upload test file (replace {org-id} with your organization ID)
 aws s3 cp test.pdf s3://penguin-health-{org-id}/textract-to-be-processed/
+
+# Invoke processing
+aws lambda invoke \
+  --function-name process-raw-charts-multi-org \
+  --payload '{"organization_id":"{org-id}"}' \
+  response.json
 
 # Monitor
 aws logs tail /aws/lambda/process-raw-charts-multi-org --follow
@@ -490,11 +510,18 @@ Apply the configuration:
 The multi-org processing pipeline consists of three Lambda functions working together:
 
 #### 1. process-raw-charts-multi-org
-Triggered when PDFs are uploaded to `textract-to-be-processed/`:
-- Extracts organization ID from S3 bucket name
-- Starts Textract async analysis with FORMS feature
+Invoked manually with organization_id parameter:
+- Accepts `organization_id` in event payload
+- Scans S3 bucket `penguin-health-{org-id}` for PDFs in `textract-to-be-processed/`
+- Starts Textract async analysis with FORMS feature for each PDF
 - Stores job metadata with organization_id for downstream processing
-- Propagates org context through the pipeline
+
+**Event Structure**:
+```json
+{
+  "organization_id": "community-health"
+}
+```
 
 **Deploy**:
 ```bash
@@ -515,11 +542,19 @@ Triggered by SNS when Textract completes analysis:
 ```
 
 #### 3. rules-engine-rag
-Triggered when processed JSON files are uploaded to `textract-processed/`:
-- Extracts organization ID from S3 bucket name
+Invoked manually with organization_id parameter:
+- Accepts `organization_id` in event payload
+- Processes all JSON files in `textract-processed/` folder for that organization
 - Loads org-specific validation rules from DynamoDB
 - Executes LLM-based validation with optional RAG
-- Stores validation results and generates CSV reports
+- Generates consolidated CSV report with unique validation_run_id
+
+**Event Structure**:
+```json
+{
+  "organization_id": "community-health"
+}
+```
 
 **Deploy**:
 ```bash
@@ -529,98 +564,34 @@ Triggered when processed JSON files are uploaded to `textract-processed/`:
 **Complete Pipeline Flow**:
 ```
 1. Upload PDF → s3://penguin-health-{org-id}/textract-to-be-processed/chart.pdf
-2. S3 Event → process-raw-charts-multi-org (extracts org-id, starts Textract)
+
+2. Invoke Lambda → process-raw-charts-multi-org
+   aws lambda invoke --function-name process-raw-charts-multi-org \
+     --payload '{"organization_id":"{org-id}"}' response.json
+
 3. Textract → Analyzes document with FORMS feature (30s - 5min)
-4. SNS → textract-result-handler-multi-org (splits encounters using org config)
-   - Uploads individual encounter JSON files
-   - Creates batch manifest: {filename}-{timestamp}-batch-complete.json
-5. S3 Event → rules-engine-rag (triggered by batch manifest only)
+
+4. SNS → textract-result-handler-multi-org (automatic, triggered by Textract)
+   - Splits encounters using org config
+   - Uploads individual encounter JSON files to textract-processed/
+
+5. Invoke Lambda → rules-engine-rag (after Textract completes)
+   aws lambda invoke --function-name rules-engine-rag \
+     --payload '{"organization_id":"{org-id}"}' response.json
    - Processes all encounters with same validation_run_id
    - Generates single consolidated CSV report
-6. Results → s3://penguin-health-{org-id}/validation-reports/validation-{batch_id}.csv
+
+6. Results → s3://penguin-health-{org-id}/validation-reports/validation-{run_id}.csv
 ```
 
-**Batch Processing Details**:
-- Multi-encounter PDFs (e.g., 63 encounters) generate **1 CSV report**, not 63 separate reports
-- Batch manifest file ensures all encounters are validated together with consistent `validation_run_id`
-- Individual encounter JSON files do NOT trigger validation (only manifest files do)
-- CSV report includes all encounters from the original PDF in a single file
+**For Automated Processing**:
+See [LAMBDA_INVOCATION.md](LAMBDA_INVOCATION.md) for:
+- EventBridge scheduled triggers
+- Step Functions workflows
+- Multi-organization batch processing
+- API Gateway integration
 
 **Note**: Original single-org Lambda functions (`process-raw-charts`, `textract-result-handler`) remain unchanged for backward compatibility.
-
----
-
-### S3 Event Configuration
-
-When you run `./scripts/multi-org/create-organization.sh`, S3 event notifications are automatically configured:
-
-**Event Trigger 1: PDF Upload Processing**
-- **Path**: `textract-to-be-processed/*.pdf`
-- **Triggers**: `process-raw-charts-multi-org`
-- **Action**: Starts Textract analysis
-
-**Event Trigger 2: Batch Validation Processing**
-- **Path**: `textract-processed/*-batch-complete.json`
-- **Triggers**: `rules-engine-rag`
-- **Action**: Validates all encounters in batch against org rules
-- **Important**: Individual encounter JSON files (`*.json`) do NOT trigger validation
-- Only the batch manifest file (`*-batch-complete.json`) triggers validation
-
-**Manual Configuration** (if needed):
-```bash
-# Get Lambda ARNs
-PROCESS_ARN=$(aws lambda get-function --function-name process-raw-charts-multi-org --query 'Configuration.FunctionArn' --output text)
-RULES_ARN=$(aws lambda get-function --function-name rules-engine-rag --query 'Configuration.FunctionArn' --output text)
-
-# Grant permissions
-aws lambda add-permission \
-  --function-name process-raw-charts-multi-org \
-  --statement-id "AllowS3Invoke-{org-id}" \
-  --action "lambda:InvokeFunction" \
-  --principal s3.amazonaws.com \
-  --source-arn "arn:aws:s3:::penguin-health-{org-id}"
-
-aws lambda add-permission \
-  --function-name rules-engine-rag \
-  --statement-id "AllowS3Invoke-{org-id}" \
-  --action "lambda:InvokeFunction" \
-  --principal s3.amazonaws.com \
-  --source-arn "arn:aws:s3:::penguin-health-{org-id}"
-
-# Configure S3 notifications
-aws s3api put-bucket-notification-configuration \
-  --bucket "penguin-health-{org-id}" \
-  --notification-configuration '{
-    "LambdaFunctionConfigurations": [
-      {
-        "LambdaFunctionArn": "'$PROCESS_ARN'",
-        "Events": ["s3:ObjectCreated:*"],
-        "Filter": {
-          "Key": {
-            "FilterRules": [
-              {"Name": "prefix", "Value": "textract-to-be-processed/"},
-              {"Name": "suffix", "Value": ".pdf"}
-            ]
-          }
-        }
-      },
-      {
-        "LambdaFunctionArn": "'$RULES_ARN'",
-        "Events": ["s3:ObjectCreated:*"],
-        "Filter": {
-          "Key": {
-            "FilterRules": [
-              {"Name": "prefix", "Value": "textract-processed/"},
-              {"Name": "suffix", "Value": "-batch-complete.json"}
-            ]
-          }
-        }
-      }
-    ]
-  }'
-```
-
-**Note**: The suffix filter changed from `.json` to `-batch-complete.json` to implement batch processing. This ensures validation runs once per PDF, not once per encounter.
 
 ---
 
@@ -632,7 +603,7 @@ All multi-org scripts are located in `scripts/multi-org/`:
 |--------|---------|
 | `create-org-config-table.sh` | Create DynamoDB table |
 | `migrate-config-to-dynamodb.py` | Migrate existing configs |
-| `create-organization.sh` | Complete org setup with S3 events |
+| `create-organization.sh` | Complete org setup (S3 bucket, DynamoDB, permissions) |
 | `add-rule.py` | Add validation rule |
 | `update-rule.py` | Update existing rule |
 | `list-organizations.py` | List all organizations |

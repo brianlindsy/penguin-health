@@ -193,72 +193,13 @@ table.put_item(Item={
 print("✓ Default chart config created")
 EOF
 
-# Step 7: Grant Lambda permissions (required before S3 notification)
+# Step 7: Grant S3 write permissions to textract-result-handler-multi-org
 echo ""
-echo -e "${BLUE}Step 7: Granting Lambda Permissions${NC}"
+echo -e "${BLUE}Step 7: Granting S3 Write Permissions to Textract Handler${NC}"
 echo ""
 
-# Get Lambda ARNs
-RULES_ENGINE_ARN=$(aws lambda get-function --function-name rules-engine-rag --query 'Configuration.FunctionArn' --output text --region "$REGION" 2>/dev/null || echo "")
-PROCESS_CHARTS_ARN=$(aws lambda get-function --function-name process-raw-charts-multi-org --query 'Configuration.FunctionArn' --output text --region "$REGION" 2>/dev/null || echo "")
+# Get Lambda ARN
 TEXTRACT_HANDLER_ARN=$(aws lambda get-function --function-name textract-result-handler-multi-org --query 'Configuration.FunctionArn' --output text --region "$REGION" 2>/dev/null || echo "")
-
-# Grant permission for rules-engine-rag (processes textract-processed/*.json)
-if [ -n "$RULES_ENGINE_ARN" ]; then
-    echo "Granting permission: rules-engine-rag"
-    aws lambda remove-permission \
-      --function-name rules-engine-rag \
-      --statement-id "AllowS3Invoke-${ORG_ID}" \
-      --region "$REGION" 2>/dev/null || true
-
-    aws lambda add-permission \
-      --function-name rules-engine-rag \
-      --statement-id "AllowS3Invoke-${ORG_ID}" \
-      --action "lambda:InvokeFunction" \
-      --principal s3.amazonaws.com \
-      --source-arn "arn:aws:s3:::${BUCKET_NAME}" \
-      --region "$REGION" > /dev/null
-
-    echo -e "  ${GREEN}✓${NC} rules-engine-rag"
-else
-    echo -e "  ${YELLOW}⚠${NC} rules-engine-rag not found (skip)"
-fi
-
-# Grant permission for process-raw-charts-multi-org (processes textract-to-be-processed/*.pdf)
-if [ -n "$PROCESS_CHARTS_ARN" ]; then
-    echo "Granting permission: process-raw-charts-multi-org"
-    aws lambda remove-permission \
-      --function-name process-raw-charts-multi-org \
-      --statement-id "AllowS3Invoke-${ORG_ID}" \
-      --region "$REGION" 2>/dev/null || true
-
-    aws lambda add-permission \
-      --function-name process-raw-charts-multi-org \
-      --statement-id "AllowS3Invoke-${ORG_ID}" \
-      --action "lambda:InvokeFunction" \
-      --principal s3.amazonaws.com \
-      --source-arn "arn:aws:s3:::${BUCKET_NAME}" \
-      --region "$REGION" > /dev/null
-
-    echo -e "  ${GREEN}✓${NC} process-raw-charts-multi-org"
-else
-    echo -e "  ${YELLOW}⚠${NC} process-raw-charts-multi-org not found (skip)"
-fi
-
-# Grant permission for textract-result-handler-multi-org (via SNS, not S3)
-# Note: This Lambda is triggered by SNS from Textract, not directly by S3
-if [ -n "$TEXTRACT_HANDLER_ARN" ]; then
-    echo -e "  ${BLUE}ℹ${NC} textract-result-handler-multi-org (triggered via SNS)"
-else
-    echo -e "  ${YELLOW}⚠${NC} textract-result-handler-multi-org not found (skip)"
-fi
-
-echo -e "${GREEN}✓${NC} Lambda permissions configured"
-
-# Step 7.5: Grant S3 write permissions to textract-result-handler-multi-org
-echo ""
-echo -e "${BLUE}Step 7.5: Granting S3 Write Permissions to Textract Handler${NC}"
-echo ""
 
 if [ -n "$TEXTRACT_HANDLER_ARN" ]; then
     # Get Lambda execution role
@@ -315,64 +256,6 @@ else
     echo -e "  ${YELLOW}⚠${NC} textract-result-handler-multi-org not found (skip)"
 fi
 
-# Step 8: Setup S3 event triggers
-echo ""
-echo -e "${BLUE}Step 8: Configuring S3 Event Triggers${NC}"
-echo ""
-
-# Build notification configuration with all available Lambda functions
-LAMBDA_CONFIGS=""
-
-# 1. Trigger process-raw-charts-multi-org for PDF uploads to textract-to-be-processed/
-if [ -n "$PROCESS_CHARTS_ARN" ]; then
-    LAMBDA_CONFIGS="$LAMBDA_CONFIGS{
-      \"LambdaFunctionArn\": \"$PROCESS_CHARTS_ARN\",
-      \"Events\": [\"s3:ObjectCreated:*\"],
-      \"Filter\": {
-        \"Key\": {
-          \"FilterRules\": [
-            {\"Name\": \"prefix\", \"Value\": \"textract-to-be-processed/\"},
-            {\"Name\": \"suffix\", \"Value\": \".pdf\"}
-          ]
-        }
-      }
-    }"
-    echo -e "  ${GREEN}✓${NC} Configured trigger: textract-to-be-processed/*.pdf → process-raw-charts-multi-org"
-fi
-
-# 2. Trigger rules-engine-rag for BATCH MANIFEST uploads (not individual JSONs)
-if [ -n "$RULES_ENGINE_ARN" ]; then
-    if [ -n "$LAMBDA_CONFIGS" ]; then
-        LAMBDA_CONFIGS="$LAMBDA_CONFIGS,"
-    fi
-    LAMBDA_CONFIGS="$LAMBDA_CONFIGS{
-      \"LambdaFunctionArn\": \"$RULES_ENGINE_ARN\",
-      \"Events\": [\"s3:ObjectCreated:*\"],
-      \"Filter\": {
-        \"Key\": {
-          \"FilterRules\": [
-            {\"Name\": \"prefix\", \"Value\": \"textract-processed/\"},
-            {\"Name\": \"suffix\", \"Value\": \"-batch-complete.json\"}
-          ]
-        }
-      }
-    }"
-    echo -e "  ${GREEN}✓${NC} Configured trigger: textract-processed/*-batch-complete.json → rules-engine-rag"
-fi
-
-# Apply S3 notification configuration
-if [ -n "$LAMBDA_CONFIGS" ]; then
-    aws s3api put-bucket-notification-configuration \
-      --bucket "$BUCKET_NAME" \
-      --notification-configuration "{
-        \"LambdaFunctionConfigurations\": [$LAMBDA_CONFIGS]
-      }"
-
-    echo -e "${GREEN}✓${NC} S3 event triggers configured"
-else
-    echo -e "${YELLOW}⚠${NC} No Lambda functions available - skipping S3 event configuration"
-fi
-
 # Summary
 echo ""
 echo -e "${GREEN}╔════════════════════════════════════════════════════════╗${NC}"
@@ -395,13 +278,17 @@ echo ""
 echo "2. List current rules:"
 echo "   ./scripts/multi-org/list-rules.py $ORG_ID"
 echo ""
-echo "3. Upload a test document to trigger full pipeline:"
+echo "3. Upload PDFs to S3 and invoke Lambda manually:"
 echo "   aws s3 cp test-chart.pdf s3://$BUCKET_NAME/textract-to-be-processed/"
 echo ""
-echo "   Pipeline flow:"
-echo "   - S3 upload → process-raw-charts-multi-org"
-echo "   - Textract analysis → textract-result-handler-multi-org (via SNS)"
-echo "   - Result storage → rules-engine-rag"
+echo "   Then invoke the processing Lambda:"
+echo "   aws lambda invoke --function-name process-raw-charts-multi-org \\"
+echo "     --payload '{\"organization_id\":\"$ORG_ID\"}' response.json"
+echo ""
+echo "   See LAMBDA_INVOCATION.md for complete invocation examples including:"
+echo "   - EventBridge scheduled triggers"
+echo "   - Step Functions workflows"
+echo "   - Multi-organization batch processing"
 echo ""
 echo "4. Monitor Lambda processing:"
 echo "   aws logs tail /aws/lambda/process-raw-charts-multi-org --follow"

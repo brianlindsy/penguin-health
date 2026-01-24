@@ -2,23 +2,9 @@ import json
 import boto3
 import os
 from datetime import datetime
-from urllib.parse import unquote_plus
 
 s3_client = boto3.client('s3')
 textract_client = boto3.client('textract')
-
-
-def extract_org_id_from_bucket(bucket_name):
-    """
-    Extract organization ID from bucket name
-    Expected format: penguin-health-{org-id}
-    """
-    if bucket_name.startswith('penguin-health-'):
-        org_id = bucket_name.replace('penguin-health-', '', 1)
-        print(f"Extracted organization ID: {org_id}")
-        return org_id
-    else:
-        raise ValueError(f"Bucket name does not match expected pattern: {bucket_name}")
 
 
 def lambda_handler(event, context):
@@ -27,101 +13,45 @@ def lambda_handler(event, context):
     using Textract async analysis and store results in processed folder
     Handles both regular documents and IRP documents
 
-    This multi-org version extracts organization from S3 bucket name
-    and propagates it through the processing pipeline.
-
-    Supports two invocation modes:
-    1. S3 Event Notification (recommended): Triggered when file uploaded to textract-to-be-processed/
-    2. Scheduled/Manual: Scans folders for files to process
-    """
-
-    # Check if invoked by S3 event
-    if 'Records' in event and event['Records']:
-        # S3 Event mode - process single file
-        return handle_s3_event(event, context)
-    else:
-        # Scheduled/Manual mode - scan folders
-        return handle_batch_processing(event, context)
-
-
-def handle_s3_event(event, context):
-    """
-    Handle S3 event notification for single file upload
-    """
-    try:
-        # Extract S3 event details
-        record = event['Records'][0]
-        bucket_name = record['s3']['bucket']['name']
-        file_key = unquote_plus(record['s3']['object']['key'])
-
-        print(f"S3 Event received: bucket={bucket_name}, key={file_key}")
-
-        # Extract organization ID from bucket name
-        org_id = extract_org_id_from_bucket(bucket_name)
-
-        # Build configuration from bucket
-        config = {
-            'BUCKET_NAME': bucket_name,
-            'SNS_TOPIC_ARN': os.environ.get('SNS_TOPIC_ARN'),
-            'SNS_ROLE_ARN': os.environ.get('SNS_ROLE_ARN'),
-            'ORGANIZATION_ID': org_id
+    Event structure:
+    {
+        "organization_id": "community-health",  # Required
+        "config": {  # Optional overrides
+            "textract_folder": "textract-to-be-processed/",
+            "irp_folder": "textract-to-be-processed/irp/"
         }
+    }
 
-        # Only process PDF files
-        if not file_key.lower().endswith('.pdf'):
-            print(f"Skipping non-PDF file: {file_key}")
-            return {
-                'statusCode': 200,
-                'body': json.dumps('Skipped non-PDF file')
-            }
-
-        # Start Textract analysis
-        job_id = start_textract_analysis(file_key, config)
-
-        if job_id:
-            # Store job metadata with organization ID
-            store_job_metadata(file_key, job_id, config)
-
-            return {
-                'statusCode': 200,
-                'body': json.dumps({
-                    'message': f'Started processing file for organization {org_id}',
-                    'organization_id': org_id,
-                    'file_key': file_key,
-                    'job_id': job_id
-                })
-            }
-        else:
-            return {
-                'statusCode': 500,
-                'body': json.dumps('Failed to start Textract analysis')
-            }
-
-    except Exception as e:
-        print(f"Error in handle_s3_event: {str(e)}")
-        raise e
-
-
-def handle_batch_processing(event, context):
+    Returns:
+        dict: Status with processed file count and job IDs
     """
-    Handle scheduled/manual invocation - scan folders for files to process
-    """
-    # Load configuration from environment variables
+
+    # Validate required parameter
+    if 'organization_id' not in event:
+        raise ValueError("Missing required parameter: organization_id")
+
+    org_id = event['organization_id']
+    print(f"Processing PDFs for organization: {org_id}")
+
+    # Build bucket name from organization ID
+    bucket_name = f"penguin-health-{org_id}"
+
+    # Build configuration
     config = {
-        'BUCKET_NAME': os.environ.get('BUCKET_NAME'),
+        'BUCKET_NAME': bucket_name,
+        'ORGANIZATION_ID': org_id,
         'SNS_TOPIC_ARN': os.environ.get('SNS_TOPIC_ARN'),
         'SNS_ROLE_ARN': os.environ.get('SNS_ROLE_ARN'),
-        'TEXTRACT_TO_BE_PROCESSED': os.environ.get('TEXTRACT_TO_BE_PROCESSED', 'textract-to-be-processed/'),
-        'TEXTRACT_IRP_FOLDER': os.environ.get('TEXTRACT_IRP_FOLDER', 'textract-to-be-processed/irp/')
+        'TEXTRACT_TO_BE_PROCESSED': 'textract-to-be-processed/',
+        'TEXTRACT_IRP_FOLDER': 'textract-to-be-processed/irp/'
     }
 
     # Override with event-level config if provided
     if 'config' in event:
-        config.update(event['config'])
-
-    # Extract organization ID from bucket name
-    org_id = extract_org_id_from_bucket(config['BUCKET_NAME'])
-    config['ORGANIZATION_ID'] = org_id
+        if 'textract_folder' in event['config']:
+            config['TEXTRACT_TO_BE_PROCESSED'] = event['config']['textract_folder']
+        if 'irp_folder' in event['config']:
+            config['TEXTRACT_IRP_FOLDER'] = event['config']['irp_folder']
 
     try:
         # Process regular documents
@@ -150,7 +80,10 @@ def handle_batch_processing(event, context):
             print("No files found in to-be-processed folder")
             return {
                 'statusCode': 200,
-                'body': json.dumps('No files to process')
+                'organization_id': org_id,
+                'message': 'No files to process',
+                'processed_count': 0,
+                'job_ids': []
             }
 
         processed_count = 0
@@ -161,7 +94,7 @@ def handle_batch_processing(event, context):
             file_key = obj['Key']
 
             # Skip the folder itself
-            if file_key == config['TEXTRACT_TO_BE_PROCESSED']:
+            if file_key.endswith('/'):
                 continue
 
             # Only process PDF files
@@ -188,15 +121,14 @@ def handle_batch_processing(event, context):
 
         return {
             'statusCode': 200,
-            'body': json.dumps({
-                'message': f'Started processing {processed_count} files',
-                'organization_id': org_id,
-                'job_ids': job_ids
-            })
+            'organization_id': org_id,
+            'message': f'Started processing {processed_count} files',
+            'processed_count': processed_count,
+            'job_ids': job_ids
         }
 
     except Exception as e:
-        print(f"Error in handle_batch_processing: {str(e)}")
+        print(f"Error processing organization {org_id}: {str(e)}")
         raise e
 
 
