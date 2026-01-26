@@ -30,6 +30,9 @@ def lambda_handler(event, context):
                 textract_results = get_textract_results(job_id)
                 document_location = textract_results.get('DocumentMetadata', {}).get('S3Object', {})
 
+                print(f"Textract results: {textract_results}")
+                print(f"Document Location: {document_location}")
+
                 if not document_location:
                     print(f"No document location found in Textract results for job {job_id}")
                     continue
