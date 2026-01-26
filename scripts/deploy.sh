@@ -31,6 +31,7 @@ LAMBDA_FUNCTIONS=(
     "textract-result-handler-multi-org"
     "rules-engine"
     "rules-engine-rag"
+    "rules-engine-betterbrain"
     "irp-processor"
 )
 
@@ -55,6 +56,9 @@ get_handler() {
             ;;
         "rules-engine-rag")
             echo "rules_engine_rag.lambda_handler"
+            ;;
+        "rules-engine-betterbrain")
+            echo "rules_engine_betterbrain.lambda_handler"
             ;;
         "irp-processor")
             echo "irp_processor.lambda_handler"
@@ -117,7 +121,7 @@ package_lambda() {
     fi
 
     # Special handling for functions that need multi_org_config dependency
-    if [ "$function_name" == "rules-engine-rag" ] || [ "$function_name" == "textract-result-handler-multi-org" ]; then
+    if [ "$function_name" == "rules-engine-rag" ] || [ "$function_name" == "rules-engine-betterbrain" ] || [ "$function_name" == "textract-result-handler-multi-org" ]; then
         if [ -f "lambda/multi_org_config.py" ]; then
             cp "lambda/multi_org_config.py" "$BUILD_DIR/"
             print_info "Packaged: multi_org_config.py (dependency)"
