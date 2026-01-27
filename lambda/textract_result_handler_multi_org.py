@@ -26,22 +26,15 @@ def lambda_handler(event, context):
             print(f"Received notification for Job ID: {job_id}, Status: {status}, API: {api}")
 
             if status == 'SUCCEEDED':
-                # Get Textract results to extract document location (bucket + key)
-                textract_results = get_textract_results(job_id)
-                document_location = textract_results.get('DocumentMetadata', {}).get('S3Object', {})
-
-                print(f"Textract results: {textract_results}")
-                print(f"Document Location: {document_location}")
-
-                if not document_location:
-                    print(f"No document location found in Textract results for job {job_id}")
-                    continue
-
-                bucket_name = document_location.get('Bucket')
-                source_file_key = document_location.get('Name')
+                # Extract document location from SNS message
+                # Textract includes DocumentLocation in the completion notification
+                document_location = message.get('DocumentLocation', {})
+                bucket_name = document_location.get('S3Bucket')
+                source_file_key = document_location.get('S3ObjectName')
 
                 if not bucket_name or not source_file_key:
-                    print(f"Could not extract bucket/key from Textract results for job {job_id}")
+                    print(f"Could not extract bucket/key from SNS message for job {job_id}")
+                    print(f"Message contents: {json.dumps(message)}")
                     continue
 
                 print(f"Processing job from bucket: {bucket_name}, file: {source_file_key}")
@@ -56,13 +49,24 @@ def lambda_handler(event, context):
                     'ORGANIZATION_ID': org_id
                 }
 
-                # Try to get additional config from stored metadata (optional)
-                metadata_config = get_metadata_config(job_id, bucket_name)
-                if metadata_config:
-                    config.update(metadata_config)
+                # Try to get additional config from stored metadata
+                metadata_result = get_job_metadata(job_id, bucket_name)
+                if metadata_result:
+                    config.update(metadata_result.get('config', {}))
+
+                # Get Textract results
+                textract_results = get_textract_results(job_id)
 
                 # Process and store results
                 process_and_store_results(job_id, source_file_key, config, textract_results)
+
+                # Clean up metadata file after successful processing
+                if metadata_result and metadata_result.get('metadata_key'):
+                    try:
+                        s3_client.delete_object(Bucket=bucket_name, Key=metadata_result['metadata_key'])
+                        print(f"Cleaned up metadata file: {metadata_result['metadata_key']}")
+                    except Exception as e:
+                        print(f"Warning: Could not delete metadata file: {str(e)}")
 
             elif status == 'FAILED':
                 print(f"Textract job {job_id} failed")
@@ -78,10 +82,10 @@ def lambda_handler(event, context):
         raise e
 
 
-def get_metadata_config(job_id, bucket_name):
+def get_job_metadata(job_id, bucket_name):
     """
-    Retrieve and delete job metadata from S3
-    Returns config dict from metadata (optional - may not exist)
+    Retrieve job metadata from S3 (does not delete - caller handles cleanup)
+    Returns dict with config and metadata_key, or None if not found
     """
     try:
         # List metadata files
@@ -91,7 +95,7 @@ def get_metadata_config(job_id, bucket_name):
         )
 
         if 'Contents' not in response:
-            return {}
+            return None
 
         # Search for metadata file with matching job_id
         for obj in response['Contents']:
@@ -104,16 +108,19 @@ def get_metadata_config(job_id, bucket_name):
 
                 if metadata.get('job_id') == job_id:
                     print(f"Found metadata for job {job_id}: {obj['Key']}")
-                    # Delete metadata file after use
-                    s3_client.delete_object(Bucket=bucket_name, Key=obj['Key'])
-                    return metadata.get('config', {})
+                    return {
+                        'config': metadata.get('config', {}),
+                        'metadata_key': obj['Key'],
+                        'source_file': metadata.get('source_file'),
+                        'organization_id': metadata.get('organization_id')
+                    }
 
         print(f"No metadata found for job {job_id} (this is OK)")
-        return {}
+        return None
 
     except Exception as e:
         print(f"Error retrieving metadata: {str(e)}")
-        return {}
+        return None
 
 
 def get_textract_results(job_id):
