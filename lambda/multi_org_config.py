@@ -59,12 +59,13 @@ def get_organization(org_id):
 def load_org_rules(org_id):
     """
     Load all validation rules for an organization from DynamoDB
+    Also loads field_mappings from RULES_CONFIG for field extraction
 
     Args:
         org_id (str): Organization identifier
 
     Returns:
-        dict: Configuration dict with 'rules' list and 'organization_id'
+        dict: Configuration dict with 'rules' list, 'organization_id', and 'field_mappings'
 
     Example return:
         {
@@ -79,7 +80,11 @@ def load_org_rules(org_id):
                 },
                 ...
             ],
-            'organization_id': 'example-org'
+            'organization_id': 'example-org',
+            'field_mappings': {
+                'document_id': 'Consumer Service ID:',
+                'consumer_name': 'Consumer Name:'
+            }
         }
     """
     try:
@@ -95,14 +100,50 @@ def load_org_rules(org_id):
 
         print(f"Loaded {len(enabled_rules)} enabled rules for {org_id} (of {len(rules)} total)")
 
+        # Load field_mappings from RULES_CONFIG
+        rules_config = load_rules_config(org_id)
+        field_mappings = rules_config.get('field_mappings', {}) if rules_config else {}
+
+        if field_mappings:
+            print(f"Loaded field_mappings with {len(field_mappings)} fields: {list(field_mappings.keys())}")
+        else:
+            print(f"Warning: No field_mappings found for {org_id} - document_id will be N/A")
+
         return {
             'rules': enabled_rules,
-            'organization_id': org_id
+            'organization_id': org_id,
+            'field_mappings': field_mappings
         }
 
     except Exception as e:
         print(f"Error loading rules for '{org_id}': {str(e)}")
         raise
+
+
+def load_rules_config(org_id):
+    """
+    Load rules configuration (field_mappings) for an organization
+
+    Args:
+        org_id (str): Organization identifier
+
+    Returns:
+        dict: Rules config with field_mappings, or None if not found
+    """
+    try:
+        response = table.get_item(
+            Key={'pk': f'ORG#{org_id}', 'sk': 'RULES_CONFIG'}
+        )
+
+        if 'Item' not in response:
+            print(f"No RULES_CONFIG found for {org_id}")
+            return None
+
+        return response['Item']
+
+    except Exception as e:
+        print(f"Error loading rules config for '{org_id}': {str(e)}")
+        return None
 
 
 def load_irp_config(org_id):

@@ -829,7 +829,7 @@ def generate_csv_from_dynamodb(validation_run_id, env_config):
         # Generate CSV header: Service ID, Consumer Name, then one column per rule
         output = io.StringIO()
         writer = csv.writer(output)
-        header = ['Service ID', 'Consumer Name'] + sorted_rule_names
+        header = ['Service ID'] + sorted_rule_names
         writer.writerow(header)
 
         # Second pass: write one row per service_id
@@ -837,7 +837,6 @@ def generate_csv_from_dynamodb(validation_run_id, env_config):
             # Extract field values
             field_values = item.get('field_values', {})
             service_id = field_values.get('document_id', 'N/A') if field_values else 'N/A'
-            consumer_name = field_values.get('consumer_name', 'N/A') if field_values else 'N/A'
 
             # Build a map of rule_name -> status for this document
             rule_statuses = {}
@@ -860,7 +859,7 @@ def generate_csv_from_dynamodb(validation_run_id, env_config):
                     rule_statuses[rule_name] = status
 
             # Build row with status for each rule (in same order as header)
-            row = [service_id, consumer_name]
+            row = [service_id]
             for rule_name in sorted_rule_names:
                 row.append(rule_statuses.get(rule_name, 'N/A'))
 

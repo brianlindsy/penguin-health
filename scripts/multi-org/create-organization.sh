@@ -193,22 +193,32 @@ table.put_item(Item={
 print("✓ Default chart config created")
 EOF
 
-# Step 7: Grant S3 write permissions to textract-result-handler-multi-org
+# Step 7: Grant S3 permissions to multi-org Lambda functions
 echo ""
-echo -e "${BLUE}Step 7: Granting S3 Write Permissions to Textract Handler${NC}"
+echo -e "${BLUE}Step 7: Granting S3 Permissions to Multi-Org Lambda Functions${NC}"
 echo ""
 
-# Get Lambda ARN
-TEXTRACT_HANDLER_ARN=$(aws lambda get-function --function-name textract-result-handler-multi-org --query 'Configuration.FunctionArn' --output text --region "$REGION" 2>/dev/null || echo "")
+# List of Lambda functions that need S3 access to org buckets
+MULTI_ORG_LAMBDAS=(
+    "process-raw-charts-multi-org"
+    "textract-result-handler-multi-org"
+    "rules-engine-rag"
+)
 
-if [ -n "$TEXTRACT_HANDLER_ARN" ]; then
-    # Get Lambda execution role
-    ROLE_NAME=$(aws lambda get-function --function-name textract-result-handler-multi-org --query 'Configuration.Role' --output text --region "$REGION" | cut -d'/' -f2)
+for LAMBDA_NAME in "${MULTI_ORG_LAMBDAS[@]}"; do
+    # Get Lambda ARN
+    LAMBDA_ARN=$(aws lambda get-function --function-name "$LAMBDA_NAME" --query 'Configuration.FunctionArn' --output text --region "$REGION" 2>/dev/null || echo "")
 
-    echo "Updating IAM policy for role: $ROLE_NAME"
+    if [ -n "$LAMBDA_ARN" ]; then
+        # Get Lambda execution role
+        # Extract role name from ARN - get last segment after final '/'
+        # ARN format can be: arn:aws:iam::ACCOUNT:role/ROLE_NAME or arn:aws:iam::ACCOUNT:role/service-role/ROLE_NAME
+        ROLE_NAME=$(aws lambda get-function --function-name "$LAMBDA_NAME" --query 'Configuration.Role' --output text --region "$REGION" | awk -F'/' '{print $NF}')
 
-    # Add new bucket to policy resources using Python
-    python3 - <<EOF
+        echo "Updating IAM policy for $LAMBDA_NAME (role: $ROLE_NAME)"
+
+        # Add new bucket to policy resources using Python
+        python3 - <<EOF
 import boto3
 import json
 
@@ -248,13 +258,14 @@ iam.put_role_policy(
     PolicyName='lambda-s3',
     PolicyDocument=json.dumps(policy)
 )
-print(f"✓ Granted S3 permissions for {bucket_name}")
+print(f"  ✓ Granted S3 permissions for {bucket_name}")
 EOF
 
-    echo -e "  ${GREEN}✓${NC} textract-result-handler-multi-org can now write to ${BUCKET_NAME}"
-else
-    echo -e "  ${YELLOW}⚠${NC} textract-result-handler-multi-org not found (skip)"
-fi
+        echo -e "  ${GREEN}✓${NC} $LAMBDA_NAME can now access ${BUCKET_NAME}"
+    else
+        echo -e "  ${YELLOW}⚠${NC} $LAMBDA_NAME not found (skip)"
+    fi
+done
 
 # Summary
 echo ""
