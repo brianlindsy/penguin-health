@@ -1,16 +1,18 @@
+"""
+Admin UI construct: Cognito, API Gateway, Lambda, S3, CloudFront
+for the organization admin dashboard.
+"""
+
+import os
 from aws_cdk import (
-    Stack,
     Duration,
     RemovalPolicy,
-    CfnOutput,
     BundlingOptions,
-    ILocalBundling,
     aws_cognito as cognito,
     aws_lambda as _lambda,
     aws_iam as iam,
     aws_dynamodb as dynamodb,
     aws_s3 as s3,
-    aws_s3_deployment as s3_deploy,
     aws_cloudfront as cloudfront,
     aws_cloudfront_origins as origins,
     aws_apigatewayv2 as apigwv2,
@@ -18,31 +20,20 @@ from aws_cdk import (
 from aws_cdk.aws_apigatewayv2_integrations import HttpLambdaIntegration
 from aws_cdk.aws_apigatewayv2_authorizers import HttpJwtAuthorizer
 from constructs import Construct
-import jsii
-import os
-import shutil
+
+import config
+from components.bundler import CopyFileBundler
 
 
-@jsii.implements(ILocalBundling)
-class CopyFileBundler:
-    """Bundles a single file into the Lambda asset output directory."""
+class AdminUi(Construct):
 
-    def __init__(self, source_path: str):
-        self._source_path = source_path
-
-    def try_bundle(self, output_dir: str, options) -> bool:
-        shutil.copy2(self._source_path, output_dir)
-        return True
-
-
-class AdminUiStack(Stack):
-
-    def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
-        super().__init__(scope, construct_id, **kwargs)
+    def __init__(self, scope: Construct, id: str, *,
+                 org_config_table: dynamodb.ITable) -> None:
+        super().__init__(scope, id)
 
         # ----- Cognito -----
-        user_pool = cognito.UserPool(self, "AdminUserPool",
-            user_pool_name="penguin-health-admin-pool",
+        self.user_pool = cognito.UserPool(self, "AdminUserPool",
+            user_pool_name=f"{config.PROJECT_NAME}-admin-pool",
             self_sign_up_enabled=False,
             sign_in_aliases=cognito.SignInAliases(email=True),
             password_policy=cognito.PasswordPolicy(
@@ -56,8 +47,8 @@ class AdminUiStack(Stack):
             removal_policy=RemovalPolicy.RETAIN,
         )
 
-        app_client = user_pool.add_client("AdminAppClient",
-            user_pool_client_name="penguin-health-admin-app",
+        self.app_client = self.user_pool.add_client("AdminAppClient",
+            user_pool_client_name=f"{config.PROJECT_NAME}-admin-app",
             auth_flows=cognito.AuthFlow(
                 user_srp=True,
             ),
@@ -67,55 +58,53 @@ class AdminUiStack(Stack):
         )
 
         cognito.CfnUserPoolGroup(self, "AdminsGroup",
-            user_pool_id=user_pool.user_pool_id,
+            user_pool_id=self.user_pool.user_pool_id,
             group_name="Admins",
             description="Admin users with full access to organization configuration",
         )
 
-        # ----- Reference existing DynamoDB table -----
-        org_config_table = dynamodb.Table.from_table_name(
-            self, "OrgConfigTable", "penguin-health-org-config"
-        )
-
         # ----- Admin API Lambda -----
-        admin_api_fn = _lambda.Function(self, "AdminApiFunction",
-            function_name="penguin-health-admin-api",
+        lambda_dir = os.path.join(os.path.dirname(__file__), "..", "..", "lambda")
+
+        self.api_function = _lambda.Function(self, "AdminApiFunction",
+            function_name=f"{config.PROJECT_NAME}-admin-api",
             runtime=_lambda.Runtime.PYTHON_3_14,
             handler="admin_api.lambda_handler",
             code=_lambda.Code.from_asset(
-                os.path.join(os.path.dirname(__file__), "..", "..", "lambda"),
+                lambda_dir,
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
                     local=CopyFileBundler(
-                        os.path.join(os.path.dirname(__file__), "..", "..", "lambda", "admin_api.py")
+                        os.path.join(lambda_dir, "admin_api.py")
                     ),
                 ),
             ),
-            timeout=Duration.seconds(30),
-            memory_size=256,
+            timeout=Duration.seconds(config.LAMBDA_DEFAULT_TIMEOUT_SECONDS),
+            memory_size=config.LAMBDA_DEFAULT_MEMORY_MB,
             environment={
-                "DYNAMODB_TABLE": "penguin-health-org-config",
-                "COGNITO_USER_POOL_ID": user_pool.user_pool_id,
+                "DYNAMODB_TABLE": org_config_table.table_name,
+                "COGNITO_USER_POOL_ID": self.user_pool.user_pool_id,
             },
         )
 
-        org_config_table.grant_read_write_data(admin_api_fn)
-        admin_api_fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["dynamodb:Query", "dynamodb:Scan", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
+        org_config_table.grant_read_write_data(self.api_function)
+        self.api_function.add_to_role_policy(iam.PolicyStatement(
+            actions=["dynamodb:Query", "dynamodb:Scan", "dynamodb:GetItem",
+                     "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
             resources=[f"{org_config_table.table_arn}/index/*"],
         ))
 
         # ----- API Gateway HTTP API -----
         jwt_authorizer = HttpJwtAuthorizer(
             "CognitoAuthorizer",
-            jwt_issuer=f"https://cognito-idp.{self.region}.amazonaws.com/{user_pool.user_pool_id}",
-            jwt_audience=[app_client.user_pool_client_id],
+            jwt_issuer=f"https://cognito-idp.{config.AWS_REGION}.amazonaws.com/{self.user_pool.user_pool_id}",
+            jwt_audience=[self.app_client.user_pool_client_id],
         )
 
-        integration = HttpLambdaIntegration("AdminApiIntegration", admin_api_fn)
+        integration = HttpLambdaIntegration("AdminApiIntegration", self.api_function)
 
-        http_api = apigwv2.HttpApi(self, "AdminHttpApi",
-            api_name="penguin-health-admin-api",
+        self.http_api = apigwv2.HttpApi(self, "AdminHttpApi",
+            api_name=f"{config.PROJECT_NAME}-admin-api",
             cors_preflight=apigwv2.CorsPreflightOptions(
                 allow_origins=["*"],
                 allow_methods=[
@@ -130,7 +119,6 @@ class AdminUiStack(Stack):
             ),
         )
 
-        # Define all API routes
         routes = [
             ("GET",  "/api/organizations"),
             ("GET",  "/api/organizations/{orgId}"),
@@ -143,7 +131,7 @@ class AdminUiStack(Stack):
         ]
 
         for method, path in routes:
-            http_api.add_routes(
+            self.http_api.add_routes(
                 path=path,
                 methods=[getattr(apigwv2.HttpMethod, method)],
                 integration=integration,
@@ -151,8 +139,8 @@ class AdminUiStack(Stack):
             )
 
         # ----- S3 Bucket for frontend -----
-        frontend_bucket = s3.Bucket(self, "FrontendBucket",
-            bucket_name="penguin-health-admin-ui",
+        self.frontend_bucket = s3.Bucket(self, "FrontendBucket",
+            bucket_name=f"{config.PROJECT_NAME}-admin-ui",
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             encryption=s3.BucketEncryption.S3_MANAGED,
             versioned=True,
@@ -161,12 +149,12 @@ class AdminUiStack(Stack):
 
         # ----- CloudFront Distribution -----
         api_origin = origins.HttpOrigin(
-            f"{http_api.http_api_id}.execute-api.{self.region}.amazonaws.com",
+            f"{self.http_api.http_api_id}.execute-api.{config.AWS_REGION}.amazonaws.com",
         )
 
-        distribution = cloudfront.Distribution(self, "AdminDistribution",
+        self.distribution = cloudfront.Distribution(self, "AdminDistribution",
             default_behavior=cloudfront.BehaviorOptions(
-                origin=origins.S3BucketOrigin.with_origin_access_control(frontend_bucket),
+                origin=origins.S3BucketOrigin.with_origin_access_control(self.frontend_bucket),
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
             ),
@@ -195,30 +183,4 @@ class AdminUiStack(Stack):
                 ),
             ],
             minimum_protocol_version=cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
-        )
-
-        # ----- Outputs -----
-        CfnOutput(self, "UserPoolId",
-            value=user_pool.user_pool_id,
-            description="Cognito User Pool ID",
-        )
-        CfnOutput(self, "UserPoolClientId",
-            value=app_client.user_pool_client_id,
-            description="Cognito App Client ID",
-        )
-        CfnOutput(self, "ApiUrl",
-            value=http_api.url or "",
-            description="API Gateway URL",
-        )
-        CfnOutput(self, "CloudFrontUrl",
-            value=f"https://{distribution.distribution_domain_name}",
-            description="CloudFront Distribution URL",
-        )
-        CfnOutput(self, "FrontendBucketName",
-            value=frontend_bucket.bucket_name,
-            description="S3 bucket for frontend assets",
-        )
-        CfnOutput(self, "DistributionId",
-            value=distribution.distribution_id,
-            description="CloudFront Distribution ID (for cache invalidation)",
         )
