@@ -33,6 +33,7 @@ LAMBDA_FUNCTIONS=(
     "rules-engine-rag"
     "rules-engine-betterbrain"
     "irp-processor"
+    "penguin-health-admin-api"
 )
 
 # Get handler for a function name
@@ -62,6 +63,9 @@ get_handler() {
             ;;
         "irp-processor")
             echo "irp_processor.lambda_handler"
+            ;;
+        "penguin-health-admin-api")
+            echo "admin_api.lambda_handler"
             ;;
         *)
             echo "unknown.lambda_handler"

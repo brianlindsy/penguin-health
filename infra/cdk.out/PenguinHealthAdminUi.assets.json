@@ -1,0 +1,36 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "2ffed8161c0f3f9ae63acb5b5ae55905321fc139d43ee58b7059839362986588": {
+      "displayName": "AdminApiFunction/Code",
+      "source": {
+        "path": "asset.2ffed8161c0f3f9ae63acb5b5ae55905321fc139d43ee58b7059839362986588",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "current_account-us-east-1-62809878": {
+          "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1",
+          "objectKey": "2ffed8161c0f3f9ae63acb5b5ae55905321fc139d43ee58b7059839362986588.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-us-east-1"
+        }
+      }
+    },
+    "d0d7dcd93a98932b06826154dc580996740cb59565889ea3b4003537f0260dbc": {
+      "displayName": "PenguinHealthAdminUi Template",
+      "source": {
+        "path": "PenguinHealthAdminUi.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "current_account-us-east-1-03b3ac0e": {
+          "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1",
+          "objectKey": "d0d7dcd93a98932b06826154dc580996740cb59565889ea3b4003537f0260dbc.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}
