@@ -64,19 +64,19 @@ class AdminUi(Construct):
         )
 
         # ----- Admin API Lambda -----
-        lambda_dir = os.path.join(os.path.dirname(__file__), "..", "..", "lambda")
+        lambda_api_dir = os.path.join(os.path.dirname(__file__), "..", "..", "lambda", "api")
 
         self.api_function = _lambda.Function(self, "AdminApiFunction",
             function_name=f"{config.PROJECT_NAME}-admin-api",
             runtime=_lambda.Runtime.PYTHON_3_14,
             handler="admin_api.lambda_handler",
             code=_lambda.Code.from_asset(
-                lambda_dir,
+                lambda_api_dir,
                 exclude=["*", "!admin_api.py"],
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
                     local=CopyFileBundler(
-                        os.path.join(lambda_dir, "admin_api.py")
+                        os.path.join(lambda_api_dir, "admin_api.py")
                     ),
                 ),
             ),

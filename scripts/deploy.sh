@@ -26,11 +26,11 @@ DESCRIPTION="$GIT_TAG ($GIT_COMMIT) - $(git log -1 --pretty=%s 2>/dev/null | hea
 # Lambda functions list
 LAMBDA_FUNCTIONS=(
     "process-raw-charts"
-    "process-raw-charts-multi-org"
+    "penguin-health-process-raw-charts-multi-org"
     "textract-result-handler"
-    "textract-result-handler-multi-org"
+    "penguin-health-textract-result-handler-multi-org"
     "rules-engine"
-    "rules-engine-rag"
+    "penguin-health-rules-engine-rag"
     "rules-engine-betterbrain"
     "irp-processor"
     "penguin-health-admin-api"
@@ -43,19 +43,19 @@ get_handler() {
         "process-raw-charts")
             echo "process_raw_charts.lambda_handler"
             ;;
-        "process-raw-charts-multi-org")
+        "penguin-health-process-raw-charts-multi-org")
             echo "process_raw_charts_multi_org.lambda_handler"
             ;;
         "textract-result-handler")
             echo "textract_result_handler.lambda_handler"
             ;;
-        "textract-result-handler-multi-org")
+        "penguin-health-textract-result-handler-multi-org")
             echo "textract_result_handler_multi_org.lambda_handler"
             ;;
         "rules-engine")
             echo "rules_engine.lambda_handler"
             ;;
-        "rules-engine-rag")
+        "penguin-health-rules-engine-rag")
             echo "rules_engine_rag.lambda_handler"
             ;;
         "rules-engine-betterbrain")
@@ -69,6 +69,28 @@ get_handler() {
             ;;
         *)
             echo "unknown.lambda_handler"
+            ;;
+    esac
+}
+
+# Get the lambda subdirectory for a function name
+get_lambda_dir() {
+    local function_name=$1
+    case "$function_name" in
+        "penguin-health-process-raw-charts-multi-org"|"penguin-health-textract-result-handler-multi-org"|"penguin-health-rules-engine-rag")
+            echo "lambda/multi-org"
+            ;;
+        "rules-engine-betterbrain")
+            echo "lambda/betterbrain"
+            ;;
+        "penguin-health-admin-api")
+            echo "lambda/api"
+            ;;
+        "process-raw-charts"|"textract-result-handler"|"rules-engine"|"irp-processor")
+            echo "lambda/single-org-legacy"
+            ;;
+        *)
+            echo "lambda"
             ;;
     esac
 }
@@ -114,23 +136,26 @@ package_lambda() {
     # Create temporary build directory
     BUILD_DIR=$(mktemp -d)
 
+    # Resolve the lambda subdirectory for this function
+    local lambda_dir=$(get_lambda_dir "$function_name")
+
     # Copy only the specific handler file for this function
-    if [ -f "lambda/${handler_file}.py" ]; then
-        cp "lambda/${handler_file}.py" "$BUILD_DIR/"
-        print_info "Packaged: ${handler_file}.py"
+    if [ -f "${lambda_dir}/${handler_file}.py" ]; then
+        cp "${lambda_dir}/${handler_file}.py" "$BUILD_DIR/"
+        print_info "Packaged: ${lambda_dir}/${handler_file}.py"
     else
-        print_error "Handler file not found: lambda/${handler_file}.py"
+        print_error "Handler file not found: ${lambda_dir}/${handler_file}.py"
         rm -rf "$BUILD_DIR"
         exit 1
     fi
 
     # Special handling for functions that need multi_org_config dependency
-    if [ "$function_name" == "rules-engine-rag" ] || [ "$function_name" == "rules-engine-betterbrain" ] || [ "$function_name" == "textract-result-handler-multi-org" ]; then
-        if [ -f "lambda/multi_org_config.py" ]; then
-            cp "lambda/multi_org_config.py" "$BUILD_DIR/"
+    if [ "$function_name" == "penguin-health-rules-engine-rag" ] || [ "$function_name" == "rules-engine-betterbrain" ] || [ "$function_name" == "penguin-health-textract-result-handler-multi-org" ]; then
+        if [ -f "${lambda_dir}/multi_org_config.py" ]; then
+            cp "${lambda_dir}/multi_org_config.py" "$BUILD_DIR/"
             print_info "Packaged: multi_org_config.py (dependency)"
         else
-            print_warning "multi_org_config.py not found - function may fail at runtime"
+            print_warning "multi_org_config.py not found in ${lambda_dir}/ - function may fail at runtime"
         fi
     fi
 

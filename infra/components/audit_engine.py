@@ -28,7 +28,7 @@ class AuditEngine(Construct):
                  notifications_topic: sns.ITopic) -> None:
         super().__init__(scope, id)
 
-        lambda_dir = os.path.join(os.path.dirname(__file__), "..", "..", "lambda")
+        lambda_dir = os.path.join(os.path.dirname(__file__), "..", "..", "lambda", "multi-org")
 
         # Wildcard ARN for all per-org buckets (penguin-health-*)
         s3_bucket_arn = "arn:aws:s3:::penguin-health-*"
