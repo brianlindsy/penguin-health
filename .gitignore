@@ -54,3 +54,5 @@ test-events/
 
 #Org config
 config/
+
+infra/config.py

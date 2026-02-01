@@ -72,6 +72,7 @@ class AdminUi(Construct):
             handler="admin_api.lambda_handler",
             code=_lambda.Code.from_asset(
                 lambda_dir,
+                exclude=["*", "!admin_api.py"],
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
                     local=CopyFileBundler(

@@ -53,6 +53,7 @@ class AuditEngine(Construct):
             handler="process_raw_charts_multi_org.lambda_handler",
             code=_lambda.Code.from_asset(
                 lambda_dir,
+                exclude=["*", "!process_raw_charts_multi_org.py"],
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
                     local=CopyFileBundler(
@@ -85,6 +86,7 @@ class AuditEngine(Construct):
             handler="textract_result_handler_multi_org.lambda_handler",
             code=_lambda.Code.from_asset(
                 lambda_dir,
+                exclude=["*", "!textract_result_handler_multi_org.py", "!multi_org_config.py"],
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
                     local=MultiFileBundler([
@@ -116,6 +118,7 @@ class AuditEngine(Construct):
             handler="rules_engine_rag.lambda_handler",
             code=_lambda.Code.from_asset(
                 lambda_dir,
+                exclude=["*", "!rules_engine_rag.py", "!multi_org_config.py"],
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
                     local=MultiFileBundler([
