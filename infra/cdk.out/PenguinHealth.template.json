@@ -32,7 +32,7 @@
     "BillingMode": "PAY_PER_REQUEST",
     "GlobalSecondaryIndexes": [
      {
-      "IndexName": "GSI1",
+      "IndexName": "gsi1",
       "KeySchema": [
        {
         "AttributeName": "gsi1pk",
@@ -48,7 +48,7 @@
       }
      },
      {
-      "IndexName": "GSI2",
+      "IndexName": "gsi2",
       "KeySchema": [
        {
         "AttributeName": "gsi2pk",
@@ -124,7 +124,7 @@
     "BillingMode": "PAY_PER_REQUEST",
     "GlobalSecondaryIndexes": [
      {
-      "IndexName": "GSI1",
+      "IndexName": "gsi1",
       "KeySchema": [
        {
         "AttributeName": "gsi1pk",
@@ -140,7 +140,7 @@
       }
      },
      {
-      "IndexName": "GSI2",
+      "IndexName": "gsi2",
       "KeySchema": [
        {
         "AttributeName": "gsi2pk",
@@ -216,7 +216,7 @@
     "BillingMode": "PAY_PER_REQUEST",
     "GlobalSecondaryIndexes": [
      {
-      "IndexName": "GSI1",
+      "IndexName": "gsi1",
       "KeySchema": [
        {
         "AttributeName": "gsi1pk",
@@ -232,7 +232,7 @@
       }
      },
      {
-      "IndexName": "GSI2",
+      "IndexName": "gsi2",
       "KeySchema": [
        {
         "AttributeName": "gsi2pk",
@@ -561,7 +561,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "4aeaacf1557b11d4d828006e614256e0984ccbc3e5a19b85aec15a6b1b26f478.zip"
+     "S3Key": "ac85b196a2810a9f59963e8df4dac44278fe569a0df17833c71596088790cd98.zip"
     },
     "Environment": {
      "Variables": {
@@ -601,7 +601,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminApiFunction/Resource",
-    "aws:asset:path": "asset.4aeaacf1557b11d4d828006e614256e0984ccbc3e5a19b85aec15a6b1b26f478",
+    "aws:asset:path": "asset.ac85b196a2810a9f59963e8df4dac44278fe569a0df17833c71596088790cd98",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -1687,7 +1687,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "bc3be6df59f798b8e0e1d58fd5a2fbb2da1e96f512b31fa4463fe48f5b9f2891.zip"
+     "S3Key": "5d582328f06eac52ec4abd79bb03ad36ea3e93a56aa35f007451caff4145cd56.zip"
     },
     "FunctionName": "penguin-health-textract-result-handler-multi-org",
     "Handler": "textract_result_handler_multi_org.lambda_handler",
@@ -1717,7 +1717,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/TextractResultHandlerFn/Resource",
-    "aws:asset:path": "asset.bc3be6df59f798b8e0e1d58fd5a2fbb2da1e96f512b31fa4463fe48f5b9f2891",
+    "aws:asset:path": "asset.5d582328f06eac52ec4abd79bb03ad36ea3e93a56aa35f007451caff4145cd56",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -2048,7 +2048,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "24486153ffb7c70df2111f54371e8e77bcca78205f9e323033beed2fee3a7892.zip"
+     "S3Key": "74c94ea15d5e80e424d701a5ed428eb80fd4fa146cf4419dabdb52d34b11a56a.zip"
     },
     "FunctionName": "penguin-health-rules-engine-rag",
     "Handler": "rules_engine_rag.lambda_handler",
@@ -2078,7 +2078,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/RulesEngineRagFn/Resource",
-    "aws:asset:path": "asset.24486153ffb7c70df2111f54371e8e77bcca78205f9e323033beed2fee3a7892",
+    "aws:asset:path": "asset.74c94ea15d5e80e424d701a5ed428eb80fd4fa146cf4419dabdb52d34b11a56a",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }

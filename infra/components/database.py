@@ -26,12 +26,12 @@ class Database(Construct):
             removal_policy=RemovalPolicy.RETAIN,
         )
         self.org_config_table.add_global_secondary_index(
-            index_name="GSI1",
+            index_name="gsi1",
             partition_key=dynamodb.Attribute(name="gsi1pk", type=dynamodb.AttributeType.STRING),
             sort_key=dynamodb.Attribute(name="gsi1sk", type=dynamodb.AttributeType.STRING),
         )
         self.org_config_table.add_global_secondary_index(
-            index_name="GSI2",
+            index_name="gsi2",
             partition_key=dynamodb.Attribute(name="gsi2pk", type=dynamodb.AttributeType.STRING),
             sort_key=dynamodb.Attribute(name="gsi2sk", type=dynamodb.AttributeType.STRING),
         )
@@ -45,12 +45,12 @@ class Database(Construct):
             removal_policy=RemovalPolicy.RETAIN,
         )
         self.validation_results_table.add_global_secondary_index(
-            index_name="GSI1",
+            index_name="gsi1",
             partition_key=dynamodb.Attribute(name="gsi1pk", type=dynamodb.AttributeType.STRING),
             sort_key=dynamodb.Attribute(name="gsi1sk", type=dynamodb.AttributeType.STRING),
         )
         self.validation_results_table.add_global_secondary_index(
-            index_name="GSI2",
+            index_name="gsi2",
             partition_key=dynamodb.Attribute(name="gsi2pk", type=dynamodb.AttributeType.STRING),
             sort_key=dynamodb.Attribute(name="gsi2sk", type=dynamodb.AttributeType.STRING),
         )
@@ -64,12 +64,12 @@ class Database(Construct):
             removal_policy=RemovalPolicy.RETAIN,
         )
         self.irp_table.add_global_secondary_index(
-            index_name="GSI1",
+            index_name="gsi1",
             partition_key=dynamodb.Attribute(name="gsi1pk", type=dynamodb.AttributeType.STRING),
             sort_key=dynamodb.Attribute(name="gsi1sk", type=dynamodb.AttributeType.STRING),
         )
         self.irp_table.add_global_secondary_index(
-            index_name="GSI2",
+            index_name="gsi2",
             partition_key=dynamodb.Attribute(name="gsi2pk", type=dynamodb.AttributeType.STRING),
             sort_key=dynamodb.Attribute(name="gsi2sk", type=dynamodb.AttributeType.STRING),
         )
