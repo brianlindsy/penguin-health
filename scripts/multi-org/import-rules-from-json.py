@@ -77,7 +77,6 @@ def main():
             'type': rule.get('type', 'llm'),
             'version': version,
             'llm_config': rule.get('llm_config', {}),
-            'messages': rule.get('messages', {}),
             'created_at': now,
             'updated_at': now,
         }

@@ -1,4 +1,6 @@
 import json
+import re
+from typing import Optional
 import boto3
 import os
 from datetime import datetime
@@ -354,7 +356,7 @@ def evaluate_rule(rule_config, fields, data=None, env_config=None):
 
     try:
         if rule_type == 'llm':
-            status, message, reasoning = evaluate_llm_rule(rule_config, fields, data)
+            status, message, reasoning = evaluate_llm_rule_structured(rule_config, fields, data)
         elif rule_type == 'llm_irp':
             status, message, reasoning = evaluate_llm_irp_rule(rule_config, fields, data, env_config['ORGANIZATION_ID'], env_config)
         else:
@@ -490,6 +492,335 @@ def evaluate_llm_rule(rule_config, fields, data=None):
         error_msg = f'LLM evaluation error: {str(e)}'
         return 'ERROR', error_msg, error_msg
 
+def _extract_complete_json(text: str) -> Optional[str]:
+    """
+    Extract a complete JSON object by properly matching braces.
+    Handles nested objects and strings containing braces.
+    """
+    # Find the first opening brace
+    start = text.find('{')
+    if start == -1:
+        return None
+    
+    # Count braces to find the matching closing brace
+    brace_count = 0
+    in_string = False
+    escape_next = False
+    
+    for i in range(start, len(text)):
+        char = text[i]
+        
+        # Handle string escaping
+        if escape_next:
+            escape_next = False
+            continue
+        
+        if char == '\\':
+            escape_next = True
+            continue
+        
+        # Track if we're inside a string
+        if char == '"':
+            in_string = not in_string
+            continue
+        
+        # Only count braces outside of strings
+        if not in_string:
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                
+                # Found the matching closing brace
+                if brace_count == 0:
+                    return text[start:i+1]
+    
+    return None
+    
+def extract_json_from_claude_response(
+    response_body: dict
+) -> Optional[dict]:
+    """
+    Extract JSON from a Bedrock Claude model
+    """
+    content_list = response_body.get("content", [])
+    if not content_list:
+        print("No 'content' field found or it's empty in the model response.")
+        return None
+
+    # Extract all text chunks
+    all_text = " ".join(
+        block.get("text", "") for block in content_list if block.get("type") == "text"
+    )
+
+    # Use regex to extract JSON between ```json ... ```
+    match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", all_text)
+    if not match:
+        print("No JSON code block found. Raw text:")
+        print(all_text)
+
+        print("Trying to extract JSON from the raw text...")
+
+        # Use proper brace matching instead of non-greedy regex
+        json_str = _extract_complete_json(all_text)
+        if not json_str:
+            print("No valid JSON object found.")
+            return None
+
+        try:
+            parsed = json.loads(json_str)
+            print("Extracted JSON data:")
+            print(json.dumps(parsed, indent=2))
+            return parsed
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON: {e}")
+            print("Raw JSON string:")
+            print(json_str)
+        return None
+
+    json_str = match.group(1)
+    try:
+        parsed = json.loads(json_str)
+        print("Extracted JSON data:")
+        print(json.dumps(parsed, indent=2))
+        return parsed
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON: {e}")
+        print("Raw JSON string:")
+        print(json_str)
+        return None
+
+def invoke_claude_model(
+    inference_profile_id: str,
+    body: dict,
+    return_json_only: bool,
+    bedrock_client=None,
+    retries: int = 1,
+    raise_on_error: bool = True,
+    region_name: str = 'us-east-1',
+):
+    if bedrock_client is None:
+        client_kwargs = {
+            'region_name': region_name,
+        }
+
+        # TODO: Remove this once we have a proper CA bundle
+        client_kwargs['verify'] = False
+        bedrock_client = boto3.client('bedrock-runtime', **client_kwargs)
+    
+    params = {}
+    params['contentType'] = 'application/json'
+    params['accept'] = 'application/json'
+
+    model_response = bedrock_client.invoke_model(
+        modelId=inference_profile_id,
+        body=json.dumps(body),
+        **params,
+    )
+
+    response_body = json.loads(model_response['body'].read())
+
+    if not return_json_only:
+        return response_body
+
+    extracted_json = extract_json_from_claude_response(response_body)
+
+    # handle case where no JSON is found in the response, and retry as needed
+    if extracted_json is None:
+        if retries > 0:
+            return invoke_claude_model(
+                inference_profile_id=inference_profile_id,
+                body=body,
+                return_json_only=return_json_only,
+                bedrock_client=bedrock_client,
+                retries=retries - 1,
+            )
+        else:
+            if raise_on_error:
+                raise ValueError("No JSON found in Claude response")
+            return None
+
+    return extracted_json
+    
+def evaluate_llm_rule_structured(rule_config, fields, data=None):
+    """
+    Evaluate a rule using AWS Bedrock LLM
+    """
+    llm_config = rule_config.get('llm_config', {})
+    messages_config = rule_config.get('messages', {})
+    # model_id = 'anthropic.claude-sonnet-4-5-20250929-v1:0'
+    # model_id = 'global.anthropic.claude-sonnet-4-5-20250929-v1:0'
+    model_id = 'global.anthropic.claude-opus-4-5-20251101-v1:0'
+    
+    # model_id = llm_config.get('model_id', 'openai.gpt-oss-120b-1:0')
+    system_prompt = llm_config.get('system_prompt', '')
+    question = llm_config.get('question', '')
+
+    system_prompt += f"\nPlease respond with JSON, with the keys: 'status' and 'reasoning'. The status should be one of: 'PASS', 'FAIL', 'SKIP'. The reasoning should be a short explanation of the reason for the status."
+
+    print(f"DEBUG LLM: Evaluating rule {rule_config.get('id')} - {rule_config.get('name')}")
+
+    # Get the full text from the document
+    chart_text = ''
+    if data:
+        chart_text = data.get('text', '')
+        print(f"DEBUG LLM: Chart text length: {len(chart_text)} characters")
+
+    # If no text available, fall back to fields
+    if not chart_text:
+        chart_text = json.dumps(fields, indent=2)
+        print(f"DEBUG LLM: No text found, using fields JSON: {len(chart_text)} characters")
+
+    # Construct the user message
+    user_message = f"{question}\n\nChart Data:\n{chart_text}"
+    print(f"DEBUG LLM: User message length: {len(user_message)} characters")
+
+    try:
+        # Call Bedrock with OpenAI model
+        # request_body = {
+        #     "messages": [
+        #         {
+        #             "role": "system",
+        #             "content": system_prompt
+        #         },
+        #         {
+        #             "role": "user",
+        #             "content": user_message
+        #         }
+        #     ],
+        #     "max_tokens": 500,
+        #     "temperature": 0
+        # }
+
+        json_schema = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "description": "Simplified schema for determining whether the rule passed or failed and the reasoning.",
+            "type": "object",
+            "properties": { 
+                "status": {
+                    "type": "string",
+                    "description": "The status of the rule. One of: 'PASS', 'FAIL', 'SKIP'.",
+                    "enum": ["PASS", "FAIL", "SKIP"]
+                },
+                "reasoning": {
+                    "type": "string",
+                    "description": "The reasoning for the status.",
+                },
+            },
+            "required": ["status", "reasoning"]
+        }
+        body = {
+            "system": system_prompt,
+            'anthropic_version': 'bedrock-2023-05-31',
+            'max_tokens': 1024,
+            'temperature': 0.01,
+            'messages': [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": user_message
+                        },
+                        {
+                            'type': 'text',
+                            'text': f"JSON schema:\n\n{json.dumps(json_schema)}"
+                        },
+                    ]
+                }
+            ]
+        }
+
+        print(f"DEBUG LLM: Calling Bedrock with model: {model_id}")
+        print(f"DEBUG LLM: System prompt length: {len(system_prompt)} characters")
+
+        # response = bedrock_runtime.invoke_model(
+        #     modelId=model_id,
+        #     body=json.dumps(request_body)
+        # )
+        response_json = invoke_claude_model(
+            inference_profile_id=model_id,
+            body=body,
+            return_json_only=True,
+            raise_on_error=True,
+            retries=1
+        )
+
+        # response_body = json.loads(response['body'].read())
+        # llm_response = response_body['choices'][0]['message']['content']
+
+        # print(f"DEBUG LLM: Raw response from Bedrock: {llm_response[:200]}...")  # First 200 chars
+        print(f"DEBUG LLM: Raw response from Bedrock: {response_json}")
+
+        # Remove <reasoning> tags if present
+        # if '<reasoning>' in llm_response:
+        #     # Extract content after </reasoning> tag
+        #     llm_response = llm_response.split('</reasoning>')[-1].strip()
+        #     print(f"DEBUG LLM: After removing reasoning tags: {llm_response[:200]}...")
+
+        if response_json is None:
+            return 'ERROR', 'No JSON found in Claude response', 'No JSON found in Claude response'
+
+        status = response_json['status']
+        reasoning = response_json['reasoning']
+
+        return status, f"{status} - {reasoning}", reasoning
+
+
+
+        # Clean up Unicode characters
+        # Replace smart quotes and other Unicode punctuation with ASCII equivalents
+        unicode_replacements = {
+            '\u2019': "'",  # Right single quotation mark
+            '\u2018': "'",  # Left single quotation mark
+            '\u201c': '"',  # Left double quotation mark
+            '\u201d': '"',  # Right double quotation mark
+            '\u2013': '-',  # En dash
+            '\u2014': '-',  # Em dash
+            '\u2011': '-',  # Non-breaking hyphen
+            '\u2010': '-',  # Hyphen
+        }
+
+        for unicode_char, ascii_char in unicode_replacements.items():
+            llm_response = llm_response.replace(unicode_char, ascii_char)
+
+        # Parse LLM response to extract status and reasoning
+        # Expected format: "Pass - explanation" or "Fail - explanation" or "Skip - explanation"
+        llm_response_lower = llm_response.lower().strip()
+
+        if llm_response_lower.startswith('pass'):
+            status = 'PASS'
+            reasoning = None  # No reasoning needed for PASS
+        elif llm_response_lower.startswith('fail'):
+            status = 'FAIL'
+            reasoning = llm_response.split('-', 1)[1].strip() if '-' in llm_response else llm_response
+        elif llm_response_lower.startswith('skip'):
+            status = 'SKIP'
+            reasoning = llm_response.split('-', 1)[1].strip() if '-' in llm_response else llm_response
+        else:
+            # If format doesn't match, treat as reasoning for manual review
+            status = 'SKIP'
+            reasoning = f'LLM response format unclear: {llm_response}'
+
+        print(f"DEBUG LLM: Parsed status: {status}")
+        if reasoning:
+            print(f"DEBUG LLM: Parsed reasoning: {reasoning[:100]}...")
+        else:
+            print(f"DEBUG LLM: No reasoning (PASS status)")
+
+        # Get message template and return reasoning separately
+        # For PASS, use template message without reasoning
+        final_message = messages_config.get(status.lower(), status if status == 'PASS' else reasoning)
+        print(f"DEBUG LLM: Final message: {final_message}")
+
+        return status, final_message, reasoning
+
+    except Exception as e:
+        print(f"DEBUG LLM ERROR: {str(e)}")
+        import traceback
+        print(f"DEBUG LLM TRACEBACK: {traceback.format_exc()}")
+        error_msg = f'LLM evaluation error: {str(e)}'
+        return 'ERROR', error_msg, error_msg
 
 def evaluate_llm_irp_rule(rule_config, fields, data, org_id, env_config):
     """

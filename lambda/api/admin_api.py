@@ -135,7 +135,7 @@ def create_rule(path_params, body, **kwargs):
         return response(400, {'error': 'Request body required'})
 
     # Validate required fields
-    required = ['id', 'name', 'category', 'llm_config', 'messages']
+    required = ['id', 'name', 'category', 'llm_config']
     missing = [f for f in required if f not in body]
     if missing:
         return response(400, {'error': f'Missing required fields: {missing}'})
@@ -167,7 +167,6 @@ def create_rule(path_params, body, **kwargs):
         'type': body.get('type', 'llm'),
         'version': version,
         'llm_config': body['llm_config'],
-        'messages': body['messages'],
         'created_at': now,
         'updated_at': now,
     }
@@ -212,7 +211,6 @@ def update_rule(path_params, body, **kwargs):
         'type': body.get('type', existing.get('type', 'llm')),
         'version': version,
         'llm_config': body.get('llm_config', existing.get('llm_config')),
-        'messages': body.get('messages', existing.get('messages')),
         'created_at': existing.get('created_at', datetime.utcnow().isoformat() + 'Z'),
         'updated_at': datetime.utcnow().isoformat() + 'Z',
     }
@@ -290,7 +288,6 @@ def format_rule(item):
         'type': item.get('type', 'llm'),
         'version': item.get('version'),
         'llm_config': convert_decimals(item.get('llm_config', {})),
-        'messages': convert_decimals(item.get('messages', {})),
         'created_at': item.get('created_at'),
         'updated_at': item.get('updated_at'),
     }
