@@ -18,6 +18,7 @@ class Database(Construct):
         super().__init__(scope, id)
 
         # ----- penguin-health-org-config -----
+        # Note: GSI2 was removed - it was never queried, only written to RULE# items
         self.org_config_table = dynamodb.Table(self, "OrgConfigTable",
             table_name=f"{config.PROJECT_NAME}-org-config",
             partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
@@ -29,11 +30,6 @@ class Database(Construct):
             index_name="gsi1",
             partition_key=dynamodb.Attribute(name="gsi1pk", type=dynamodb.AttributeType.STRING),
             sort_key=dynamodb.Attribute(name="gsi1sk", type=dynamodb.AttributeType.STRING),
-        )
-        self.org_config_table.add_global_secondary_index(
-            index_name="gsi2",
-            partition_key=dynamodb.Attribute(name="gsi2pk", type=dynamodb.AttributeType.STRING),
-            sort_key=dynamodb.Attribute(name="gsi2sk", type=dynamodb.AttributeType.STRING),
         )
 
         # ----- penguin-health-validation-results -----

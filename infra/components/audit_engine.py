@@ -141,7 +141,8 @@ class AuditEngine(Construct):
             actions=["bedrock:InvokeModel"],
             resources=["*"],
         ))
+        # AWS Marketplace permissions required for cross-region inference profiles
         self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["bedrock:RetrieveAndGenerate", "bedrock:Retrieve"],
+            actions=["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe"],
             resources=["*"],
         ))

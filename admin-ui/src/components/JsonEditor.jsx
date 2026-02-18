@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 
-export function JsonEditor({ value, onChange, label }) {
+export function JsonEditor({ value, onChange, label, placeholder, rows = 8 }) {
   const [text, setText] = useState('')
   const [error, setError] = useState('')
 
@@ -26,7 +26,8 @@ export function JsonEditor({ value, onChange, label }) {
       <textarea
         value={text}
         onChange={handleChange}
-        rows={12}
+        rows={rows}
+        placeholder={placeholder}
         className={`w-full font-mono text-sm px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${
           error ? 'border-red-400' : 'border-gray-300'
         }`}

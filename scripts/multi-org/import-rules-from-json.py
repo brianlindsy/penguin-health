@@ -29,6 +29,7 @@ def main():
         config = json.load(f)
 
     org_id = config['organization_id']
+    org_name = config.get('organization_name', org_id)
     version = config.get('version', '1.0.0')
     field_mappings = config.get('field_mappings', {})
     rules = config.get('rules', [])
@@ -42,9 +43,26 @@ def main():
     now = datetime.utcnow().isoformat() + 'Z'
 
     print(f"Importing rules for organization: {org_id}")
+    print(f"Organization name: {org_name}")
     print(f"Version: {version}")
     print(f"Rules to import: {len(rules)}")
     print()
+
+    # Write METADATA item (organization metadata)
+    table.put_item(Item={
+        'pk': f'ORG#{org_id}',
+        'sk': 'METADATA',
+        'gsi1pk': 'ORG_METADATA',
+        'gsi1sk': f'ORG#{org_id}',
+        'organization_id': org_id,
+        'organization_name': org_name,
+        'display_name': org_name,
+        's3_bucket_name': f'penguin-health-{org_id}',
+        'enabled': True,
+        'created_at': config.get('created_at', now),
+        'updated_at': now,
+    })
+    print(f"  METADATA written: {org_name}")
 
     # Write RULES_CONFIG item
     table.put_item(Item={
@@ -59,7 +77,7 @@ def main():
     })
     print(f"  RULES_CONFIG written (field_mappings: {list(field_mappings.keys())})")
 
-    # Write each RULE# item
+    # Write each RULE# item (new flat schema - no llm_config, no GSI2)
     for rule in rules:
         rule_id = rule['id']
         item = {
@@ -67,8 +85,6 @@ def main():
             'sk': f'RULE#{rule_id}',
             'gsi1pk': 'RULE',
             'gsi1sk': f'ORG#{org_id}#RULE#{rule_id}',
-            'gsi2pk': f'ORG#{org_id}#VERSION#{version}',
-            'gsi2sk': f'RULE#{rule_id}',
             'rule_id': rule_id,
             'name': rule['name'],
             'category': rule.get('category', ''),
@@ -76,7 +92,9 @@ def main():
             'enabled': rule.get('enabled', True),
             'type': rule.get('type', 'llm'),
             'version': version,
-            'llm_config': rule.get('llm_config', {}),
+            'rule_text': rule.get('rule_text', ''),
+            'fields_to_extract': rule.get('fields_to_extract', []),
+            'notes': rule.get('notes', []),
             'created_at': now,
             'updated_at': now,
         }
@@ -84,7 +102,7 @@ def main():
         print(f"  RULE#{rule_id} written: {rule['name']}")
 
     print()
-    print(f"Done. Imported {len(rules)} rules + RULES_CONFIG for {org_id}.")
+    print(f"Done. Imported METADATA + RULES_CONFIG + {len(rules)} rules for {org_id}.")
 
 
 if __name__ == '__main__':

@@ -22,7 +22,7 @@
         "validateOnSynth": false,
         "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-deploy-role-${AWS::AccountId}-us-east-1",
         "cloudFormationExecutionRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-cfn-exec-role-${AWS::AccountId}-us-east-1",
-        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1/2ed0d3430b730d3191c72e151e0b662d1794517676d8075b502f95632d4e3a93.json",
+        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1/0240ba2c06879d27128cf7ba915ab01420fa2b69f6497a5d09e685517640236e.json",
         "requiresBootstrapStackVersion": 6,
         "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/hnb659fds/version",
         "additionalDependencies": [
@@ -255,6 +255,30 @@
           {
             "type": "aws:cdk:logicalId",
             "data": "AdminUiAdminHttpApiPUTapiorganizationsorgIdrulesconfig5E3CF012"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--rules--enhance-fields/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPOSTapiorganizationsorgIdrulesenhancefieldsAdminApiIntegrationPermissionBC695216"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--rules--enhance-fields/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPOSTapiorganizationsorgIdrulesenhancefields40A5B6F2"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--rules--enhance-note/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPOSTapiorganizationsorgIdrulesenhancenoteAdminApiIntegrationPermission7F15FFD5"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--rules--enhance-note/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPOSTapiorganizationsorgIdrulesenhancenoteE7631D2C"
           }
         ],
         "/PenguinHealth/AdminUi/FrontendBucket/Resource": [

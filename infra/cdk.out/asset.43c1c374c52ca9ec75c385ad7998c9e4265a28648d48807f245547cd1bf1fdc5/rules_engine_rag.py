@@ -2,7 +2,6 @@
 Rules Engine RAG Lambda - Validates documents against configurable LLM rules.
 
 Uses Claude Sonnet 4.5 via AWS Bedrock for structured JSON rule evaluation.
-Loads organization configuration and rules from DynamoDB.
 """
 
 import json
@@ -15,8 +14,6 @@ from datetime import datetime
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from multi_org_config import load_org_rules, build_env_config
-
 s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
 
@@ -26,20 +23,19 @@ def lambda_handler(event, context):
     Lambda function to validate processed JSON documents against configurable rules.
 
     Expects event with:
-    - organization_id: Organization ID (looks up bucket and rules from DynamoDB)
+    - config.BUCKET_NAME: S3 bucket name
+    - config.DYNAMODB_TABLE: DynamoDB table for results
+    - config.ORGANIZATION_ID: Organization ID
+    - config.TEXTRACT_PROCESSED: S3 prefix for processed files
     """
-    org_id = event.get('organization_id')
-    if not org_id:
-        raise ValueError("organization_id is required in event")
-
-    print(f"Loading configuration for organization: {org_id}")
-    env_config = build_env_config(org_id)
-    config = load_org_rules(org_id)
+    env_config = event.get('config', {})
 
     validation_run_id = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
     print(f"Starting validation run: {validation_run_id}")
 
     try:
+        config = load_configuration(env_config['ORGANIZATION_ID'], env_config)
+
         response = s3_client.list_objects_v2(
             Bucket=env_config['BUCKET_NAME'],
             Prefix=env_config['TEXTRACT_PROCESSED']
@@ -54,7 +50,7 @@ def lambda_handler(event, context):
         for obj in response['Contents']:
             key = obj['Key']
             if key.endswith('.json') and '/raw/' not in key:
-                process_file(env_config['BUCKET_NAME'], key, config, org_id, env_config, validation_run_id)
+                process_file(env_config['BUCKET_NAME'], key, config, env_config['ORGANIZATION_ID'], env_config, validation_run_id)
 
         print(f"Generating CSV report for run: {validation_run_id}")
         csv_report = generate_csv_from_dynamodb(validation_run_id, env_config)
@@ -70,6 +66,19 @@ def lambda_handler(event, context):
 
     except Exception as e:
         print(f"Error in lambda_handler: {str(e)}")
+        raise e
+
+
+def load_configuration(org_id, env_config):
+    """Load organization-specific rule configuration from S3."""
+    try:
+        config_key = f"validation-rules/{org_id}.json"
+        response = s3_client.get_object(Bucket=env_config['BUCKET_NAME'], Key=config_key)
+        config = json.loads(response['Body'].read().decode('utf-8'))
+        print(f"Loaded configuration for {org_id}: {len(config.get('rules', []))} rules")
+        return config
+    except Exception as e:
+        print(f"Error loading configuration: {str(e)}")
         raise e
 
 

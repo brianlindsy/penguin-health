@@ -7,6 +7,7 @@ import { Layout } from './components/Layout.jsx'
 import { OrganizationsPage } from './pages/OrganizationsPage.jsx'
 import { OrganizationDetail } from './pages/OrganizationDetail.jsx'
 import { RuleEditor } from './pages/RuleEditor.jsx'
+import { RuleCreator } from './pages/RuleCreator.jsx'
 import { setTokenProvider, setOnUnauthorized } from './api/client.js'
 
 function App() {
@@ -31,8 +32,8 @@ function App() {
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route path="/" element={<OrganizationsPage />} />
         <Route path="/organizations/:orgId" element={<OrganizationDetail />} />
+        <Route path="/organizations/:orgId/rules/new" element={<RuleCreator />} />
         <Route path="/organizations/:orgId/rules/:ruleId" element={<RuleEditor />} />
-        <Route path="/organizations/:orgId/rules/new" element={<RuleEditor />} />
       </Route>
     </Routes>
   )

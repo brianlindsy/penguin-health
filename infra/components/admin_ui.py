@@ -80,7 +80,7 @@ class AdminUi(Construct):
                     ),
                 ),
             ),
-            timeout=Duration.seconds(config.LAMBDA_DEFAULT_TIMEOUT_SECONDS),
+            timeout=Duration.seconds(60),  # Longer timeout for LLM calls
             memory_size=config.LAMBDA_DEFAULT_MEMORY_MB,
             environment={
                 "DYNAMODB_TABLE": org_config_table.table_name,
@@ -93,6 +93,12 @@ class AdminUi(Construct):
             actions=["dynamodb:Query", "dynamodb:Scan", "dynamodb:GetItem",
                      "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
             resources=[f"{org_config_table.table_arn}/index/*"],
+        ))
+
+        # Bedrock permissions for LLM enhancement endpoints
+        self.api_function.add_to_role_policy(iam.PolicyStatement(
+            actions=["bedrock:InvokeModel"],
+            resources=["arn:aws:bedrock:*::foundation-model/anthropic.*"],
         ))
 
         # ----- API Gateway HTTP API -----
@@ -129,6 +135,8 @@ class AdminUi(Construct):
             ("POST", "/api/organizations/{orgId}/rules"),
             ("GET",  "/api/organizations/{orgId}/rules-config"),
             ("PUT",  "/api/organizations/{orgId}/rules-config"),
+            ("POST", "/api/organizations/{orgId}/rules/enhance-fields"),
+            ("POST", "/api/organizations/{orgId}/rules/enhance-note"),
         ]
 
         for method, path in routes:

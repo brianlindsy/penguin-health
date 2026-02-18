@@ -191,19 +191,26 @@ def load_chart_config(org_id):
     Load chart processing configuration for an organization
 
     This configuration controls how textract results are processed,
-    including encounter splitting delimiters.
+    including encounter splitting delimiters and folder paths.
 
     Args:
         org_id (str): Organization identifier
 
     Returns:
-        dict: Chart config with encounter_delimiter, etc.
+        dict: Chart config with encounter_delimiter, folder paths, etc.
 
     Example return:
         {
             'organization_id': 'example-org',
             'encounter_delimiter': 'Consumer Service ID:',
-            'encounter_id_field': 'Consumer Service ID:'
+            'encounter_id_field': 'Consumer Service ID:',
+            'irp_folder_pattern': 'irp/',
+            'folders': {
+                'raw_charts': 'textract-raw/',
+                'raw_irp': 'textract-raw/irp/',
+                'archive_charts': 'archived/textract/',
+                'archive_irp': 'archived/irp/textract/'
+            }
         }
     """
     try:
@@ -222,6 +229,13 @@ def load_chart_config(org_id):
             'organization_id': org_id,
             'encounter_delimiter': 'Consumer Service ID:',
             'encounter_id_field': 'Consumer Service ID:',
+            'irp_folder_pattern': 'irp/',
+            'folders': {
+                'raw_charts': 'textract-raw/',
+                'raw_irp': 'textract-raw/irp/',
+                'archive_charts': 'archived/textract/',
+                'archive_irp': 'archived/irp/textract/'
+            },
             'version': '1.0.0'
         }
 
@@ -232,6 +246,13 @@ def load_chart_config(org_id):
             'organization_id': org_id,
             'encounter_delimiter': 'Consumer Service ID:',
             'encounter_id_field': 'Consumer Service ID:',
+            'irp_folder_pattern': 'irp/',
+            'folders': {
+                'raw_charts': 'textract-raw/',
+                'raw_irp': 'textract-raw/irp/',
+                'archive_charts': 'archived/textract/',
+                'archive_irp': 'archived/irp/textract/'
+            },
             'version': '1.0.0'
         }
 

@@ -6,7 +6,6 @@ import { JsonEditor } from '../components/JsonEditor.jsx'
 export function RuleEditor() {
   const { orgId, ruleId } = useParams()
   const navigate = useNavigate()
-  const isNew = ruleId === 'new'
 
   const [rule, setRule] = useState({
     id: '',
@@ -16,45 +15,38 @@ export function RuleEditor() {
     enabled: true,
     type: 'llm',
     version: '1.0.0',
-    llm_config: {
-      model_id: '',
-      system_prompt: '',
-      question: '',
-      use_rag: false,
-      knowledge_base_id: '',
-    },
-    messages: {
-      pass: 'PASS',
-      fail: 'FAIL: {llm_reasoning}',
-      skip: 'SKIP: {llm_reasoning}',
-    },
+    rule_text: '',
+    fields_to_extract: [],
+    notes: [],
   })
 
-  const [loading, setLoading] = useState(!isNew)
+  const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const [enhancing, setEnhancing] = useState(false)
+  const [newNote, setNewNote] = useState('')
   const [error, setError] = useState('')
   const [saveMsg, setSaveMsg] = useState('')
 
   useEffect(() => {
-    if (!isNew) {
-      api.getRule(orgId, ruleId)
-        .then(data => {
-          setRule({
-            id: data.rule_id,
-            name: data.name,
-            category: data.category,
-            description: data.description || '',
-            enabled: data.enabled,
-            type: data.type,
-            version: data.version,
-            llm_config: data.llm_config || {},
-            messages: data.messages || {},
-          })
+    api.getRule(orgId, ruleId)
+      .then(data => {
+        setRule({
+          id: data.rule_id,
+          name: data.name,
+          category: data.category,
+          description: data.description || '',
+          enabled: data.enabled,
+          type: data.type,
+          version: data.version,
+          rule_text: data.rule_text || '',
+          fields_to_extract: data.fields_to_extract || [],
+          notes: data.notes || [],
         })
-        .catch(err => setError(err.message))
-        .finally(() => setLoading(false))
-    }
-  }, [orgId, ruleId, isNew])
+      })
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false))
+  }, [orgId, ruleId])
 
   const handleSave = async () => {
     setError('')
@@ -62,19 +54,9 @@ export function RuleEditor() {
     setSaving(true)
 
     try {
-      if (isNew) {
-        if (!rule.id) {
-          setError('Rule ID is required')
-          setSaving(false)
-          return
-        }
-        await api.createRule(orgId, rule)
-        navigate(`/organizations/${orgId}/rules/${rule.id}`, { replace: true })
-      } else {
-        await api.updateRule(orgId, ruleId, rule)
-        setSaveMsg('Saved')
-        setTimeout(() => setSaveMsg(''), 3000)
-      }
+      await api.updateRule(orgId, ruleId, rule)
+      setSaveMsg('Saved')
+      setTimeout(() => setSaveMsg(''), 3000)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -86,13 +68,59 @@ export function RuleEditor() {
     setRule(prev => ({ ...prev, [field]: value }))
   }
 
+  const handleGenerateFields = async () => {
+    if (!rule.rule_text.trim()) {
+      setError('Enter rule text before generating fields')
+      return
+    }
+
+    setGenerating(true)
+    setError('')
+
+    try {
+      const result = await api.enhanceRuleFields(orgId, rule.rule_text)
+      updateField('fields_to_extract', result.fields_to_extract)
+    } catch (err) {
+      setError(`Failed to generate fields: ${err.message}`)
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const handleAddNote = async () => {
+    if (!newNote.trim()) return
+
+    setEnhancing(true)
+    setError('')
+
+    try {
+      const result = await api.enhanceNote(orgId, newNote, rule.rule_text)
+      setRule(prev => ({
+        ...prev,
+        notes: [...prev.notes, result.enhanced_note],
+      }))
+      setNewNote('')
+    } catch (err) {
+      setError(`Failed to enhance note: ${err.message}`)
+    } finally {
+      setEnhancing(false)
+    }
+  }
+
+  const handleRemoveNote = (index) => {
+    setRule(prev => ({
+      ...prev,
+      notes: prev.notes.filter((_, i) => i !== index),
+    }))
+  }
+
   if (loading) return <p className="text-gray-500">Loading rule...</p>
 
   return (
     <div className="max-w-3xl">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-semibold text-gray-900">
-          {isNew ? 'New Rule' : `Edit Rule: ${rule.name}`}
+          Edit Rule: {rule.name}
         </h1>
         <button
           onClick={() => navigate(`/organizations/${orgId}`)}
@@ -114,8 +142,7 @@ export function RuleEditor() {
             <input
               type="text"
               value={rule.id}
-              onChange={e => updateField('id', e.target.value)}
-              disabled={!isNew}
+              disabled
               className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm disabled:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
@@ -166,7 +193,7 @@ export function RuleEditor() {
           <textarea
             value={rule.description}
             onChange={e => updateField('description', e.target.value)}
-            rows={3}
+            rows={2}
             className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
@@ -182,19 +209,106 @@ export function RuleEditor() {
           <label htmlFor="enabled" className="text-sm text-gray-700">Enabled</label>
         </div>
 
-        {/* LLM Config */}
-        <JsonEditor
-          value={rule.llm_config}
-          onChange={v => updateField('llm_config', v)}
-          label="LLM Configuration"
-        />
+        {/* Rule Text */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Rule Text
+            <span className="text-red-500 ml-1">*</span>
+          </label>
+          <p className="text-xs text-gray-500 mb-2">
+            The validation logic and criteria for this rule. Describe what the LLM should check.
+          </p>
+          <textarea
+            value={rule.rule_text}
+            onChange={e => updateField('rule_text', e.target.value)}
+            rows={8}
+            placeholder="Describe the validation rule, including failure conditions and pass criteria..."
+            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <div className="mt-2 flex justify-end">
+            <button
+              onClick={handleGenerateFields}
+              disabled={generating || !rule.rule_text.trim()}
+              className="px-4 py-2 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 disabled:opacity-50"
+            >
+              {generating ? 'Generating...' : 'Generate Fields from Rule Text'}
+            </button>
+          </div>
+        </div>
 
-        {/* Messages */}
-        <JsonEditor
-          value={rule.messages}
-          onChange={v => updateField('messages', v)}
-          label="Messages"
-        />
+        {/* Fields to Extract */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Fields to Extract</label>
+          <p className="text-xs text-gray-500 mb-2">
+            List of fields the LLM should extract from the chart text before validating.
+            Each field needs a name, type (string/number), and description.
+          </p>
+          <JsonEditor
+            value={rule.fields_to_extract}
+            onChange={v => updateField('fields_to_extract', v)}
+            label=""
+            placeholder={`[
+  { "name": "recipient", "type": "string", "description": "The Recipient field from the header" },
+  { "name": "service_location", "type": "string", "description": "Service Location field" }
+]`}
+          />
+        </div>
+
+        {/* Notes */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+          <p className="text-xs text-gray-500 mb-2">
+            Contextual notes to help the LLM understand the rule. Notes are enhanced by AI when added.
+          </p>
+
+          <div className="flex gap-2 mb-4">
+            <input
+              type="text"
+              value={newNote}
+              onChange={e => setNewNote(e.target.value)}
+              placeholder="Add a contextual note..."
+              className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              onKeyDown={e => e.key === 'Enter' && handleAddNote()}
+            />
+            <button
+              onClick={handleAddNote}
+              disabled={enhancing || !newNote.trim()}
+              className="px-4 py-2 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 disabled:opacity-50 whitespace-nowrap"
+            >
+              {enhancing ? 'Enhancing...' : 'Add & Enhance'}
+            </button>
+          </div>
+
+          {rule.notes.length > 0 && (
+            <ul className="space-y-2 mb-4">
+              {rule.notes.map((note, index) => (
+                <li key={index} className="flex items-start gap-2 bg-gray-50 p-3 rounded-md">
+                  <span className="flex-1 text-sm text-gray-700">{note}</span>
+                  <button
+                    onClick={() => handleRemoveNote(index)}
+                    className="text-xs text-red-500 hover:text-red-700"
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <p className="text-xs text-gray-400">
+            Or edit the JSON directly:
+          </p>
+          <JsonEditor
+            value={rule.notes}
+            onChange={v => updateField('notes', v)}
+            label=""
+            rows={4}
+            placeholder={`[
+  "'Face to Face' Recipient covers In-Person AND Video (Visual) Telehealth.",
+  "'Telephone' Recipient is for Audio-Only."
+]`}
+          />
+        </div>
 
         {/* Save */}
         <div className="flex items-center gap-3 pt-4 border-t">
@@ -203,7 +317,7 @@ export function RuleEditor() {
             disabled={saving}
             className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50"
           >
-            {saving ? 'Saving...' : isNew ? 'Create Rule' : 'Save Changes'}
+            {saving ? 'Saving...' : 'Save Changes'}
           </button>
           {saveMsg && (
             <span className="text-sm text-green-600">{saveMsg}</span>

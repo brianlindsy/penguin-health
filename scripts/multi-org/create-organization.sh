@@ -135,33 +135,6 @@ table.put_item(Item=item)
 print("✓ Organization record created")
 EOF
 
-# Step 6: Create default IRP config
-echo ""
-echo -e "${BLUE}Step 6: Creating Default IRP Configuration${NC}"
-echo ""
-
-python3 - <<EOF
-import boto3
-
-dynamodb = boto3.resource('dynamodb')
-table = dynamodb.Table('penguin-health-org-config')
-
-table.put_item(Item={
-    'pk': 'ORG#${ORG_ID}',
-    'sk': 'IRP_CONFIG',
-    'gsi1pk': 'IRP_CONFIG',
-    'gsi1sk': 'ORG#${ORG_ID}',
-    'organization_id': '${ORG_ID}',
-    'field_mappings': {
-        'consumer_name': 'Consumer Name:',
-        'document_id': 'Consumer Service ID:'
-    },
-    'text_patterns': {},
-    'version': '1.0.0'
-})
-print("✓ Default IRP config created")
-EOF
-
 # Step 6.5: Create default chart configuration
 echo ""
 echo -e "${BLUE}Step 6.5: Creating Default Chart Configuration${NC}"

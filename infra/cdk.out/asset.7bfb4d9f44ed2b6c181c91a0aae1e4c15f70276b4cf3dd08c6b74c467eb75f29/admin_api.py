@@ -3,7 +3,6 @@ Admin API Lambda - CRUD operations for organization configuration
 
 Handles API Gateway HTTP API v2 events with route-based dispatch.
 Reuses multi_org_config.py for DynamoDB reads where possible.
-Includes LLM-enhanced endpoints for rule field extraction and note enhancement.
 """
 
 import json
@@ -14,9 +13,6 @@ from boto3.dynamodb.conditions import Key
 
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('penguin-health-org-config')
-
-bedrock = boto3.client('bedrock-runtime')
-MODEL_ID = 'global.anthropic.claude-sonnet-4-5-20250929-v1:0'
 
 
 def lambda_handler(event, context):
@@ -40,8 +36,6 @@ def lambda_handler(event, context):
         'POST /api/organizations/{orgId}/rules': create_rule,
         'GET /api/organizations/{orgId}/rules-config': get_rules_config,
         'PUT /api/organizations/{orgId}/rules-config': update_rules_config,
-        'POST /api/organizations/{orgId}/rules/enhance-fields': enhance_fields,
-        'POST /api/organizations/{orgId}/rules/enhance-note': enhance_note,
     }
 
     handler = routes.get(route_key)
@@ -281,114 +275,6 @@ def update_rules_config(path_params, body, **kwargs):
         'version': item['version'],
         'updated_at': item['updated_at'],
     })
-
-
-# ---- LLM Enhancement ----
-
-def enhance_fields(path_params, body, **kwargs):
-    """Use LLM to extract fields_to_extract from rule_text"""
-    if not body or 'rule_text' not in body:
-        return response(400, {'error': 'Request body must include rule_text'})
-
-    rule_text = body['rule_text']
-
-    system_prompt = """You are an expert at analyzing medical chart validation rules.
-Given a rule description, identify the key fields that need to be extracted from chart documents to evaluate this rule.
-
-Return a JSON array of field objects. Each object must have:
-- "name": A snake_case identifier for the field (e.g., "recipient", "service_location")
-- "type": The data type - one of "string", "number", "boolean", "datetime"
-- "description": A brief description of what this field represents in the chart
-
-Only include fields that are explicitly or implicitly referenced in the rule.
-Return ONLY the JSON array, no other text."""
-
-    user_prompt = f"""Analyze this validation rule and identify the fields to extract:
-
-{rule_text}
-
-Return a JSON array of fields to extract."""
-
-    try:
-        resp = bedrock.invoke_model(
-            modelId=MODEL_ID,
-            body=json.dumps({
-                'anthropic_version': 'bedrock-2023-05-31',
-                'max_tokens': 2048,
-                'system': system_prompt,
-                'messages': [{'role': 'user', 'content': user_prompt}],
-            }),
-        )
-        result = json.loads(resp['body'].read())
-        content = result['content'][0]['text']
-
-        # Parse the JSON array from the response
-        # Handle potential markdown code blocks
-        if '```json' in content:
-            content = content.split('```json')[1].split('```')[0].strip()
-        elif '```' in content:
-            content = content.split('```')[1].split('```')[0].strip()
-
-        fields = json.loads(content)
-        return response(200, {'fields_to_extract': fields})
-
-    except json.JSONDecodeError as e:
-        print(f"Failed to parse LLM response as JSON: {e}")
-        return response(500, {'error': 'Failed to parse LLM response'})
-    except Exception as e:
-        print(f"Error in enhance_fields: {e}")
-        return response(500, {'error': str(e)})
-
-
-def enhance_note(path_params, body, **kwargs):
-    """Use LLM to enhance a note for better validation"""
-    if not body or 'note' not in body:
-        return response(400, {'error': 'Request body must include note'})
-
-    note = body['note']
-    rule_text = body.get('rule_text', '')
-
-    system_prompt = """You are an expert at optimizing contextual notes for medical chart validation systems.
-
-Your task is to rewrite notes to be clearer and more actionable for an LLM that will use them when validating charts.
-
-The enhanced note should:
-- Be concise but complete
-- Use precise, unambiguous language
-- Clarify any implicit assumptions
-- Provide clear guidance for validation decisions
-- Be written in a factual, instructional tone
-
-Return ONLY the enhanced note text, no other text or explanation."""
-
-    user_prompt = f"""Enhance this contextual note for use in chart validation:
-
-Original Note: {note}"""
-
-    if rule_text:
-        user_prompt += f"""
-
-This note is associated with the following validation rule:
-{rule_text}"""
-
-    try:
-        resp = bedrock.invoke_model(
-            modelId=MODEL_ID,
-            body=json.dumps({
-                'anthropic_version': 'bedrock-2023-05-31',
-                'max_tokens': 1024,
-                'system': system_prompt,
-                'messages': [{'role': 'user', 'content': user_prompt}],
-            }),
-        )
-        result = json.loads(resp['body'].read())
-        enhanced_note = result['content'][0]['text'].strip()
-
-        return response(200, {'enhanced_note': enhanced_note})
-
-    except Exception as e:
-        print(f"Error in enhance_note: {e}")
-        return response(500, {'error': str(e)})
 
 
 # ---- Helpers ----

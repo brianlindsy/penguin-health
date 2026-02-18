@@ -68,4 +68,16 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(config),
     }),
+
+  enhanceRuleFields: (orgId, ruleText) =>
+    request(`/api/organizations/${orgId}/rules/enhance-fields`, {
+      method: 'POST',
+      body: JSON.stringify({ rule_text: ruleText }),
+    }),
+
+  enhanceNote: (orgId, note, ruleText) =>
+    request(`/api/organizations/${orgId}/rules/enhance-note`, {
+      method: 'POST',
+      body: JSON.stringify({ note, rule_text: ruleText }),
+    }),
 }

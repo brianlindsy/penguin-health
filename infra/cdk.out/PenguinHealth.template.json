@@ -19,14 +19,6 @@
      {
       "AttributeName": "gsi1sk",
       "AttributeType": "S"
-     },
-     {
-      "AttributeName": "gsi2pk",
-      "AttributeType": "S"
-     },
-     {
-      "AttributeName": "gsi2sk",
-      "AttributeType": "S"
      }
     ],
     "BillingMode": "PAY_PER_REQUEST",
@@ -40,22 +32,6 @@
        },
        {
         "AttributeName": "gsi1sk",
-        "KeyType": "RANGE"
-       }
-      ],
-      "Projection": {
-       "ProjectionType": "ALL"
-      }
-     },
-     {
-      "IndexName": "gsi2",
-      "KeySchema": [
-       {
-        "AttributeName": "gsi2pk",
-        "KeyType": "HASH"
-       },
-       {
-        "AttributeName": "gsi2sk",
         "KeyType": "RANGE"
        }
       ],
@@ -539,6 +515,11 @@
          ]
         ]
        }
+      },
+      {
+       "Action": "bedrock:InvokeModel",
+       "Effect": "Allow",
+       "Resource": "arn:aws:bedrock:*::foundation-model/anthropic.*"
       }
      ],
      "Version": "2012-10-17"
@@ -561,7 +542,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "ac85b196a2810a9f59963e8df4dac44278fe569a0df17833c71596088790cd98.zip"
+     "S3Key": "b613b5cbad4ea19fac71c226f3ca028dcb66ee91abdd9537e5a8c155870ec869.zip"
     },
     "Environment": {
      "Variables": {
@@ -593,7 +574,7 @@
       "Value": "penguin-health"
      }
     ],
-    "Timeout": 900
+    "Timeout": 60
    },
    "DependsOn": [
     "AdminUiAdminApiFunctionServiceRoleDefaultPolicyBD2D453A",
@@ -601,7 +582,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminApiFunction/Resource",
-    "aws:asset:path": "asset.ac85b196a2810a9f59963e8df4dac44278fe569a0df17833c71596088790cd98",
+    "aws:asset:path": "asset.b613b5cbad4ea19fac71c226f3ca028dcb66ee91abdd9537e5a8c155870ec869",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -1179,6 +1160,124 @@
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/PUT--api--organizations--{orgId}--rules-config/Resource"
    }
   },
+  "AdminUiAdminHttpApiPOSTapiorganizationsorgIdrulesenhancefieldsAdminApiIntegrationPermissionBC695216": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AdminUiAdminApiFunctionF9667708",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:",
+       {
+        "Ref": "AWS::AccountId"
+       },
+       ":",
+       {
+        "Ref": "AdminUiAdminHttpApi90C20B12"
+       },
+       "/*/*/api/organizations/{orgId}/rules/enhance-fields"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--rules--enhance-fields/AdminApiIntegration-Permission"
+   }
+  },
+  "AdminUiAdminHttpApiPOSTapiorganizationsorgIdrulesenhancefields40A5B6F2": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "AdminUiAdminHttpApi90C20B12"
+    },
+    "AuthorizationType": "JWT",
+    "AuthorizerId": {
+     "Ref": "AdminUiAdminHttpApiCognitoAuthorizerCC473533"
+    },
+    "RouteKey": "POST /api/organizations/{orgId}/rules/enhance-fields",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "AdminUiAdminHttpApiGETapiorganizationsAdminApiIntegrationD15C6010"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--rules--enhance-fields/Resource"
+   }
+  },
+  "AdminUiAdminHttpApiPOSTapiorganizationsorgIdrulesenhancenoteAdminApiIntegrationPermission7F15FFD5": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AdminUiAdminApiFunctionF9667708",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:",
+       {
+        "Ref": "AWS::AccountId"
+       },
+       ":",
+       {
+        "Ref": "AdminUiAdminHttpApi90C20B12"
+       },
+       "/*/*/api/organizations/{orgId}/rules/enhance-note"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--rules--enhance-note/AdminApiIntegration-Permission"
+   }
+  },
+  "AdminUiAdminHttpApiPOSTapiorganizationsorgIdrulesenhancenoteE7631D2C": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "AdminUiAdminHttpApi90C20B12"
+    },
+    "AuthorizationType": "JWT",
+    "AuthorizerId": {
+     "Ref": "AdminUiAdminHttpApiCognitoAuthorizerCC473533"
+    },
+    "RouteKey": "POST /api/organizations/{orgId}/rules/enhance-note",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "AdminUiAdminHttpApiGETapiorganizationsAdminApiIntegrationD15C6010"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--rules--enhance-note/Resource"
+   }
+  },
   "AdminUiFrontendBucket2357732C": {
    "Type": "AWS::S3::Bucket",
    "Properties": {
@@ -1687,7 +1786,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "5d582328f06eac52ec4abd79bb03ad36ea3e93a56aa35f007451caff4145cd56.zip"
+     "S3Key": "89ca14bf56d0863f0b68f918dc8ea82f8f3e95414156d3775acc37b011f69ed0.zip"
     },
     "FunctionName": "penguin-health-textract-result-handler-multi-org",
     "Handler": "textract_result_handler_multi_org.lambda_handler",
@@ -1717,7 +1816,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/TextractResultHandlerFn/Resource",
-    "aws:asset:path": "asset.5d582328f06eac52ec4abd79bb03ad36ea3e93a56aa35f007451caff4145cd56",
+    "aws:asset:path": "asset.89ca14bf56d0863f0b68f918dc8ea82f8f3e95414156d3775acc37b011f69ed0",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -2021,8 +2120,8 @@
       },
       {
        "Action": [
-        "bedrock:RetrieveAndGenerate",
-        "bedrock:Retrieve"
+        "aws-marketplace:ViewSubscriptions",
+        "aws-marketplace:Subscribe"
        ],
        "Effect": "Allow",
        "Resource": "*"
@@ -2048,7 +2147,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "74c94ea15d5e80e424d701a5ed428eb80fd4fa146cf4419dabdb52d34b11a56a.zip"
+     "S3Key": "adbf527b6f93af7cc5c29c6d229f6a8da713e640b034f51978033895008347d9.zip"
     },
     "FunctionName": "penguin-health-rules-engine-rag",
     "Handler": "rules_engine_rag.lambda_handler",
@@ -2078,7 +2177,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/RulesEngineRagFn/Resource",
-    "aws:asset:path": "asset.74c94ea15d5e80e424d701a5ed428eb80fd4fa146cf4419dabdb52d34b11a56a",
+    "aws:asset:path": "asset.adbf527b6f93af7cc5c29c6d229f6a8da713e640b034f51978033895008347d9",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
