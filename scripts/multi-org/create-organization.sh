@@ -135,33 +135,6 @@ table.put_item(Item=item)
 print("✓ Organization record created")
 EOF
 
-# Step 6: Create default IRP config
-echo ""
-echo -e "${BLUE}Step 6: Creating Default IRP Configuration${NC}"
-echo ""
-
-python3 - <<EOF
-import boto3
-
-dynamodb = boto3.resource('dynamodb')
-table = dynamodb.Table('penguin-health-org-config')
-
-table.put_item(Item={
-    'pk': 'ORG#${ORG_ID}',
-    'sk': 'IRP_CONFIG',
-    'gsi1pk': 'IRP_CONFIG',
-    'gsi1sk': 'ORG#${ORG_ID}',
-    'organization_id': '${ORG_ID}',
-    'field_mappings': {
-        'consumer_name': 'Consumer Name:',
-        'document_id': 'Consumer Service ID:'
-    },
-    'text_patterns': {},
-    'version': '1.0.0'
-})
-print("✓ Default IRP config created")
-EOF
-
 # Step 6.5: Create default chart configuration
 echo ""
 echo -e "${BLUE}Step 6.5: Creating Default Chart Configuration${NC}"
@@ -200,9 +173,9 @@ echo ""
 
 # List of Lambda functions that need S3 access to org buckets
 MULTI_ORG_LAMBDAS=(
-    "process-raw-charts-multi-org"
-    "textract-result-handler-multi-org"
-    "rules-engine-rag"
+    "penguin-health-process-raw-charts-multi-org"
+    "penguin-health-textract-result-handler-multi-org"
+    "penguin-health-rules-engine-rag"
 )
 
 for LAMBDA_NAME in "${MULTI_ORG_LAMBDAS[@]}"; do
@@ -293,7 +266,7 @@ echo "3. Upload PDFs to S3 and invoke Lambda manually:"
 echo "   aws s3 cp test-chart.pdf s3://$BUCKET_NAME/textract-to-be-processed/"
 echo ""
 echo "   Then invoke the processing Lambda:"
-echo "   aws lambda invoke --function-name process-raw-charts-multi-org \\"
+echo "   aws lambda invoke --function-name penguin-health-process-raw-charts-multi-org \\"
 echo "     --payload '{\"organization_id\":\"$ORG_ID\"}' response.json"
 echo ""
 echo "   See LAMBDA_INVOCATION.md for complete invocation examples including:"
@@ -302,7 +275,7 @@ echo "   - Step Functions workflows"
 echo "   - Multi-organization batch processing"
 echo ""
 echo "4. Monitor Lambda processing:"
-echo "   aws logs tail /aws/lambda/process-raw-charts-multi-org --follow"
-echo "   aws logs tail /aws/lambda/textract-result-handler-multi-org --follow"
-echo "   aws logs tail /aws/lambda/rules-engine-rag --follow"
+echo "   aws logs tail /aws/lambda/penguin-health-process-raw-charts-multi-org --follow"
+echo "   aws logs tail /aws/lambda/penguin-health-textract-result-handler-multi-org --follow"
+echo "   aws logs tail /aws/lambda/penguin-health-rules-engine-rag --follow"
 echo ""

@@ -1,0 +1,19 @@
+"""
+Penguin Health CDK — shared configuration constants.
+"""
+
+PROJECT_NAME = "penguin-health"
+AWS_REGION = "us-east-1"
+
+COMMON_TAGS = {
+    "Project": "penguin-health",
+    "ManagedBy": "cdk",
+}
+
+# Existing IAM role that Textract uses to publish completion notifications to SNS.
+# TODO: Replace with the actual ARN from your AWS account.
+EXISTING_SNS_ROLE_ARN = "<role_arn>"
+
+# Lambda defaults
+LAMBDA_DEFAULT_TIMEOUT_SECONDS = 900
+LAMBDA_DEFAULT_MEMORY_MB = 256

@@ -1,0 +1,81 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "b613b5cbad4ea19fac71c226f3ca028dcb66ee91abdd9537e5a8c155870ec869": {
+      "displayName": "AdminUi/AdminApiFunction/Code",
+      "source": {
+        "path": "asset.b613b5cbad4ea19fac71c226f3ca028dcb66ee91abdd9537e5a8c155870ec869",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "current_account-us-east-1-69a56e3b": {
+          "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1",
+          "objectKey": "b613b5cbad4ea19fac71c226f3ca028dcb66ee91abdd9537e5a8c155870ec869.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-us-east-1"
+        }
+      }
+    },
+    "f035171feaa1d0a3665054cef00fba026a42d1aa93fe9095f9b9686f7f95ed00": {
+      "displayName": "AuditEngine/ProcessRawChartsFn/Code",
+      "source": {
+        "path": "asset.f035171feaa1d0a3665054cef00fba026a42d1aa93fe9095f9b9686f7f95ed00",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "current_account-us-east-1-43259ef1": {
+          "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1",
+          "objectKey": "f035171feaa1d0a3665054cef00fba026a42d1aa93fe9095f9b9686f7f95ed00.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-us-east-1"
+        }
+      }
+    },
+    "89ca14bf56d0863f0b68f918dc8ea82f8f3e95414156d3775acc37b011f69ed0": {
+      "displayName": "AuditEngine/TextractResultHandlerFn/Code",
+      "source": {
+        "path": "asset.89ca14bf56d0863f0b68f918dc8ea82f8f3e95414156d3775acc37b011f69ed0",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "current_account-us-east-1-00a8f626": {
+          "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1",
+          "objectKey": "89ca14bf56d0863f0b68f918dc8ea82f8f3e95414156d3775acc37b011f69ed0.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-us-east-1"
+        }
+      }
+    },
+    "adbf527b6f93af7cc5c29c6d229f6a8da713e640b034f51978033895008347d9": {
+      "displayName": "AuditEngine/RulesEngineRagFn/Code",
+      "source": {
+        "path": "asset.adbf527b6f93af7cc5c29c6d229f6a8da713e640b034f51978033895008347d9",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "current_account-us-east-1-edb2b03f": {
+          "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1",
+          "objectKey": "adbf527b6f93af7cc5c29c6d229f6a8da713e640b034f51978033895008347d9.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-us-east-1"
+        }
+      }
+    },
+    "0240ba2c06879d27128cf7ba915ab01420fa2b69f6497a5d09e685517640236e": {
+      "displayName": "PenguinHealth Template",
+      "source": {
+        "path": "PenguinHealth.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "current_account-us-east-1-34d52054": {
+          "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1",
+          "objectKey": "0240ba2c06879d27128cf7ba915ab01420fa2b69f6497a5d09e685517640236e.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}
