@@ -34,4 +34,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# python -m scripts.lambda_invocation.invoke_rules_engine_betterbrain
+# python -m scripts.lambda_invocation.invoke_rules_engine_betterbrain --profile penguin
