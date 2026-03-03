@@ -61,16 +61,16 @@
         }
       }
     },
-    "0240ba2c06879d27128cf7ba915ab01420fa2b69f6497a5d09e685517640236e": {
+    "c5d377bc1613f8d195c83a097093c093b1e6d41a0b65a8ee00794aafc8066bea": {
       "displayName": "PenguinHealth Template",
       "source": {
         "path": "PenguinHealth.template.json",
         "packaging": "file"
       },
       "destinations": {
-        "current_account-us-east-1-34d52054": {
+        "current_account-us-east-1-416cbac4": {
           "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1",
-          "objectKey": "0240ba2c06879d27128cf7ba915ab01420fa2b69f6497a5d09e685517640236e.json",
+          "objectKey": "c5d377bc1613f8d195c83a097093c093b1e6d41a0b65a8ee00794aafc8066bea.json",
           "region": "us-east-1",
           "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-us-east-1"
         }

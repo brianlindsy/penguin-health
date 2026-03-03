@@ -519,7 +519,10 @@
       {
        "Action": "bedrock:InvokeModel",
        "Effect": "Allow",
-       "Resource": "arn:aws:bedrock:*::foundation-model/anthropic.*"
+       "Resource": [
+        "arn:aws:bedrock:*::foundation-model/anthropic.*",
+        "arn:aws:bedrock:*:*:inference-profile/*"
+       ]
       }
      ],
      "Version": "2012-10-17"

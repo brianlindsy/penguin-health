@@ -98,7 +98,10 @@ class AdminUi(Construct):
         # Bedrock permissions for LLM enhancement endpoints
         self.api_function.add_to_role_policy(iam.PolicyStatement(
             actions=["bedrock:InvokeModel"],
-            resources=["arn:aws:bedrock:*::foundation-model/anthropic.*"],
+            resources=[
+                "arn:aws:bedrock:*::foundation-model/anthropic.*",
+                "arn:aws:bedrock:*:*:inference-profile/*",
+            ],
         ))
 
         # ----- API Gateway HTTP API -----
