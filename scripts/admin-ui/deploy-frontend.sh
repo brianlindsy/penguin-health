@@ -4,7 +4,7 @@ set -euo pipefail
 # Deploy admin UI frontend to S3 and invalidate CloudFront cache
 #
 # Usage:
-#   ./scripts/admin-ui/deploy-frontend.sh
+#   ./scripts/admin-ui/deploy-frontend.sh [--profile aws-profile]
 #
 # Prerequisites:
 #   - CDK stack must be deployed (cdk deploy from infra/)
@@ -16,6 +16,25 @@ FRONTEND_DIR="$PROJECT_ROOT/admin-ui"
 
 BUCKET_NAME="penguin-health-admin-ui"
 REGION="us-east-1"
+AWS_PROFILE_ARG=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --profile requires a value" >&2
+        exit 1
+      fi
+      AWS_PROFILE_ARG="--profile $2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      echo "Usage: $0 [--profile aws-profile]" >&2
+      exit 1
+      ;;
+  esac
+done
 
 # Colors
 GREEN='\033[0;32m'
@@ -31,7 +50,8 @@ echo ""
 echo -e "${BLUE}Syncing to S3...${NC}"
 aws s3 sync dist/ "s3://$BUCKET_NAME/" \
   --delete \
-  --region "$REGION"
+  --region "$REGION" \
+  $AWS_PROFILE_ARG
 
 echo ""
 echo -e "${BLUE}Invalidating CloudFront cache...${NC}"
@@ -41,13 +61,15 @@ DIST_ID=$(aws cloudformation describe-stacks \
   --stack-name PenguinHealthAdminUi \
   --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" \
   --output text \
-  --region "$REGION" 2>/dev/null || echo "")
+  --region "$REGION" \
+  $AWS_PROFILE_ARG 2>/dev/null || echo "")
 
 if [ -n "$DIST_ID" ]; then
   aws cloudfront create-invalidation \
     --distribution-id "$DIST_ID" \
     --paths "/*" \
-    --region "$REGION" > /dev/null
+    --region "$REGION" \
+    $AWS_PROFILE_ARG > /dev/null
   echo -e "${GREEN}CloudFront invalidation created${NC}"
 else
   echo -e "${RED}Could not find CloudFront distribution ID. Skipping invalidation.${NC}"
@@ -61,7 +83,8 @@ CF_URL=$(aws cloudformation describe-stacks \
   --stack-name PenguinHealthAdminUi \
   --query "Stacks[0].Outputs[?OutputKey=='CloudFrontUrl'].OutputValue" \
   --output text \
-  --region "$REGION" 2>/dev/null || echo "")
+  --region "$REGION" \
+  $AWS_PROFILE_ARG 2>/dev/null || echo "")
 
 if [ -n "$CF_URL" ]; then
   echo -e "URL: ${BLUE}${CF_URL}${NC}"

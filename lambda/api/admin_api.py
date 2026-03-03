@@ -292,20 +292,73 @@ def enhance_fields(path_params, body, **kwargs):
 
     rule_text = body['rule_text']
 
+#     system_prompt = """You are an expert at analyzing medical chart validation rules.
+# Given a rule description, identify the key fields that need to be extracted from chart documents to evaluate this rule.
+
+# Return a JSON array of field objects. Each object must have:
+# - "name": A snake_case identifier for the field (e.g., "recipient", "service_location")
+# - "type": The data type - one of "string", "number", "boolean", "datetime"
+# - "description": A brief description of what this field represents in the chart
+
+# Only include fields that are explicitly or implicitly referenced in the rule.
+# Return ONLY the JSON array, no other text."""
+
     system_prompt = """You are an expert at analyzing medical chart validation rules.
-Given a rule description, identify the key fields that need to be extracted from chart documents to evaluate this rule.
+    Given a rule description, identify the key fields that need to be extracted from chart documents to evaluate this rule.
 
-Return a JSON array of field objects. Each object must have:
-- "name": A snake_case identifier for the field (e.g., "recipient", "service_location")
-- "type": The data type - one of "string", "number", "boolean", "datetime"
-- "description": A brief description of what this field represents in the chart
+    Return a JSON array of field objects. Each object must have:
+    - "name": A snake_case identifier for the field (e.g., "recipient", "service_location")
+    - "type": The data type - one of "string", "number", "boolean", "datetime"
+    - "description": A brief description of what this field represents in the chart
 
-Only include fields that are explicitly or implicitly referenced in the rule.
-Return ONLY the JSON array, no other text."""
+    Only include fields that are explicitly or implicitly referenced in the rule.
+    Return ONLY the JSON array, no other text.
+
+    Here are examples:
+
+    Example 1:
+    Rule text: Determine if the 'Recipient' field is consistent with the 'Service Location' and the actual method of contact documented in the text.
+
+    Output:
+    [
+    {
+        "name": "recipient",
+        "type": "string",
+        "description": "The individual or entity receiving the service or communication"
+    },
+    {
+        "name": "service_location",
+        "type": "string",
+        "description": "The documented location where the service took place"
+    },
+    {
+        "name": "method_of_contact",
+        "type": "string",
+        "description": "The communication method used such as in-person, phone, or video"
+    }
+    ]
+
+    Example 2:
+    Rule text: Identify the modality (Physical In-Person, Audio/Phone, or Video/Telehealth).
+
+    Output:
+    [
+    {
+        "name": "modality",
+        "type": "string",
+        "description": "The communication modality: In-Person, Phone, or Video"
+    },
+    {
+        "name": "platform_or_phone",
+        "type": "string",
+        "description": "The video platform name or phone number, depending on modality"
+    }
+    ]
+    """
 
     user_prompt = f"""Analyze this validation rule and identify the fields to extract:
 
-{rule_text}
+Rule text: {rule_text}
 
 Return a JSON array of fields to extract."""
 
@@ -347,6 +400,8 @@ def enhance_note(path_params, body, **kwargs):
 
     note = body['note']
     rule_text = body.get('rule_text', '')
+    document_id = body.get('document_id')
+    validation_run_id = body.get('validation_run_id')
 
     system_prompt = """You are an expert at optimizing contextual notes for medical chart validation systems.
 
@@ -370,6 +425,13 @@ Original Note: {note}"""
 
 This note is associated with the following validation rule:
 {rule_text}"""
+
+    if document_id or validation_run_id:
+        user_prompt += "\n\nAdditional context:\n"
+        if document_id:
+            user_prompt += f"- Document ID: {document_id}\n"
+        if validation_run_id:
+            user_prompt += f"- Validation Run ID: {validation_run_id}\n"
 
     try:
         resp = bedrock.invoke_model(
