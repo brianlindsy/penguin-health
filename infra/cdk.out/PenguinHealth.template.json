@@ -517,6 +517,97 @@
        }
       },
       {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "DatabaseValidationResultsTableE1A12A7C",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DatabaseValidationResultsTableE1A12A7C",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "DatabaseValidationResultsTableE1A12A7C",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DatabaseValidationResultsTableE1A12A7C",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "DatabaseValidationResultsTableE1A12A7C",
+            "Arn"
+           ]
+          },
+          "/index/*"
+         ]
+        ]
+       }
+      },
+      {
        "Action": "bedrock:InvokeModel",
        "Effect": "Allow",
        "Resource": [
@@ -545,7 +636,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "b613b5cbad4ea19fac71c226f3ca028dcb66ee91abdd9537e5a8c155870ec869.zip"
+     "S3Key": "59774ecd42886cb3878779441109b7a397ca6e554accda7048f27b372eeb6469.zip"
     },
     "Environment": {
      "Variables": {
@@ -585,7 +676,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminApiFunction/Resource",
-    "aws:asset:path": "asset.b613b5cbad4ea19fac71c226f3ca028dcb66ee91abdd9537e5a8c155870ec869",
+    "aws:asset:path": "asset.59774ecd42886cb3878779441109b7a397ca6e554accda7048f27b372eeb6469",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -2193,7 +2284,7 @@
   "CDKMetadata": {
    "Type": "AWS::CDK::Metadata",
    "Properties": {
-    "Analytics": "v2:deflate64:H4sIAAAAAAAA/3VRS0/DMAz+Lbtnga0S4toN8ThRdXCe0jQUszapYoepRP3vJCnbKhCn75HPie2s+Tq74dcLccSlrA/LFirudyTkgQVr7+tBi87UwXwRVavY9k0nMjLUGEzTg0xmIjtXobTQExgd3bkemTSNBjLcv6KyhTFtjJz5iWxbUJrmR3+dB2tcP7JWdFUtuL93Wp6enPNC2Q4Q0+MgOu5LM42QsDAtyCHlEgsjZXuBqAh5HiFo7jdOHhRtBCo20Vjwwya43DPXIxM9NILUUQyfa+4fifq8hxiLEGVYc5PamUi0SuNoYk+aVGPFaZRf8pLLHb0bC1/KpqvPKqy7Na5+s0YT93eAZKFyqX6XPVtoQOdSKsRtCNjpL/6x58XjyEqFxlmpWFpS7B10k8od9Y5GVgyhCX2V8dWK3y4+EGBpnSboFC8n/AYlSFmjdgIAAA=="
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/3VR21LDIBD9Ft8p2rQ/kNbx8mQm1ecOITSuTSDDLnYik38XiG0zOj6dC2dhd8l4tl7yuxtxwoWsj4sWKu53JOSRBWvv60GLztTBfBVVq9j2oBMZGWoMpulBJjORnatQWugJjI7uXI9MmkYDGe7fUNnCmDZGLvxMti0oTfOjv86jNa4fWSu6qhbcPzgtz0/OeaFsB4jpcRAd96WZRkhYmBbkkHKJhZFWe4GoCHkeIWjuN04eFW0EKjbRWPDDJrjeM9cjEz00gtRJDJ8Z909Efd5DjEWIMqy5Se1MJFqlcTSxZ02qseI8yi95zeWO3o2FL2XT1RcV1t0aVx+s0cT9PSBZqFyq361eLDSgcykV4jYE7PQX/9jz4nFkpULjrFQsLSn2DrpJ5Y56RyMrhtCEvl3x5ZpnNx8IsLBOE3SKlxN+A3ZbtGJ2AgAA"
    },
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/CDKMetadata/Default"
