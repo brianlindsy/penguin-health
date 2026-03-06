@@ -54,6 +54,11 @@ export function RuleCreator() {
   const handleAddNote = async () => {
     if (!newNote.trim()) return
 
+    if (!rule.id.trim()) {
+      setError('Save the rule (with a Rule ID) before adding notes')
+      return
+    }
+
     setEnhancing(true)
     setError('')
 
@@ -64,6 +69,8 @@ export function RuleCreator() {
         rule.rule_text,
         documentId,
         validationRunId,
+        rule.id,
+        rule.notes,
       )
       setRule(prev => ({
         ...prev,

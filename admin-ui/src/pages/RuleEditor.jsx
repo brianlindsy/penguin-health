@@ -102,6 +102,8 @@ export function RuleEditor() {
         rule.rule_text,
         documentId,
         validationRunId,
+        rule.id,
+        rule.notes,
       )
       setRule(prev => ({
         ...prev,

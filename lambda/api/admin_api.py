@@ -14,6 +14,7 @@ from boto3.dynamodb.conditions import Key
 
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('penguin-health-org-config')
+validation_results_table = dynamodb.Table('penguin-health-validation-results')
 
 bedrock = boto3.client('bedrock-runtime')
 MODEL_ID = 'global.anthropic.claude-sonnet-4-5-20250929-v1:0'
@@ -77,6 +78,25 @@ def list_organizations(**kwargs):
 
     return response(200, {'organizations': orgs})
 
+def get_organization_by_id(org_id) -> tuple[dict | None, str | None]:
+
+    result = table.get_item(
+        Key={'pk': f'ORG#{org_id}', 'sk': 'METADATA'}
+    )
+
+    if 'Item' not in result:
+        return None, f'Organization not found: {org_id}'
+
+    item = result['Item']
+    return {
+        'organization_id': item.get('organization_id'),
+        'organization_name': item.get('organization_name'),
+        'display_name': item.get('display_name'),
+        'enabled': item.get('enabled', False),
+        's3_bucket_name': item.get('s3_bucket_name'),
+        'created_at': item.get('created_at'),
+        'updated_at': item.get('updated_at'),
+    }, None
 
 def get_organization(path_params, **kwargs):
     """Get organization detail"""
@@ -398,10 +418,14 @@ def enhance_note(path_params, body, **kwargs):
     if not body or 'note' not in body:
         return response(400, {'error': 'Request body must include note'})
 
+    org_id = path_params.get('orgId')
+
     note = body['note']
     rule_text = body.get('rule_text', '')
+    rule_id = body.get('rule_id')
     document_id = body.get('document_id')
     validation_run_id = body.get('validation_run_id')
+    notes = body.get('notes') or []
 
     system_prompt = """You are an expert at optimizing contextual notes for medical chart validation systems.
 
@@ -426,12 +450,45 @@ Original Note: {note}"""
 This note is associated with the following validation rule:
 {rule_text}"""
 
-    if document_id or validation_run_id:
-        user_prompt += "\n\nAdditional context:\n"
-        if document_id:
-            user_prompt += f"- Document ID: {document_id}\n"
-        if validation_run_id:
-            user_prompt += f"- Validation Run ID: {validation_run_id}\n"
+    # if notes:
+    #     user_prompt += "\n\nExisting notes for this rule:\n"
+    #     for idx, n in enumerate(notes, start=1):
+    #         user_prompt += f"{idx}. {n}\n"
+
+    # if rule_id or document_id or validation_run_id:
+    #     user_prompt += "\nAdditional context:\n"
+    #     if rule_id:
+    #         user_prompt += f"- Rule ID: {rule_id}\n"
+    #     if document_id:
+    #         user_prompt += f"- Document ID: {document_id}\n"
+    #     if validation_run_id:
+    #         user_prompt += f"- Validation Run ID: {validation_run_id}\n"
+
+    print(f"Rule ID: {rule_id}, Document ID: {document_id}, Validation Run ID: {validation_run_id}")
+    print(f"Previous notes: {notes}")
+    print(f"Organization ID: {org_id}")
+
+    # now fetch the document from S3, along with the validation result from S3
+
+    org, err = get_organization_by_id(org_id)
+    if err:
+        return response(500, {'error': err})
+
+    print(f"Organization: {org}")
+
+    s3_bucket_name = org.get('s3_bucket_name')
+    if s3_bucket_name is None:
+        return response(500, {'error': 'Organization S3 bucket not found'})
+
+    # query validation results table for the validation result
+    validation_result = validation_results_table.get_item(
+        Key={'gsi2pk': f'RUN#{validation_run_id}'}
+    )
+    if 'Item' not in validation_result:
+        return response(500, {'error': f'Validation result not found: {validation_run_id}'})
+
+    validation_result = validation_result['Item']
+    print(f"Validation result: {validation_result}")
 
     try:
         resp = bedrock.invoke_model(

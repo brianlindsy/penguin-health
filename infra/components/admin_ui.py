@@ -28,7 +28,8 @@ from components.bundler import CopyFileBundler
 class AdminUi(Construct):
 
     def __init__(self, scope: Construct, id: str, *,
-                 org_config_table: dynamodb.ITable) -> None:
+                 org_config_table: dynamodb.ITable,
+                 validation_results_table: dynamodb.ITable) -> None:
         super().__init__(scope, id)
 
         # ----- Cognito -----
@@ -95,6 +96,13 @@ class AdminUi(Construct):
             resources=[f"{org_config_table.table_arn}/index/*"],
         ))
 
+        validation_results_table.grant_read_write_data(self.api_function)
+        self.api_function.add_to_role_policy(iam.PolicyStatement(
+            actions=["dynamodb:Query", "dynamodb:Scan", "dynamodb:GetItem",
+                     "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
+            resources=[f"{validation_results_table.table_arn}/index/*"],
+        ))
+        
         # Bedrock permissions for LLM enhancement endpoints
         self.api_function.add_to_role_policy(iam.PolicyStatement(
             actions=["bedrock:InvokeModel"],
