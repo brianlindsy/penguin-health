@@ -112,22 +112,32 @@ class AuditEngine(Construct):
         )
 
         # ----- rules-engine-rag -----
+        # Module files for the rules engine (refactored for maintainability)
+        rules_engine_modules = [
+            "rules_engine_rag.py",      # Lambda entry point
+            "multi_org_config.py",       # DynamoDB org config loading
+            "rate_limiter.py",           # Rate limiting for Bedrock API
+            "bedrock_client.py",         # Claude model invocation
+            "document_validator.py",     # Batched LLM validation
+            "results_handler.py",        # DynamoDB storage and CSV reports
+            "field_extractor.py",        # Text field extraction
+        ]
+
         self.rules_engine_fn = _lambda.Function(self, "RulesEngineRagFn",
             function_name=f"{config.PROJECT_NAME}-rules-engine-rag",
             runtime=_lambda.Runtime.PYTHON_3_14,
             handler="rules_engine_rag.lambda_handler",
             code=_lambda.Code.from_asset(
                 lambda_dir,
-                exclude=["*", "!rules_engine_rag.py", "!multi_org_config.py"],
+                exclude=["*"] + [f"!{m}" for m in rules_engine_modules],
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
                     local=MultiFileBundler([
-                        os.path.join(lambda_dir, "rules_engine_rag.py"),
-                        os.path.join(lambda_dir, "multi_org_config.py"),
+                        os.path.join(lambda_dir, m) for m in rules_engine_modules
                     ]),
                 ),
             ),
-            timeout=Duration.seconds(300),
+            timeout=Duration.minutes(15),  # Max Lambda timeout for continuation pattern
             memory_size=512,
         )
 
@@ -145,4 +155,12 @@ class AuditEngine(Construct):
         self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
             actions=["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe"],
             resources=["*"],
+        ))
+        # Permission to invoke itself for continuation pattern
+        # Use ARN pattern to avoid circular dependency
+        self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["lambda:InvokeFunction"],
+            resources=[
+                f"arn:aws:lambda:{config.AWS_REGION}:*:function:{config.PROJECT_NAME}-rules-engine-rag"
+            ],
         ))

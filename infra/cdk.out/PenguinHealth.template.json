@@ -519,7 +519,10 @@
       {
        "Action": "bedrock:InvokeModel",
        "Effect": "Allow",
-       "Resource": "arn:aws:bedrock:*::foundation-model/anthropic.*"
+       "Resource": [
+        "arn:aws:bedrock:*::foundation-model/anthropic.*",
+        "arn:aws:bedrock:*:*:inference-profile/*"
+       ]
       }
      ],
      "Version": "2012-10-17"
@@ -2125,6 +2128,11 @@
        ],
        "Effect": "Allow",
        "Resource": "*"
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": "arn:aws:lambda:us-east-1:*:function:penguin-health-rules-engine-rag"
       }
      ],
      "Version": "2012-10-17"
@@ -2147,7 +2155,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "adbf527b6f93af7cc5c29c6d229f6a8da713e640b034f51978033895008347d9.zip"
+     "S3Key": "61a84da76fd1d7309f28c40e17fd91bda184e4c8cf29c87edf5f87299a162b73.zip"
     },
     "FunctionName": "penguin-health-rules-engine-rag",
     "Handler": "rules_engine_rag.lambda_handler",
@@ -2169,7 +2177,7 @@
       "Value": "penguin-health"
      }
     ],
-    "Timeout": 300
+    "Timeout": 900
    },
    "DependsOn": [
     "AuditEngineRulesEngineRagFnServiceRoleDefaultPolicyAEE323E7",
@@ -2177,7 +2185,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/RulesEngineRagFn/Resource",
-    "aws:asset:path": "asset.adbf527b6f93af7cc5c29c6d229f6a8da713e640b034f51978033895008347d9",
+    "aws:asset:path": "asset.61a84da76fd1d7309f28c40e17fd91bda184e4c8cf29c87edf5f87299a162b73",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
