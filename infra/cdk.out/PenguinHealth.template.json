@@ -676,7 +676,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminApiFunction/Resource",
-    "aws:asset:path": "asset.59774ecd42886cb3878779441109b7a397ca6e554accda7048f27b372eeb6469",
+    "aws:asset:path": "/Users/abhargava/coding/covalent/penguin-health/lambda/api",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -1722,7 +1722,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/ProcessRawChartsFn/Resource",
-    "aws:asset:path": "asset.f035171feaa1d0a3665054cef00fba026a42d1aa93fe9095f9b9686f7f95ed00",
+    "aws:asset:path": "/Users/abhargava/coding/covalent/penguin-health/lambda/multi-org",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -1910,7 +1910,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/TextractResultHandlerFn/Resource",
-    "aws:asset:path": "asset.89ca14bf56d0863f0b68f918dc8ea82f8f3e95414156d3775acc37b011f69ed0",
+    "aws:asset:path": "/Users/abhargava/coding/covalent/penguin-health/lambda/multi-org",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -2276,7 +2276,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/RulesEngineRagFn/Resource",
-    "aws:asset:path": "asset.61a84da76fd1d7309f28c40e17fd91bda184e4c8cf29c87edf5f87299a162b73",
+    "aws:asset:path": "/Users/abhargava/coding/covalent/penguin-health/lambda/multi-org",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }

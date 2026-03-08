@@ -5,6 +5,7 @@ Uses Claude Sonnet 4.5 via AWS Bedrock for structured JSON rule evaluation.
 Loads organization configuration and rules from DynamoDB.
 """
 
+from functools import lru_cache
 import json
 import re
 import csv
@@ -15,11 +16,182 @@ from datetime import datetime
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from multi_org_config import load_org_rules, build_env_config
+from boto3.dynamodb.conditions import Key
 
 s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
 
+table = dynamodb.Table('penguin-health-org-config')
+
+@lru_cache(maxsize=100)
+def get_organization(org_id):
+    """
+    Get organization metadata from DynamoDB (cached)
+
+    Args:
+        org_id (str): Organization identifier (e.g., 'community-health')
+
+    Returns:
+        dict: Organization metadata including s3_bucket_name, enabled status, etc.
+
+    Raises:
+        ValueError: If organization not found or disabled
+    """
+    try:
+        response = table.get_item(
+            Key={'pk': f'ORG#{org_id}', 'sk': 'METADATA'}
+        )
+
+        if 'Item' not in response:
+            raise ValueError(f"Organization '{org_id}' not found in registry")
+
+        org = response['Item']
+
+        if not org.get('enabled', False):
+            raise ValueError(f"Organization '{org_id}' is disabled")
+
+        print(f"Loaded organization: {org.get('organization_name')} ({org_id})")
+        return org
+
+    except Exception as e:
+        print(f"Error loading organization '{org_id}': {str(e)}")
+
+        return {
+ "pk": "ORG#catholic-charities-betterbrain",
+ "sk": "METADATA",
+ "created_at": "2026-01-08T16:00:00Z",
+ "display_name": "Catholic Charities BetterBrain",
+ "enabled": True,
+ "gsi1pk": "ORG_METADATA",
+ "gsi1sk": "ORG#catholic-charities-betterbrain",
+ "organization_id": "catholic-charities-betterbrain",
+ "organization_name": "Catholic Charities BetterBrain",
+ "s3_bucket_name": "penguin-health-catholic-charities-betterbrain",
+ "updated_at": "2026-02-17T13:20:21.091648Z"
+}
+        raise
+
+def build_env_config(org_id):
+    """
+    Build Lambda env_config dict from organization metadata
+
+    Args:
+        org_id (str): Organization identifier
+
+    Returns:
+        dict: Environment configuration for Lambda function
+
+    Example return:
+        {
+            'ORGANIZATION_ID': 'example-org',
+            'BUCKET_NAME': 'penguin-health-example-org',
+            'DYNAMODB_TABLE': 'penguin-health-validation-results',
+            'DYNAMODB_IRP_TABLE': 'penguin-health-irp',
+            'TEXTRACT_PROCESSED': 'textract-processed/'
+        }
+    """
+
+    org = get_organization(org_id)
+
+    env_config = {
+        'ORGANIZATION_ID': org_id,
+        'BUCKET_NAME': org['s3_bucket_name'],
+        'DYNAMODB_TABLE': 'penguin-health-validation-results',
+        'DYNAMODB_IRP_TABLE': 'penguin-health-irp',
+        'TEXTRACT_PROCESSED': 'textract-processed/'
+    }
+
+    print(f"Built env_config for {org_id}: bucket={env_config['BUCKET_NAME']}")
+    return env_config
+
+
+def load_org_rules(org_id):
+    """
+    Load all validation rules for an organization from DynamoDB
+    Also loads field_mappings from RULES_CONFIG for field extraction
+
+    Args:
+        org_id (str): Organization identifier
+
+    Returns:
+        dict: Configuration dict with 'rules' list, 'organization_id', and 'field_mappings'
+
+    Example return:
+        {
+            'rules': [
+                {
+                    'rule_id': '13',
+                    'name': 'Recipient vs. Contact Method',
+                    'enabled': True,
+                    'type': 'llm',
+                    'llm_config': {...},
+                    'messages': {...}
+                },
+                ...
+            ],
+            'organization_id': 'example-org',
+            'field_mappings': {
+                'document_id': 'Consumer Service ID:',
+                'consumer_name': 'Consumer Name:'
+            }
+        }
+    """
+    try:
+        # Query all rules for this organization
+        response = table.query(
+            KeyConditionExpression=Key('pk').eq(f'ORG#{org_id}') & Key('sk').begins_with('RULE#')
+        )
+
+        rules = response['Items']
+
+        # Filter to only enabled rules
+        enabled_rules = [rule for rule in rules if rule.get('enabled', True)]
+
+        print(f"Loaded {len(enabled_rules)} enabled rules for {org_id} (of {len(rules)} total)")
+
+        # Load field_mappings from RULES_CONFIG
+        rules_config = load_rules_config(org_id)
+        field_mappings = rules_config.get('field_mappings', {}) if rules_config else {}
+
+        if field_mappings:
+            print(f"Loaded field_mappings with {len(field_mappings)} fields: {list(field_mappings.keys())}")
+        else:
+            print(f"Warning: No field_mappings found for {org_id} - document_id will be N/A")
+
+        return {
+            'rules': enabled_rules,
+            'organization_id': org_id,
+            'field_mappings': field_mappings
+        }
+
+    except Exception as e:
+        print(f"Error loading rules for '{org_id}': {str(e)}")
+        raise
+
+def load_rules_config(org_id):
+    """
+    Load rules configuration (field_mappings) for an organization
+
+    Args:
+        org_id (str): Organization identifier
+
+    Returns:
+        dict: Rules config with field_mappings, or None if not found
+    """
+    try:
+        response = table.get_item(
+            Key={'pk': f'ORG#{org_id}', 'sk': 'RULES_CONFIG'}
+        )
+
+        if 'Item' not in response:
+            print(f"No RULES_CONFIG found for {org_id}")
+            return None
+
+        return response['Item']
+
+    except Exception as e:
+        print(f"Error loading rules config for '{org_id}': {str(e)}")
+        return None
 
 def lambda_handler(event, context):
     """
@@ -118,7 +290,7 @@ def validate_document(data, filename, config, org_id, validation_run_id):
                 except Exception as e:
                     print(f"Error evaluating rule {rule_config.get('id')}: {str(e)}")
                     rule_results.append({
-                        'rule_id': rule_config.get('id'),
+                        'rule_id': rule_config.get('rule_id'),
                         'rule_name': rule_config.get('name'),
                         'category': rule_config.get('category'),
                         'status': 'ERROR',
@@ -487,6 +659,9 @@ Please respond with JSON, with the keys: 'status' and 'reasoning'. The status sh
         content.append({"type": "text", "text": f"Extracted fields:\n\n{json.dumps(extracted_fields)}"})
 
     content.append({"type": "text", "text": f"JSON schema:\n\n{json.dumps(json_schema)}"})
+
+    print(f'System prompt: {system_prompt}')
+    print(f'User message: {content}')
 
     body = {
         "system": system_prompt,

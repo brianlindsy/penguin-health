@@ -21,7 +21,7 @@ def main():
         FunctionName='rules-engine-betterbrain',
         InvocationType='RequestResponse',
         Payload=json.dumps({
-            'organization_id': 'catholic-charities'
+            'organization_id': 'catholic-charities-betterbrain'
         })
     )
 
@@ -35,3 +35,7 @@ if __name__ == "__main__":
     main()
 
 # python -m scripts.lambda_invocation.invoke_rules_engine_betterbrain --profile penguin
+
+
+# Document ID: 1334400
+#

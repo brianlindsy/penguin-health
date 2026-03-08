@@ -7,12 +7,15 @@ Includes LLM-enhanced endpoints for rule field extraction and note enhancement.
 """
 
 import json
+from typing import Optional
 import boto3
 from datetime import datetime
 from decimal import Decimal
+import re
 from boto3.dynamodb.conditions import Key
 
 dynamodb = boto3.resource('dynamodb')
+s3_client = boto3.client('s3')
 table = dynamodb.Table('penguin-health-org-config')
 validation_results_table = dynamodb.Table('penguin-health-validation-results')
 
@@ -413,6 +416,128 @@ Return a JSON array of fields to extract."""
         return response(500, {'error': str(e)})
 
 
+def _extract_complete_json(text: str) -> Optional[str]:
+    """
+    Extract a complete JSON object by properly matching braces.
+    Handles nested objects and strings containing braces.
+    """
+    start = text.find('{')
+    if start == -1:
+        return None
+
+    brace_count = 0
+    in_string = False
+    escape_next = False
+
+    for i in range(start, len(text)):
+        char = text[i]
+
+        if escape_next:
+            escape_next = False
+            continue
+
+        if char == '\\':
+            escape_next = True
+            continue
+
+        if char == '"':
+            in_string = not in_string
+            continue
+
+        if not in_string:
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    return text[start:i+1]
+
+    return None
+    
+def extract_json_from_claude_response(response_body: dict) -> Optional[dict]:
+    """Extract JSON from a Bedrock Claude model response."""
+    content_list = response_body.get("content", [])
+    if not content_list:
+        print("No 'content' field found or it's empty in the model response.")
+        return None
+
+    all_text = " ".join(
+        block.get("text", "") for block in content_list if block.get("type") == "text"
+    )
+
+    # Try ```json``` code block first
+    match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", all_text)
+    if not match:
+        print("No JSON code block found. Trying raw extraction...")
+        json_str = _extract_complete_json(all_text)
+        if not json_str:
+            print("No valid JSON object found.")
+            return None
+
+        try:
+            parsed = json.loads(json_str)
+            print(f"Extracted JSON data: {json.dumps(parsed, indent=2)}")
+            return parsed
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON: {e}")
+            print(f"Raw JSON string: {json_str}")
+        return None
+
+    json_str = match.group(1)
+    try:
+        parsed = json.loads(json_str)
+        print(f"Extracted JSON data: {json.dumps(parsed, indent=2)}")
+        return parsed
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON: {e}")
+        print(f"Raw JSON string: {json_str}")
+        return None
+
+def invoke_claude_model(
+    inference_profile_id: str,
+    body: dict,
+    return_json_only: bool,
+    bedrock_client=None,
+    retries: int = 1,
+    raise_on_error: bool = True,
+    region_name: str = 'us-east-1',
+):
+    """Invoke Claude model via Bedrock with optional JSON extraction and retry logic."""
+    if bedrock_client is None:
+        bedrock_client = boto3.client('bedrock-runtime', region_name=region_name)
+
+    model_response = bedrock_client.invoke_model(
+        modelId=inference_profile_id,
+        body=json.dumps(body),
+        contentType='application/json',
+        accept='application/json',
+    )
+
+    response_body = json.loads(model_response['body'].read())
+
+    if not return_json_only:
+        return response_body
+
+    extracted_json = extract_json_from_claude_response(response_body)
+
+    if extracted_json is None:
+        if retries > 0:
+            return invoke_claude_model(
+                inference_profile_id=inference_profile_id,
+                body=body,
+                return_json_only=return_json_only,
+                bedrock_client=bedrock_client,
+                retries=retries - 1,
+                raise_on_error=raise_on_error,
+                region_name=region_name,
+            )
+        else:
+            if raise_on_error:
+                raise ValueError("No JSON found in Claude response")
+            return None
+
+    return extracted_json
+
 def enhance_note(path_params, body, **kwargs):
     """Use LLM to enhance a note for better validation"""
     if not body or 'note' not in body:
@@ -427,28 +552,119 @@ def enhance_note(path_params, body, **kwargs):
     validation_run_id = body.get('validation_run_id')
     notes = body.get('notes') or []
 
-    system_prompt = """You are an expert at optimizing contextual notes for medical chart validation systems.
+#     system_prompt = """You are an expert at optimizing contextual notes for medical chart validation systems.
 
-Your task is to rewrite notes to be clearer and more actionable for an LLM that will use them when validating charts.
+# Your task is to rewrite notes to be clearer and more actionable for an LLM that will use them when validating charts.
 
-The enhanced note should:
-- Be concise but complete
-- Use precise, unambiguous language
-- Clarify any implicit assumptions
-- Provide clear guidance for validation decisions
-- Be written in a factual, instructional tone
+# The enhanced note should:
+# - Be concise but complete
+# - Use precise, unambiguous language
+# - Clarify any implicit assumptions
+# - Provide clear guidance for validation decisions
+# - Be written in a factual, instructional tone
 
-Return ONLY the enhanced note text, no other text or explanation."""
+# Return ONLY the enhanced note text, no other text or explanation."""
 
-    user_prompt = f"""Enhance this contextual note for use in chart validation:
+    system_prompt = """
+    You are an expert medical chart validation assistant responsible for improving rule clarification notes used by an automated medical chart validation system.
 
-Original Note: {note}"""
+    Your role is to convert human reviewer feedback into reusable clarification guidance that will help the system make more accurate validation decisions in the future.
 
-    if rule_text:
-        user_prompt += f"""
+    SYSTEM CONTEXT
+    The validation system operates as follows:
+    1. A medical chart is evaluated against a compliance rule.
+    2. The system produces a validation result (pass/fail or similar).
+    3. A human reviewer evaluates the result.
+    4. If the system made an incorrect or unclear decision, the human provides feedback.
+    5. Clarification notes are added to help the system interpret the rule more accurately in future validations.
 
-This note is associated with the following validation rule:
-{rule_text}"""
+    You will receive the following inputs:
+    - The rule text
+    - The medical chart that was evaluated (optional)
+    - The system's previous validation result
+    - Human feedback explaining the mistake or clarification
+    - Existing clarification notes already associated with the rule
+
+    YOUR OBJECTIVE
+    Determine whether the human feedback reveals a reusable insight that should become a new clarification note for future validations.
+
+    If it does, write a concise clarification note that improves the system's ability to correctly interpret the rule.
+
+    If the feedback is already covered by existing notes, or does not add reusable guidance, do NOT create a new note.
+
+    HOW TO THINK ABOUT THE TASK
+    Internally reason through the following steps before producing your answer:
+
+    1. Understand the rule's intent.
+    2. Analyze how the chart relates to the rule.
+    3. Identify what the system likely misunderstood.
+    4. Interpret the human feedback to determine the correction.
+    5. Check whether existing notes already capture this guidance.
+    6. Decide whether a new clarification note would meaningfully improve future validation accuracy.
+
+    IMPORTANT: Perform this reasoning internally. Do NOT output your reasoning.
+
+    HOW TO WRITE A CLARIFICATION NOTE
+    If a new note is needed, it must follow these rules:
+
+    - Be concise but precise.
+    - Use a factual, instructional tone.
+    - Focus on how the rule should be interpreted when validating charts.
+    - Generalize the insight so it applies to future charts.
+    - Do NOT reference specific patients, documents, or this specific validation run.
+    - Avoid vague statements; provide clear guidance.
+    - Prefer concrete validation instructions or interpretation rules.
+    - Clarify edge cases or evidence requirements when relevant.
+
+    DUPLICATION RULE
+    You MUST check existing notes carefully.
+
+    If the same guidance already exists:
+    Return null.
+
+    If the feedback partially overlaps with an existing note:
+    Only create a new note if it adds meaningful clarification or resolves ambiguity.
+
+    OUTPUT FORMAT
+    Return ONLY valid JSON.
+
+    If a new clarification note should be added:
+
+    {
+    "new_clarification_note": "<clarification note text>"
+    }
+
+    If no new note is necessary:
+
+    {
+    "new_clarification_note": null
+    }
+
+    Do not include explanations, reasoning, markdown, or additional fields.
+    Return JSON only.
+    """
+
+
+#     user_prompt = f"""
+# Chart text: {document_text}
+# Previous validation result: {validation_result}
+# Rule text: {rule_text}
+# Existing notes: {notes}
+# Feedback on previous validation result: {note}
+
+# ----
+
+# Ok, now please write a new clarification note based on the above information. Return ONLY the JSON, no other text or explanation. Return null if no new note is necessary.
+# """
+
+
+
+
+#     if rule_text:
+#         user_prompt += f"""
+
+# This note is associated with the following validation rule:
+# {rule_text}"""
 
     # if notes:
     #     user_prompt += "\n\nExisting notes for this rule:\n"
@@ -480,34 +696,93 @@ This note is associated with the following validation rule:
     if s3_bucket_name is None:
         return response(500, {'error': 'Organization S3 bucket not found'})
 
-    # query validation results table for the validation result
-    validation_result = validation_results_table.get_item(
-        Key={'gsi2pk': f'RUN#{validation_run_id}'}
+    # query validation results table for the validation result via GSI
+    validation_query = validation_results_table.query(
+        IndexName='gsi2',
+        KeyConditionExpression='gsi2pk = :pk',
+        ExpressionAttributeValues={':pk': f'RUN#{validation_run_id}'},
+        Limit=1,
     )
-    if 'Item' not in validation_result:
+    if not validation_query.get('Items'):
         return response(500, {'error': f'Validation result not found: {validation_run_id}'})
 
-    validation_result = validation_result['Item']
+    validation_result = validation_query['Items'][0]
     print(f"Validation result: {validation_result}")
 
+    # fname = validation_result.get('filename').split('/')[-1]
+    # document = s3_client.get_object(
+    #     Bucket=s3_bucket_name,
+    #     Key=f'archived/validation/{fname}'
+    # )
+    # document = json.loads(document['Body'].read())
+    # document_text = document.get('text', '')
+    # print(f"Document: {document_text}")
+    
+    user_prompt = f"""
+    Rule text: {rule_text}
+    Validation result: {validation_result}
+    Feedback on validation result: {note}
+    Existing clarification notes: {notes}
+    """
+
+    """ 
+    so now we have:
+    1. the medical chart
+    2. the feedback
+    3. the validation result for the particular rule
+    4. the current notes
+    """
+
+    body = {
+        'system': system_prompt,
+        'anthropic_version': 'bedrock-2023-05-31',
+        'max_tokens': 1024,
+        'temperature': 0.01,
+        'messages': [
+            {
+                'role': 'user',
+                'content': user_prompt
+            }
+        ]
+    }
+
     try:
-        resp = bedrock.invoke_model(
-            modelId=MODEL_ID,
-            body=json.dumps({
-                'anthropic_version': 'bedrock-2023-05-31',
-                'max_tokens': 1024,
-                'system': system_prompt,
-                'messages': [{'role': 'user', 'content': user_prompt}],
-            }),
+        response_json = invoke_claude_model(
+            inference_profile_id=MODEL_ID,
+            body=body,
+            return_json_only=True,
+            raise_on_error=True,
+            retries=1
         )
-        result = json.loads(resp['body'].read())
-        enhanced_note = result['content'][0]['text'].strip()
-
-        return response(200, {'enhanced_note': enhanced_note})
-
+        print(f"Response JSON: {response_json}")
+        return response(200, {'enhanced_note': response_json.get('new_clarification_note')})
     except Exception as e:
-        print(f"Error in enhance_note: {e}")
+        print(f"Error in enhance_note invoking Claude model: {e}")
         return response(500, {'error': str(e)})
+
+    # try:
+    #     resp = bedrock.invoke_model(
+    #         modelId=MODEL_ID,
+    #         body=json.dumps({
+    #             'anthropic_version': 'bedrock-2023-05-31',
+    #             'max_tokens': 1024,
+    #             'system': system_prompt,
+    #             'messages': [{'role': 'user', 'content': user_prompt}],
+    #         }),
+    #     )
+    #     result = json.loads(resp['body'].read())
+    #     enhanced_note = result['content'][0]['text'].strip()
+
+    #     return response(200, {'enhanced_note': enhanced_note})
+
+    # except Exception as e:
+    #     print(f"Error in enhance_note: {e}")
+    #     return response(500, {'error': str(e)})
+
+    """
+    to test use:
+    - 
+    """
 
 
 # ---- Helpers ----
