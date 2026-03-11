@@ -517,6 +517,97 @@
        }
       },
       {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "DatabaseValidationResultsTableE1A12A7C",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DatabaseValidationResultsTableE1A12A7C",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "DatabaseValidationResultsTableE1A12A7C",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DatabaseValidationResultsTableE1A12A7C",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "DatabaseValidationResultsTableE1A12A7C",
+            "Arn"
+           ]
+          },
+          "/index/*"
+         ]
+        ]
+       }
+      },
+      {
        "Action": "bedrock:InvokeModel",
        "Effect": "Allow",
        "Resource": [
@@ -545,7 +636,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "b613b5cbad4ea19fac71c226f3ca028dcb66ee91abdd9537e5a8c155870ec869.zip"
+     "S3Key": "42956b8d7dbd5086b54b859851771e6009685d4870027176056e2e381ff21e00.zip"
     },
     "Environment": {
      "Variables": {
@@ -585,7 +676,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminApiFunction/Resource",
-    "aws:asset:path": "asset.b613b5cbad4ea19fac71c226f3ca028dcb66ee91abdd9537e5a8c155870ec869",
+    "aws:asset:path": "asset.42956b8d7dbd5086b54b859851771e6009685d4870027176056e2e381ff21e00",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -1789,7 +1880,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "89ca14bf56d0863f0b68f918dc8ea82f8f3e95414156d3775acc37b011f69ed0.zip"
+     "S3Key": "0cded80b48a9b2d36992d78fe777b4e1a5b38963ef9011d4d2558f1f61c8daac.zip"
     },
     "FunctionName": "penguin-health-textract-result-handler-multi-org",
     "Handler": "textract_result_handler_multi_org.lambda_handler",
@@ -1819,7 +1910,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/TextractResultHandlerFn/Resource",
-    "aws:asset:path": "asset.89ca14bf56d0863f0b68f918dc8ea82f8f3e95414156d3775acc37b011f69ed0",
+    "aws:asset:path": "asset.0cded80b48a9b2d36992d78fe777b4e1a5b38963ef9011d4d2558f1f61c8daac",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -2155,7 +2246,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "553978b95b51a89ced5b3af1dd14bcebcaf43dd741dbcab8252ca7651eda2994.zip"
+     "S3Key": "4a2cb534de8aefb224dcad7b8ef7acfdfad10add89d0c88eaa7ca38b3c4a0467.zip"
     },
     "FunctionName": "penguin-health-rules-engine-rag",
     "Handler": "rules_engine_rag.lambda_handler",
@@ -2185,7 +2276,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/RulesEngineRagFn/Resource",
-    "aws:asset:path": "asset.553978b95b51a89ced5b3af1dd14bcebcaf43dd741dbcab8252ca7651eda2994",
+    "aws:asset:path": "asset.4a2cb534de8aefb224dcad7b8ef7acfdfad10add89d0c88eaa7ca38b3c4a0467",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
