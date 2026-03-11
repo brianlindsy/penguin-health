@@ -84,10 +84,10 @@ def lambda_handler(event, context):
                 'body': json.dumps('No files to validate')
             }
 
-        # Get all JSON files to process
+        # Get all JSON and CSV files to process
         all_files = [
             obj['Key'] for obj in response['Contents']
-            if obj['Key'].endswith('.json') and '/raw/' not in obj['Key']
+            if (obj['Key'].endswith('.json') or obj['Key'].endswith('.csv')) and '/raw/' not in obj['Key']
         ]
         remaining_files = [f for f in all_files if f not in processed_files]
 
@@ -134,10 +134,17 @@ def lambda_handler(event, context):
 
 
 def process_file(bucket, key, config, org_id, env_config, validation_run_id):
-    """Process a single JSON file from S3."""
+    """Process a single JSON or CSV file from S3."""
     try:
         response = s3_client.get_object(Bucket=bucket, Key=key)
-        data = json.loads(response['Body'].read().decode('utf-8'))
+        content = response['Body'].read().decode('utf-8')
+
+        if key.endswith('.csv'):
+            # For CSV files, use the raw content as text
+            data = {'text': content}
+        else:
+            # For JSON files, parse as before
+            data = json.loads(content)
 
         results = validate_document(data, key, config, org_id, validation_run_id)
         store_results(results, env_config)

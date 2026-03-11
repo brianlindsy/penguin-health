@@ -29,6 +29,7 @@ class AuditEngine(Construct):
         super().__init__(scope, id)
 
         lambda_dir = os.path.join(os.path.dirname(__file__), "..", "..", "lambda", "multi-org")
+        rules_engine_dir = os.path.join(lambda_dir, "rules-engine")
 
         # Wildcard ARN for all per-org buckets (penguin-health-*)
         s3_bucket_arn = "arn:aws:s3:::penguin-health-*"
@@ -86,12 +87,12 @@ class AuditEngine(Construct):
             handler="textract_result_handler_multi_org.lambda_handler",
             code=_lambda.Code.from_asset(
                 lambda_dir,
-                exclude=["*", "!textract_result_handler_multi_org.py", "!multi_org_config.py"],
+                exclude=["*", "!textract_result_handler_multi_org.py", "!rules-engine/multi_org_config.py"],
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
                     local=MultiFileBundler([
                         os.path.join(lambda_dir, "textract_result_handler_multi_org.py"),
-                        os.path.join(lambda_dir, "multi_org_config.py"),
+                        os.path.join(rules_engine_dir, "multi_org_config.py"),
                     ]),
                 ),
             ),
@@ -118,7 +119,7 @@ class AuditEngine(Construct):
             "multi_org_config.py",       # DynamoDB org config loading
             "rate_limiter.py",           # Rate limiting for Bedrock API
             "bedrock_client.py",         # Claude model invocation
-            "document_validator.py",     # Batched LLM validation
+            "document_validator.py",     # Per-rule LLM validation with multi-threading
             "results_handler.py",        # DynamoDB storage and CSV reports
             "field_extractor.py",        # Text field extraction
         ]
@@ -128,12 +129,12 @@ class AuditEngine(Construct):
             runtime=_lambda.Runtime.PYTHON_3_14,
             handler="rules_engine_rag.lambda_handler",
             code=_lambda.Code.from_asset(
-                lambda_dir,
+                rules_engine_dir,
                 exclude=["*"] + [f"!{m}" for m in rules_engine_modules],
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
                     local=MultiFileBundler([
-                        os.path.join(lambda_dir, m) for m in rules_engine_modules
+                        os.path.join(rules_engine_dir, m) for m in rules_engine_modules
                     ]),
                 ),
             ),
