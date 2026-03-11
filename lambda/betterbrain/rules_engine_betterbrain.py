@@ -1,43 +1,216 @@
+"""
+Rules Engine RAG Lambda - Validates documents against configurable LLM rules.
+
+Uses Claude Sonnet 4.5 via AWS Bedrock for structured JSON rule evaluation.
+Loads organization configuration and rules from DynamoDB.
+"""
+
+from functools import lru_cache
 import json
 import re
+import csv
+import io
 from typing import Optional
 import boto3
-import os
 from datetime import datetime
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from boto3.dynamodb.conditions import Key
+
 s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
-bedrock_runtime = boto3.client('bedrock-runtime', region_name='us-east-1')
+
+table = dynamodb.Table('penguin-health-org-config')
+
+@lru_cache(maxsize=100)
+def get_organization(org_id):
+    """
+    Get organization metadata from DynamoDB (cached)
+
+    Args:
+        org_id (str): Organization identifier (e.g., 'community-health')
+
+    Returns:
+        dict: Organization metadata including s3_bucket_name, enabled status, etc.
+
+    Raises:
+        ValueError: If organization not found or disabled
+    """
+    try:
+        response = table.get_item(
+            Key={'pk': f'ORG#{org_id}', 'sk': 'METADATA'}
+        )
+
+        if 'Item' not in response:
+            raise ValueError(f"Organization '{org_id}' not found in registry")
+
+        org = response['Item']
+
+        if not org.get('enabled', False):
+            raise ValueError(f"Organization '{org_id}' is disabled")
+
+        print(f"Loaded organization: {org.get('organization_name')} ({org_id})")
+        return org
+
+    except Exception as e:
+        print(f"Error loading organization '{org_id}': {str(e)}")
+
+        return {
+ "pk": "ORG#catholic-charities-betterbrain",
+ "sk": "METADATA",
+ "created_at": "2026-01-08T16:00:00Z",
+ "display_name": "Catholic Charities BetterBrain",
+ "enabled": True,
+ "gsi1pk": "ORG_METADATA",
+ "gsi1sk": "ORG#catholic-charities-betterbrain",
+ "organization_id": "catholic-charities-betterbrain",
+ "organization_name": "Catholic Charities BetterBrain",
+ "s3_bucket_name": "penguin-health-catholic-charities-betterbrain",
+ "updated_at": "2026-02-17T13:20:21.091648Z"
+}
+
+def build_env_config(org_id):
+    """
+    Build Lambda env_config dict from organization metadata
+
+    Args:
+        org_id (str): Organization identifier
+
+    Returns:
+        dict: Environment configuration for Lambda function
+
+    Example return:
+        {
+            'ORGANIZATION_ID': 'example-org',
+            'BUCKET_NAME': 'penguin-health-example-org',
+            'DYNAMODB_TABLE': 'penguin-health-validation-results',
+            'DYNAMODB_IRP_TABLE': 'penguin-health-irp',
+            'TEXTRACT_PROCESSED': 'textract-processed/'
+        }
+    """
+
+    org = get_organization(org_id)
+
+    env_config = {
+        'ORGANIZATION_ID': org_id,
+        'BUCKET_NAME': org['s3_bucket_name'],
+        'DYNAMODB_TABLE': 'penguin-health-validation-results',
+        'DYNAMODB_IRP_TABLE': 'penguin-health-irp',
+        'TEXTRACT_PROCESSED': 'textract-processed/'
+    }
+
+    print(f"Built env_config for {org_id}: bucket={env_config['BUCKET_NAME']}")
+    return env_config
+
+
+def load_org_rules(org_id):
+    """
+    Load all validation rules for an organization from DynamoDB
+    Also loads field_mappings from RULES_CONFIG for field extraction
+
+    Args:
+        org_id (str): Organization identifier
+
+    Returns:
+        dict: Configuration dict with 'rules' list, 'organization_id', and 'field_mappings'
+
+    Example return:
+        {
+            'rules': [
+                {
+                    'rule_id': '13',
+                    'name': 'Recipient vs. Contact Method',
+                    'enabled': True,
+                    'type': 'llm',
+                    'llm_config': {...},
+                    'messages': {...}
+                },
+                ...
+            ],
+            'organization_id': 'example-org',
+            'field_mappings': {
+                'document_id': 'Consumer Service ID:',
+                'consumer_name': 'Consumer Name:'
+            }
+        }
+    """
+    try:
+        # Query all rules for this organization
+        response = table.query(
+            KeyConditionExpression=Key('pk').eq(f'ORG#{org_id}') & Key('sk').begins_with('RULE#')
+        )
+
+        rules = response['Items']
+
+        # Filter to only enabled rules
+        enabled_rules = [rule for rule in rules if rule.get('enabled', True)]
+
+        print(f"Loaded {len(enabled_rules)} enabled rules for {org_id} (of {len(rules)} total)")
+
+        # Load field_mappings from RULES_CONFIG
+        rules_config = load_rules_config(org_id)
+        field_mappings = rules_config.get('field_mappings', {}) if rules_config else {}
+
+        if field_mappings:
+            print(f"Loaded field_mappings with {len(field_mappings)} fields: {list(field_mappings.keys())}")
+        else:
+            print(f"Warning: No field_mappings found for {org_id} - document_id will be N/A")
+
+        return {
+            'rules': enabled_rules,
+            'organization_id': org_id,
+            'field_mappings': field_mappings
+        }
+
+    except Exception as e:
+        print(f"Error loading rules for '{org_id}': {str(e)}")
+        raise
+
+def load_rules_config(org_id):
+    """
+    Load rules configuration (field_mappings) for an organization
+
+    Args:
+        org_id (str): Organization identifier
+
+    Returns:
+        dict: Rules config with field_mappings, or None if not found
+    """
+    try:
+        response = table.get_item(
+            Key={'pk': f'ORG#{org_id}', 'sk': 'RULES_CONFIG'}
+        )
+
+        if 'Item' not in response:
+            print(f"No RULES_CONFIG found for {org_id}")
+            return None
+
+        return response['Item']
+
+    except Exception as e:
+        print(f"Error loading rules config for '{org_id}': {str(e)}")
+        return None
 
 def lambda_handler(event, context):
     """
-    Lambda function to validate processed JSON documents against configurable rules
+    Lambda function to validate processed JSON documents against configurable rules.
 
-    Configuration can be passed via environment variables or event parameters.
-    Event parameters take precedence over environment variables.
+    Expects event with:
+    - organization_id: Organization ID (looks up bucket and rules from DynamoDB)
     """
-    # Load configuration from environment variables
-    env_config = {
-        'BUCKET_NAME': os.environ.get('BUCKET_NAME'),
-        'DYNAMODB_TABLE': os.environ.get('DYNAMODB_TABLE'),
-        'DYNAMODB_IRP_TABLE': os.environ.get('DYNAMODB_IRP_TABLE'),
-        'ORGANIZATION_ID': os.environ.get('ORGANIZATION_ID'),
-        'TEXTRACT_PROCESSED': os.environ.get('TEXTRACT_PROCESSED')
-    }
+    org_id = event.get('organization_id')
+    if not org_id:
+        raise ValueError("organization_id is required in event")
 
-    # Override with event-level config if provided
-    if 'config' in event:
-        env_config.update(event['config'])
+    print(f"Loading configuration for organization: {org_id}")
+    env_config = build_env_config(org_id)
+    config = load_org_rules(org_id)
 
-    # Generate unique validation run ID
     validation_run_id = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
     print(f"Starting validation run: {validation_run_id}")
 
     try:
-        config = load_configuration(env_config['ORGANIZATION_ID'], env_config)
-        # Process all files in processed folder
         response = s3_client.list_objects_v2(
             Bucket=env_config['BUCKET_NAME'],
             Prefix=env_config['TEXTRACT_PROCESSED']
@@ -47,14 +220,13 @@ def lambda_handler(event, context):
             return {
                 'statusCode': 200,
                 'body': json.dumps('No files to validate')
-        }
+            }
 
         for obj in response['Contents']:
             key = obj['Key']
             if key.endswith('.json') and '/raw/' not in key:
-                process_file(env_config['BUCKET_NAME'], key, config, env_config['ORGANIZATION_ID'], env_config, validation_run_id)
+                process_file(env_config['BUCKET_NAME'], key, config, org_id, env_config, validation_run_id)
 
-        # Generate CSV report from DynamoDB results
         print(f"Generating CSV report for run: {validation_run_id}")
         csv_report = generate_csv_from_dynamodb(validation_run_id, env_config)
         save_csv_to_s3(csv_report, validation_run_id, env_config)
@@ -72,109 +244,58 @@ def lambda_handler(event, context):
         raise e
 
 
-def load_configuration(org_id, env_config):
-    """
-    Load organization-specific rule configuration from S3
-    """
-    try:
-        # Load from S3
-        config_key = f"validation-rules/{org_id}.json"
-        response = s3_client.get_object(Bucket=env_config['BUCKET_NAME'], Key=config_key)
-        config = json.loads(response['Body'].read().decode('utf-8'))
-
-        print(f"Loaded configuration for {org_id}: {len(config.get('rules', []))} rules")
-        return config
-    except Exception as e:
-        print(f"Error loading configuration: {str(e)}")
-        raise e
-
-
 def process_file(bucket, key, config, org_id, env_config, validation_run_id):
-    """
-    Process a single JSON file from S3
-    """
+    """Process a single JSON file from S3."""
     try:
-        # Get the JSON file
         response = s3_client.get_object(Bucket=bucket, Key=key)
         data = json.loads(response['Body'].read().decode('utf-8'))
 
-        # Validate the document
-        results = validate_document(data, key, config, org_id, env_config, validation_run_id)
-
-        # Store results in DynamoDB
+        results = validate_document(data, key, config, org_id, validation_run_id)
         store_results(results, env_config)
 
         print(f"Validated {key}: {results['summary']}")
-
-        # Move the processed file to archive to prevent reprocessing
-        archive_key = key.replace(env_config['TEXTRACT_PROCESSED'], 'archived/validation/')
-        s3_client.copy_object(
-            Bucket=bucket,
-            CopySource={'Bucket': bucket, 'Key': key},
-            Key=archive_key
-        )
-        s3_client.delete_object(Bucket=bucket, Key=key)
-        print(f"Moved {key} to {archive_key}")
 
     except Exception as e:
         print(f"Error processing {key}: {str(e)}")
         raise e
 
 
-def validate_document(data, filename, config, org_id, env_config, validation_run_id):
-    """
-    Run all validation rules against a document
-
-    Extracts field values from text using field_mappings.
-    The text field contains all extracted content from the encounter.
-    """
-    # Extract fields from text using field_mappings
+def validate_document(data, filename, config, org_id, validation_run_id):
+    """Run all validation rules against a document."""
     text = data.get('text', '')
     field_mappings = config.get('field_mappings', {})
     fields = extract_fields_from_text(text, field_mappings)
 
-    # Filter enabled rules
     enabled_rules = [rule for rule in config.get('rules', []) if rule.get('enabled', True)]
 
     if not enabled_rules:
         rule_results = []
     else:
-        # Run validation rules in parallel using ThreadPoolExecutor
         print(f"Evaluating {len(enabled_rules)} rules in parallel...")
-        max_workers = min(20, len(enabled_rules))  # Cap at 20 concurrent threads
+        max_workers = min(3, len(enabled_rules))
 
         rule_results = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all rule evaluations
             future_to_rule = {
-                executor.submit(
-                    evaluate_rule,
-                    rule_config,
-                    fields,
-                    data,
-                    env_config
-                ): rule_config
+                executor.submit(evaluate_rule, rule_config, fields, data): rule_config
                 for rule_config in enabled_rules
             }
 
-            # Collect results as they complete
             for future in as_completed(future_to_rule):
                 rule_config = future_to_rule[future]
                 try:
                     result = future.result()
                     rule_results.append(result)
                 except Exception as e:
-                    # Handle any exceptions from rule evaluation
                     print(f"Error evaluating rule {rule_config.get('id')}: {str(e)}")
                     rule_results.append({
-                        'rule_id': rule_config.get('id'),
+                        'rule_id': rule_config.get('rule_id'),
                         'rule_name': rule_config.get('name'),
                         'category': rule_config.get('category'),
                         'status': 'ERROR',
                         'message': f'Exception during parallel execution: {str(e)}'
                     })
 
-    # Calculate summary
     passed = sum(1 for r in rule_results if r['status'] == 'PASS')
     failed = sum(1 for r in rule_results if r['status'] == 'FAIL')
     skipped = sum(1 for r in rule_results if r['status'] == 'SKIP')
@@ -199,7 +320,7 @@ def validate_document(data, filename, config, org_id, env_config, validation_run
 
 def extract_fields_from_text(text, field_mappings):
     """
-    Extract field values from text using simple pattern matching
+    Extract field values from text using simple pattern matching.
 
     For each field mapping (e.g., "document_id": "Consumer Service ID:"):
     - Searches for lines containing the key
@@ -210,24 +331,19 @@ def extract_fields_from_text(text, field_mappings):
     if not text or not field_mappings:
         return fields
 
-    # Split text into lines
     lines = text.split('\n')
 
-    # For each field mapping, search for the key in the text
     for field_name, key_pattern in field_mappings.items():
         value = None
 
-        # Search through lines for the key pattern
         for line in lines:
             if key_pattern in line:
-                # Extract the value after the key pattern
                 parts = line.split(key_pattern, 1)
                 if len(parts) > 1:
                     value = parts[1].strip()
                     print(f"Extracted {field_name}: '{value}' from key '{key_pattern}'")
                     break
 
-        # Store the value (or None if not found)
         fields[field_name] = value if value else None
 
         if value is None:
@@ -236,116 +352,8 @@ def extract_fields_from_text(text, field_mappings):
     return fields
 
 
-def extract_fields(forms, field_mappings):
-    """
-    Extract field values from forms dictionary using field mappings
-    Handles fields with # suffix (e.g., "ID:#1") by checking original_key
-    """
-    fields = {}
-
-    # Debug: Log available form keys
-    if forms:
-        print(f"DEBUG: Available form keys: {list(forms.keys())[:10]}")  # Show first 10 keys
-        print(f"DEBUG: Total forms extracted: {len(forms)}")
-    else:
-        print("DEBUG: No forms found in data")
-
-    for field_name, form_key in field_mappings.items():
-        value = None
-        confidence = 0
-
-        # Try to get from forms directly
-        if forms and form_key in forms:
-            value = forms[form_key].get('value', '')
-            confidence = forms[form_key].get('confidence', 0)
-            print(f"DEBUG: Found {field_name} via direct match: {form_key} = {value}")
-        else:
-            # Check if any form has this as its original_key (handles # suffix)
-            if forms:
-                for actual_key, form_data in forms.items():
-                    original_key = form_data.get('original_key', actual_key)
-                    if original_key == form_key:
-                        value = form_data.get('value', '')
-                        confidence = form_data.get('confidence', 0)
-                        print(f"DEBUG: Found {field_name} via original_key match: {form_key} = {value}")
-                        break
-
-        if value is None:
-            print(f"DEBUG: Field '{field_name}' not found (looking for key: '{form_key}')")
-
-        fields[field_name] = value
-        fields[f"{field_name}_confidence"] = confidence
-
-    return fields
-
-
-def add_computed_fields(fields, forms, computed_fields):
-    """
-    Add computed fields based on organization-specific logic defined in config
-    Supports: priority_fields, template, concat operations
-    """
-    for computed_field_name, config in computed_fields.items():
-        computed_value = None
-
-        # Priority fields: use first non-null value
-        if 'priority_fields' in config:
-            priority_fields = config.get('priority_fields', [])
-            for form_key in priority_fields:
-                # Try direct match first
-                if form_key in forms:
-                    value = forms[form_key].get('value', '')
-                    if value:
-                        computed_value = value.strip()
-                        break
-                else:
-                    # Check if any form has this as its original_key
-                    for actual_key, form_data in forms.items():
-                        original_key = form_data.get('original_key', actual_key)
-                        if original_key == form_key:
-                            value = form_data.get('value', '')
-                            if value:
-                                computed_value = value.strip()
-                                break
-                    if computed_value:
-                        break
-
-        # Template: allows string formatting with field references
-        if 'template' in config:
-            template = config['template']
-
-            # If no computed_value from priority_fields, start with empty
-            if not computed_value:
-                computed_value = ''
-
-            # Check if value already looks like a full datetime (has date separators)
-            has_date_separator = '/' in computed_value or '-' in computed_value
-
-            if not has_date_separator:
-                # Replace {field_name} with actual field values (including other computed fields)
-                for field_name, field_value in fields.items():
-                    if field_value:
-                        template = template.replace(f'{{{field_name}}}', str(field_value))
-
-                # Replace {value} placeholder if it exists
-                template = template.replace('{value}', computed_value)
-
-                # If template still has placeholders, keep original value
-                if '{' not in template:
-                    computed_value = template
-            else:
-                # Already has a date, don't apply template
-                pass
-
-        fields[computed_field_name] = computed_value
-
-    return fields
-
-
-def evaluate_rule(rule_config, fields, data=None, env_config=None):
-    """
-    Evaluate a single rule against the document fields
-    Supports only LLM-based rule types: 'llm' and 'llm_irp'
-    """
+def evaluate_rule(rule_config, fields, data=None):
+    """Evaluate a single rule against the document fields."""
     rule_type = rule_config.get('type', 'llm')
 
     result = {
@@ -356,16 +364,13 @@ def evaluate_rule(rule_config, fields, data=None, env_config=None):
 
     try:
         if rule_type == 'llm':
-            status, message, reasoning = evaluate_llm_rule_structured(rule_config, fields, data)
-        elif rule_type == 'llm_irp':
-            status, message, reasoning = evaluate_llm_irp_rule(rule_config, fields, data, env_config['ORGANIZATION_ID'], env_config)
+            status, message, _ = evaluate_llm_rule(rule_config, fields, data)
         else:
             status = 'SKIP'
-            message = f'Unsupported rule type: {rule_type}. Only "llm" and "llm_irp" are supported.'
-            reasoning = None
+            message = f'Unsupported rule type: {rule_type}. Only "llm" is supported.'
 
         result['status'] = status
-        result['message'] = format_message(message, fields, rule_config, reasoning)
+        result['message'] = message
 
     except Exception as e:
         result['status'] = 'ERROR'
@@ -374,194 +379,60 @@ def evaluate_rule(rule_config, fields, data=None, env_config=None):
     return result
 
 
-def evaluate_llm_rule(rule_config, fields, data=None):
-    """
-    Evaluate a rule using AWS Bedrock LLM
-    """
-    llm_config = rule_config.get('llm_config', {})
-    messages_config = rule_config.get('messages', {})
-
-    model_id = llm_config.get('model_id', 'openai.gpt-oss-120b-1:0')
-    system_prompt = llm_config.get('system_prompt', '')
-    question = llm_config.get('question', '')
-
-    print(f"DEBUG LLM: Evaluating rule {rule_config.get('id')} - {rule_config.get('name')}")
-
-    # Get the full text from the document
-    chart_text = ''
-    if data:
-        chart_text = data.get('text', '')
-        print(f"DEBUG LLM: Chart text length: {len(chart_text)} characters")
-
-    # If no text available, fall back to fields
-    if not chart_text:
-        chart_text = json.dumps(fields, indent=2)
-        print(f"DEBUG LLM: No text found, using fields JSON: {len(chart_text)} characters")
-
-    # Construct the user message
-    user_message = f"{question}\n\nChart Data:\n{chart_text}"
-    print(f"DEBUG LLM: User message length: {len(user_message)} characters")
-
-    try:
-        # Call Bedrock with OpenAI model
-        request_body = {
-            "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": user_message
-                }
-            ],
-            "max_tokens": 500,
-            "temperature": 0
-        }
-
-        print(f"DEBUG LLM: Calling Bedrock with model: {model_id}")
-        print(f"DEBUG LLM: System prompt length: {len(system_prompt)} characters")
-
-        response = bedrock_runtime.invoke_model(
-            modelId=model_id,
-            body=json.dumps(request_body)
-        )
-
-        response_body = json.loads(response['body'].read())
-        llm_response = response_body['choices'][0]['message']['content']
-
-        print(f"DEBUG LLM: Raw response from Bedrock: {llm_response[:200]}...")  # First 200 chars
-
-        # Remove <reasoning> tags if present
-        if '<reasoning>' in llm_response:
-            # Extract content after </reasoning> tag
-            llm_response = llm_response.split('</reasoning>')[-1].strip()
-            print(f"DEBUG LLM: After removing reasoning tags: {llm_response[:200]}...")
-
-        # Clean up Unicode characters
-        # Replace smart quotes and other Unicode punctuation with ASCII equivalents
-        unicode_replacements = {
-            '\u2019': "'",  # Right single quotation mark
-            '\u2018': "'",  # Left single quotation mark
-            '\u201c': '"',  # Left double quotation mark
-            '\u201d': '"',  # Right double quotation mark
-            '\u2013': '-',  # En dash
-            '\u2014': '-',  # Em dash
-            '\u2011': '-',  # Non-breaking hyphen
-            '\u2010': '-',  # Hyphen
-        }
-
-        for unicode_char, ascii_char in unicode_replacements.items():
-            llm_response = llm_response.replace(unicode_char, ascii_char)
-
-        # Parse LLM response to extract status and reasoning
-        # Expected format: "Pass - explanation" or "Fail - explanation" or "Skip - explanation"
-        llm_response_lower = llm_response.lower().strip()
-
-        if llm_response_lower.startswith('pass'):
-            status = 'PASS'
-            reasoning = None  # No reasoning needed for PASS
-        elif llm_response_lower.startswith('fail'):
-            status = 'FAIL'
-            reasoning = llm_response.split('-', 1)[1].strip() if '-' in llm_response else llm_response
-        elif llm_response_lower.startswith('skip'):
-            status = 'SKIP'
-            reasoning = llm_response.split('-', 1)[1].strip() if '-' in llm_response else llm_response
-        else:
-            # If format doesn't match, treat as reasoning for manual review
-            status = 'SKIP'
-            reasoning = f'LLM response format unclear: {llm_response}'
-
-        print(f"DEBUG LLM: Parsed status: {status}")
-        if reasoning:
-            print(f"DEBUG LLM: Parsed reasoning: {reasoning[:100]}...")
-        else:
-            print(f"DEBUG LLM: No reasoning (PASS status)")
-
-        # Get message template and return reasoning separately
-        # For PASS, use template message without reasoning
-        final_message = messages_config.get(status.lower(), status if status == 'PASS' else reasoning)
-        print(f"DEBUG LLM: Final message: {final_message}")
-
-        return status, final_message, reasoning
-
-    except Exception as e:
-        print(f"DEBUG LLM ERROR: {str(e)}")
-        import traceback
-        print(f"DEBUG LLM TRACEBACK: {traceback.format_exc()}")
-        error_msg = f'LLM evaluation error: {str(e)}'
-        return 'ERROR', error_msg, error_msg
-
 def _extract_complete_json(text: str) -> Optional[str]:
     """
     Extract a complete JSON object by properly matching braces.
     Handles nested objects and strings containing braces.
     """
-    # Find the first opening brace
     start = text.find('{')
     if start == -1:
         return None
-    
-    # Count braces to find the matching closing brace
+
     brace_count = 0
     in_string = False
     escape_next = False
-    
+
     for i in range(start, len(text)):
         char = text[i]
-        
-        # Handle string escaping
+
         if escape_next:
             escape_next = False
             continue
-        
+
         if char == '\\':
             escape_next = True
             continue
-        
-        # Track if we're inside a string
+
         if char == '"':
             in_string = not in_string
             continue
-        
-        # Only count braces outside of strings
+
         if not in_string:
             if char == '{':
                 brace_count += 1
             elif char == '}':
                 brace_count -= 1
-                
-                # Found the matching closing brace
                 if brace_count == 0:
                     return text[start:i+1]
-    
+
     return None
-    
-def extract_json_from_claude_response(
-    response_body: dict
-) -> Optional[dict]:
-    """
-    Extract JSON from a Bedrock Claude model
-    """
+
+
+def extract_json_from_claude_response(response_body: dict) -> Optional[dict]:
+    """Extract JSON from a Bedrock Claude model response."""
     content_list = response_body.get("content", [])
     if not content_list:
         print("No 'content' field found or it's empty in the model response.")
         return None
 
-    # Extract all text chunks
     all_text = " ".join(
         block.get("text", "") for block in content_list if block.get("type") == "text"
     )
 
-    # Use regex to extract JSON between ```json ... ```
+    # Try ```json``` code block first
     match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", all_text)
     if not match:
-        print("No JSON code block found. Raw text:")
-        print(all_text)
-
-        print("Trying to extract JSON from the raw text...")
-
-        # Use proper brace matching instead of non-greedy regex
+        print("No JSON code block found. Trying raw extraction...")
         json_str = _extract_complete_json(all_text)
         if not json_str:
             print("No valid JSON object found.")
@@ -569,26 +440,23 @@ def extract_json_from_claude_response(
 
         try:
             parsed = json.loads(json_str)
-            print("Extracted JSON data:")
-            print(json.dumps(parsed, indent=2))
+            print(f"Extracted JSON data: {json.dumps(parsed, indent=2)}")
             return parsed
         except json.JSONDecodeError as e:
             print(f"Error decoding JSON: {e}")
-            print("Raw JSON string:")
-            print(json_str)
+            print(f"Raw JSON string: {json_str}")
         return None
 
     json_str = match.group(1)
     try:
         parsed = json.loads(json_str)
-        print("Extracted JSON data:")
-        print(json.dumps(parsed, indent=2))
+        print(f"Extracted JSON data: {json.dumps(parsed, indent=2)}")
         return parsed
     except json.JSONDecodeError as e:
         print(f"Error decoding JSON: {e}")
-        print("Raw JSON string:")
-        print(json_str)
+        print(f"Raw JSON string: {json_str}")
         return None
+
 
 def invoke_claude_model(
     inference_profile_id: str,
@@ -599,23 +467,15 @@ def invoke_claude_model(
     raise_on_error: bool = True,
     region_name: str = 'us-east-1',
 ):
+    """Invoke Claude model via Bedrock with optional JSON extraction and retry logic."""
     if bedrock_client is None:
-        client_kwargs = {
-            'region_name': region_name,
-        }
-
-        # TODO: Remove this once we have a proper CA bundle
-        client_kwargs['verify'] = False
-        bedrock_client = boto3.client('bedrock-runtime', **client_kwargs)
-    
-    params = {}
-    params['contentType'] = 'application/json'
-    params['accept'] = 'application/json'
+        bedrock_client = boto3.client('bedrock-runtime', region_name=region_name)
 
     model_response = bedrock_client.invoke_model(
         modelId=inference_profile_id,
         body=json.dumps(body),
-        **params,
+        contentType='application/json',
+        accept='application/json',
     )
 
     response_body = json.loads(model_response['body'].read())
@@ -625,7 +485,6 @@ def invoke_claude_model(
 
     extracted_json = extract_json_from_claude_response(response_body)
 
-    # handle case where no JSON is found in the response, and retry as needed
     if extracted_json is None:
         if retries > 0:
             return invoke_claude_model(
@@ -634,6 +493,8 @@ def invoke_claude_model(
                 return_json_only=return_json_only,
                 bedrock_client=bedrock_client,
                 retries=retries - 1,
+                raise_on_error=raise_on_error,
+                region_name=region_name,
             )
         else:
             if raise_on_error:
@@ -641,418 +502,204 @@ def invoke_claude_model(
             return None
 
     return extracted_json
-    
-def evaluate_llm_rule_structured(rule_config, fields, data=None):
-    """
-    Evaluate a rule using AWS Bedrock LLM
-    """
-    llm_config = rule_config.get('llm_config', {})
-    messages_config = rule_config.get('messages', {})
-    # model_id = 'anthropic.claude-sonnet-4-5-20250929-v1:0'
-    # model_id = 'global.anthropic.claude-sonnet-4-5-20250929-v1:0'
-    model_id = 'global.anthropic.claude-opus-4-5-20251101-v1:0'
-    
-    # model_id = llm_config.get('model_id', 'openai.gpt-oss-120b-1:0')
-    system_prompt = llm_config.get('system_prompt', '')
-    question = llm_config.get('question', '')
 
-    system_prompt += f"\nPlease respond with JSON, with the keys: 'status' and 'reasoning'. The status should be one of: 'PASS', 'FAIL', 'SKIP'. The reasoning should be a short explanation of the reason for the status."
 
-    print(f"DEBUG LLM: Evaluating rule {rule_config.get('id')} - {rule_config.get('name')}")
+def evaluate_llm_rule(rule_config, fields, data=None):
+    """
+    Evaluate a rule using AWS Bedrock Claude with structured JSON output.
+    Uses the new flat schema with rule_text, fields_to_extract, and notes.
+
+    Two-step approach:
+    1. Extract fields from chart text (if fields_to_extract is defined)
+    2. Validate the rule using extracted fields
+    """
+    model_id = 'global.anthropic.claude-sonnet-4-5-20250929-v1:0'
+
+    # New flat schema fields
+    rule_text = rule_config.get('rule_text', '')
+    fields_to_extract = rule_config.get('fields_to_extract', [])
+    notes = rule_config.get('notes', [])
+
+    print(f"Evaluating rule {rule_config.get('id')} - {rule_config.get('name')}")
 
     # Get the full text from the document
     chart_text = ''
     if data:
         chart_text = data.get('text', '')
-        print(f"DEBUG LLM: Chart text length: {len(chart_text)} characters")
+        print(f"Chart text length: {len(chart_text)} characters")
 
     # If no text available, fall back to fields
     if not chart_text:
         chart_text = json.dumps(fields, indent=2)
-        print(f"DEBUG LLM: No text found, using fields JSON: {len(chart_text)} characters")
-
-    # Construct the user message
-    user_message = f"{question}\n\nChart Data:\n{chart_text}"
-    print(f"DEBUG LLM: User message length: {len(user_message)} characters")
+        print(f"No text found, using fields JSON: {len(chart_text)} characters")
 
     try:
-        # Call Bedrock with OpenAI model
-        # request_body = {
-        #     "messages": [
-        #         {
-        #             "role": "system",
-        #             "content": system_prompt
-        #         },
-        #         {
-        #             "role": "user",
-        #             "content": user_message
-        #         }
-        #     ],
-        #     "max_tokens": 500,
-        #     "temperature": 0
-        # }
+        extracted_fields = None
 
-        json_schema = {
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "description": "Simplified schema for determining whether the rule passed or failed and the reasoning.",
-            "type": "object",
-            "properties": { 
-                "status": {
-                    "type": "string",
-                    "description": "The status of the rule. One of: 'PASS', 'FAIL', 'SKIP'.",
-                    "enum": ["PASS", "FAIL", "SKIP"]
-                },
-                "reasoning": {
-                    "type": "string",
-                    "description": "The reasoning for the status.",
-                },
-            },
-            "required": ["status", "reasoning"]
-        }
-        body = {
-            "system": system_prompt,
-            'anthropic_version': 'bedrock-2023-05-31',
-            'max_tokens': 1024,
-            'temperature': 0.01,
-            'messages': [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": user_message
-                        },
-                        {
-                            'type': 'text',
-                            'text': f"JSON schema:\n\n{json.dumps(json_schema)}"
-                        },
-                    ]
-                }
-            ]
-        }
+        # Step 1: Extract fields if fields_to_extract is defined
+        if fields_to_extract:
+            extracted_fields = _extract_rule_fields(
+                model_id, rule_text, notes, fields_to_extract, chart_text
+            )
+            if extracted_fields is None:
+                return 'ERROR', 'No JSON found in Claude response (field extraction)', ''
 
-        print(f"DEBUG LLM: Calling Bedrock with model: {model_id}")
-        print(f"DEBUG LLM: System prompt length: {len(system_prompt)} characters")
-
-        # response = bedrock_runtime.invoke_model(
-        #     modelId=model_id,
-        #     body=json.dumps(request_body)
-        # )
-        response_json = invoke_claude_model(
-            inference_profile_id=model_id,
-            body=body,
-            return_json_only=True,
-            raise_on_error=True,
-            retries=1
+        # Step 2: Validate the rule
+        return _validate_rule(
+            model_id, rule_text, notes, chart_text, extracted_fields
         )
 
-        # response_body = json.loads(response['body'].read())
-        # llm_response = response_body['choices'][0]['message']['content']
-
-        # print(f"DEBUG LLM: Raw response from Bedrock: {llm_response[:200]}...")  # First 200 chars
-        print(f"DEBUG LLM: Raw response from Bedrock: {response_json}")
-
-        # Remove <reasoning> tags if present
-        # if '<reasoning>' in llm_response:
-        #     # Extract content after </reasoning> tag
-        #     llm_response = llm_response.split('</reasoning>')[-1].strip()
-        #     print(f"DEBUG LLM: After removing reasoning tags: {llm_response[:200]}...")
-
-        if response_json is None:
-            return 'ERROR', 'No JSON found in Claude response', 'No JSON found in Claude response'
-
-        status = response_json['status']
-        reasoning = response_json['reasoning']
-
-        return status, f"{status} - {reasoning}", reasoning
-
-
-
-        # Clean up Unicode characters
-        # Replace smart quotes and other Unicode punctuation with ASCII equivalents
-        unicode_replacements = {
-            '\u2019': "'",  # Right single quotation mark
-            '\u2018': "'",  # Left single quotation mark
-            '\u201c': '"',  # Left double quotation mark
-            '\u201d': '"',  # Right double quotation mark
-            '\u2013': '-',  # En dash
-            '\u2014': '-',  # Em dash
-            '\u2011': '-',  # Non-breaking hyphen
-            '\u2010': '-',  # Hyphen
-        }
-
-        for unicode_char, ascii_char in unicode_replacements.items():
-            llm_response = llm_response.replace(unicode_char, ascii_char)
-
-        # Parse LLM response to extract status and reasoning
-        # Expected format: "Pass - explanation" or "Fail - explanation" or "Skip - explanation"
-        llm_response_lower = llm_response.lower().strip()
-
-        if llm_response_lower.startswith('pass'):
-            status = 'PASS'
-            reasoning = None  # No reasoning needed for PASS
-        elif llm_response_lower.startswith('fail'):
-            status = 'FAIL'
-            reasoning = llm_response.split('-', 1)[1].strip() if '-' in llm_response else llm_response
-        elif llm_response_lower.startswith('skip'):
-            status = 'SKIP'
-            reasoning = llm_response.split('-', 1)[1].strip() if '-' in llm_response else llm_response
-        else:
-            # If format doesn't match, treat as reasoning for manual review
-            status = 'SKIP'
-            reasoning = f'LLM response format unclear: {llm_response}'
-
-        print(f"DEBUG LLM: Parsed status: {status}")
-        if reasoning:
-            print(f"DEBUG LLM: Parsed reasoning: {reasoning[:100]}...")
-        else:
-            print(f"DEBUG LLM: No reasoning (PASS status)")
-
-        # Get message template and return reasoning separately
-        # For PASS, use template message without reasoning
-        final_message = messages_config.get(status.lower(), status if status == 'PASS' else reasoning)
-        print(f"DEBUG LLM: Final message: {final_message}")
-
-        return status, final_message, reasoning
-
     except Exception as e:
-        print(f"DEBUG LLM ERROR: {str(e)}")
+        print(f"LLM ERROR: {str(e)}")
         import traceback
-        print(f"DEBUG LLM TRACEBACK: {traceback.format_exc()}")
+        print(f"LLM TRACEBACK: {traceback.format_exc()}")
         error_msg = f'LLM evaluation error: {str(e)}'
         return 'ERROR', error_msg, error_msg
 
-def evaluate_llm_irp_rule(rule_config, fields, data, org_id, env_config):
+
+def _extract_rule_fields(model_id, rule_text, notes, fields_to_extract, chart_text):
     """
-    Evaluate a rule that compares chart against consumer's IRP using AWS Bedrock LLM
-    Only runs when chart consumer name matches an IRP consumer name and organization matches
+    Step 1: Extract fields from chart text to help validate the rule.
     """
-    llm_config = rule_config.get('llm_config', {})
-    messages_config = rule_config.get('messages', {})
+    system_prompt = """You are a Healthcare Compliance Auditor. You will be given a Rule to validate, the patient Chart Text, and a list of fields to extract from the Chart Text. Your only purpose is to extract the fields, and return them in a JSON object.
+Please respond with JSON, with the key: 'fields'. The value should be an object with the field names as keys."""
 
-    # Check if service_type should be excluded from LLM IRP rule
-    service_type = fields.get('service_type', '')
-    excluded_service_types = [
-        'No-Show / Cancel',
-        'Suicide Screening',
-        'General Note',
-        'DLA-20',
-        'IRP Prep & FPSA'
-    ]
+    # Build JSON schema for field extraction
+    properties = {
+        f['name']: {
+            'type': f.get('type', 'string'),
+            'description': f.get('description', '')
+        } for f in fields_to_extract
+    }
+    field_names = [f['name'] for f in fields_to_extract]
 
-    if service_type in excluded_service_types:
-        skip_msg = f'Service type "{service_type}" is excluded from IRP validation'
-        return 'SKIP', messages_config.get('skip', skip_msg), skip_msg
+    json_schema = {
+        "type": "object",
+        "properties": {
+            "fields": {
+                "type": "object",
+                "properties": properties,
+                "required": field_names
+            }
+        },
+        "required": ["fields"]
+    }
 
-    # Check if consumer_name field exists in the chart
-    consumer_name = fields.get('consumer_name')
-    if not consumer_name:
-        skip_msg = 'Consumer name not found in chart'
-        return 'SKIP', messages_config.get('skip', skip_msg), skip_msg
+    # Format notes as string
+    notes_text = '\n'.join(f"- {note}" for note in notes) if notes else 'None'
 
-    # Query DynamoDB IRP table for matching consumer and organization
-    try:
-        irp_data = get_irp_for_consumer(consumer_name, org_id, env_config)
+    body = {
+        "system": system_prompt,
+        'anthropic_version': 'bedrock-2023-05-31',
+        'max_tokens': 1024,
+        'temperature': 0.01,
+        'messages': [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"Rule:\n{rule_text}\n\nNotes:\n{notes_text}"},
+                    {"type": "text", "text": f"Chart text:\n\n{chart_text}"},
+                    {"type": "text", "text": f"JSON schema:\n\n{json.dumps(json_schema)}"},
+                ]
+            }
+        ]
+    }
 
-        if not irp_data:
-            skip_msg = f'No IRP found for consumer: {consumer_name}'
-            return 'SKIP', messages_config.get('skip', skip_msg), skip_msg
+    response_json = invoke_claude_model(
+        inference_profile_id=model_id,
+        body=body,
+        return_json_only=True,
+        raise_on_error=True,
+        retries=1
+    )
 
-        # Get plan of care text from IRP
-        plan_of_care_text = irp_data.get('plan_of_care_text', '')
-
-        if not plan_of_care_text:
-            skip_msg = 'IRP found but plan of care text is empty'
-            return 'SKIP', messages_config.get('skip', skip_msg), skip_msg
-
-    except Exception as e:
-        print(f"Error retrieving IRP: {str(e)}")
-        error_msg = f'Error retrieving IRP: {str(e)}'
-        return 'SKIP', error_msg, error_msg
-
-    # Get the chart text
-    chart_text = ''
-    if data:
-        chart_text = data.get('text', '')
-
-    if not chart_text:
-        chart_text = json.dumps(fields, indent=2)
-
-    # Prepare LLM request
-    model_id = llm_config.get('model_id', 'openai.gpt-oss-120b-1:0')
-    system_prompt = llm_config.get('system_prompt', '')
-    question = llm_config.get('question', '')
-
-    # Construct the user message with both IRP and chart
-    user_message = f"""{question}
-
-IRP Plan of Care:
-{plan_of_care_text}
-
-Chart Data:
-{chart_text}"""
-
-    try:
-        # Call Bedrock with OpenAI model
-        request_body = {
-            "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": user_message
-                }
-            ],
-            "max_tokens": 500,
-            "temperature": 0
-        }
-
-        response = bedrock_runtime.invoke_model(
-            modelId=model_id,
-            body=json.dumps(request_body)
-        )
-
-        response_body = json.loads(response['body'].read())
-        llm_response = response_body['choices'][0]['message']['content']
-
-        # Remove <reasoning> tags if present
-        if '<reasoning>' in llm_response:
-            llm_response = llm_response.split('</reasoning>')[-1].strip()
-
-        # Clean up Unicode characters
-        unicode_replacements = {
-            '\u2019': "'",  # Right single quotation mark
-            '\u2018': "'",  # Left single quotation mark
-            '\u201c': '"',  # Left double quotation mark
-            '\u201d': '"',  # Right double quotation mark
-            '\u2013': '-',  # En dash
-            '\u2014': '-',  # Em dash
-            '\u2011': '-',  # Non-breaking hyphen
-            '\u2010': '-',  # Hyphen
-        }
-
-        for unicode_char, ascii_char in unicode_replacements.items():
-            llm_response = llm_response.replace(unicode_char, ascii_char)
-
-        # Parse LLM response to extract status and reasoning
-        llm_response_lower = llm_response.lower().strip()
-
-        if llm_response_lower.startswith('pass'):
-            status = 'PASS'
-            reasoning = ""  # No reasoning needed for PASS
-        elif llm_response_lower.startswith('fail'):
-            status = 'FAIL'
-            reasoning = llm_response.split('-', 1)[1].strip() if '-' in llm_response else llm_response
-        elif llm_response_lower.startswith('skip'):
-            status = 'SKIP'
-            reasoning = llm_response.split('-', 1)[1].strip() if '-' in llm_response else llm_response
-        else:
-            status = 'SKIP'
-            reasoning = f'LLM response format unclear: {llm_response}'
-
-        # Get message template and return reasoning separately
-        # For PASS, use template message without reasoning
-        return status, messages_config.get(status.lower(), status), reasoning
-
-    except Exception as e:
-        print(f"Error calling LLM for IRP rule: {str(e)}")
-        error_msg = f'LLM IRP evaluation error: {str(e)}'
-        return 'ERROR', error_msg, error_msg
-
-
-def get_irp_for_consumer(consumer_name, org_id, env_config):
-    """
-    Query DynamoDB IRP table to find IRP for a specific consumer
-    Returns the most recent IRP if multiple exist
-    """
-    try:
-        table = dynamodb.Table(env_config['DYNAMODB_IRP_TABLE'])
-
-        consumer_key = f'CONSUMER#{consumer_name}'
-        print(f"Querying IRP table for consumer: {consumer_name} (key: {consumer_key})")
-
-        # Query using GSI1 (consumer name index)
-        response = table.query(
-            IndexName='gsi1',
-            KeyConditionExpression='gsi1pk = :consumer_key',
-            ExpressionAttributeValues={
-                ':consumer_key': consumer_key,
-                ':org_id': org_id
-            },
-            FilterExpression='organization_id = :org_id',
-            ScanIndexForward=False,  # Sort descending to get most recent first
-            Limit=1
-        )
-
-        items = response.get('Items', [])
-        print(f"Found {len(items)} IRP(s) for consumer: {consumer_name}")
-
-        if items:
-            irp = items[0]
-            print(f"Using IRP with start date: {irp.get('irp_start_date')}, end date: {irp.get('irp_end_date')}")
-            return irp
-
+    if response_json is None:
         return None
 
-    except Exception as e:
-        print(f"Error querying IRP table: {str(e)}")
-        raise e
+    extracted = response_json.get('fields', {})
+    print(f"Fields extracted: {extracted}")
+    return extracted
 
 
-def format_message(message, fields, rule_config, reasoning=None):
+def _validate_rule(model_id, rule_text, notes, chart_text, extracted_fields=None):
     """
-    Format message template with field values and LLM reasoning
+    Step 2: Validate the rule using extracted fields (if any).
+    Returns (status, message, reasoning) tuple.
     """
-    if not message:
-        return message
+    system_prompt = """You are a Healthcare Compliance Auditor. You will be given a Rule to validate, the patient Chart Text, and optionally some pre-extracted fields. Validate whether the rule passes or fails.
+Please respond with JSON, with the keys: 'status' and 'reasoning'. The status should be one of: 'PASS', 'FAIL', 'SKIP'. The reasoning should be a short explanation of the reason for the status."""
 
-    # Replace field placeholders
-    for key, value in fields.items():
-        placeholder = '{' + key + '}'
-        if placeholder in message:
-            message = message.replace(placeholder, str(value) if value else 'N/A')
+    json_schema = {
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "description": "The status of the rule. One of: 'PASS', 'FAIL', 'SKIP'.",
+                "enum": ["PASS", "FAIL", "SKIP"]
+            },
+            "reasoning": {
+                "type": "string",
+                "description": "The reasoning for the status.",
+            },
+        },
+        "required": ["status", "reasoning"]
+    }
 
-    # Replace {llm_reasoning} placeholder if present
-    if '{llm_reasoning}' in message:
-        message = message.replace('{llm_reasoning}', str(reasoning) if reasoning else 'N/A')
+    # Format notes as string
+    notes_text = '\n'.join(f"- {note}" for note in notes) if notes else 'None'
 
-    # Replace special placeholders
-    if '{actual_value}' in message:
-        # Try to get the actual value from the then condition
-        condition = rule_config.get('condition', {})
-        then_field = condition.get('then', {}).get('field')
-        if then_field:
-            actual = fields.get(then_field, 'N/A')
-            message = message.replace('{actual_value}', str(actual))
+    # Build message content
+    content = [
+        {"type": "text", "text": f"Rule:\n{rule_text}\n\nNotes:\n{notes_text}"},
+        {"type": "text", "text": f"Chart text:\n\n{chart_text}"},
+    ]
 
-    return message
+    if extracted_fields:
+        content.append({"type": "text", "text": f"Extracted fields:\n\n{json.dumps(extracted_fields)}"})
+
+    content.append({"type": "text", "text": f"JSON schema:\n\n{json.dumps(json_schema)}"})
+
+    print(f'System prompt: {system_prompt}')
+    print(f'User message: {content}')
+
+    body = {
+        "system": system_prompt,
+        'anthropic_version': 'bedrock-2023-05-31',
+        'max_tokens': 1024,
+        'temperature': 0.01,
+        'messages': [{"role": "user", "content": content}]
+    }
+
+    response_json = invoke_claude_model(
+        inference_profile_id=model_id,
+        body=body,
+        return_json_only=True,
+        raise_on_error=True,
+        retries=1
+    )
+
+    if response_json is None:
+        return 'ERROR', 'No JSON found in Claude response', ''
+
+    status = response_json['status']
+    reasoning = response_json['reasoning']
+
+    return status, f"{status} - {reasoning}", reasoning
 
 
 def store_results(results, env_config):
-    """
-    Store validation results in DynamoDB
-    """
+    """Store validation results in DynamoDB."""
     try:
         table = dynamodb.Table(env_config['DYNAMODB_TABLE'])
 
-        # Convert floats to Decimal for DynamoDB
         item = json.loads(json.dumps(results), parse_float=Decimal)
 
-        # Add partition key
         item['pk'] = f"DOC#{results['document_id']}"
         item['sk'] = f"VALIDATION#{results['validation_timestamp']}"
-
-        # Add GSI keys for querying
         item['gsi1pk'] = f"DATE#{results['validation_timestamp'][:10]}"
         item['gsi1sk'] = f"DOC#{results['document_id']}"
-
-        # Add GSI2 keys for querying by validation run
         item['gsi2pk'] = f"RUN#{results['validation_run_id']}"
         item['gsi2sk'] = f"DOC#{results['document_id']}"
-
-        # Add organization key for filtering
         item['organization_id'] = results.get('organization_id', 'unknown')
 
         table.put_item(Item=item)
@@ -1061,22 +708,17 @@ def store_results(results, env_config):
 
     except Exception as e:
         print(f"Error storing results in DynamoDB: {str(e)}")
-        # Don't raise - continue even if DynamoDB fails
 
 
 def generate_csv_from_dynamodb(validation_run_id, env_config):
     """
-    Query all validation results for this run from DynamoDB and generate CSV
+    Query all validation results for this run from DynamoDB and generate CSV.
 
-    CSV format: One row per service_id with separate columns for each rule's status
+    CSV format: One row per service_id with separate columns for each rule's status.
     """
-    import csv
-    import io
-
     try:
         table = dynamodb.Table(env_config['DYNAMODB_TABLE'])
 
-        # Query using GSI2 to get all results for this validation run
         response = table.query(
             IndexName='gsi2',
             KeyConditionExpression='gsi2pk = :run_key',
@@ -1088,42 +730,33 @@ def generate_csv_from_dynamodb(validation_run_id, env_config):
         items = response.get('Items', [])
         print(f"Found {len(items)} documents for validation run {validation_run_id}")
 
-        # First pass: collect all unique rule names to create column headers
         all_rule_names = set()
         for item in items:
             for rule in item.get('rules', []):
                 rule_name = rule.get('rule_name', 'Unknown')
                 all_rule_names.add(rule_name)
 
-        # Sort rule names for consistent column ordering
         sorted_rule_names = sorted(all_rule_names)
 
-        # Generate CSV header: Service ID, Consumer Name, then one column per rule
         output = io.StringIO()
         writer = csv.writer(output)
         header = ['Service ID', 'Consumer Name'] + sorted_rule_names
         writer.writerow(header)
 
-        # Second pass: write one row per service_id
         for item in items:
-            # Extract field values
             field_values = item.get('field_values', {})
             service_id = field_values.get('document_id', 'N/A') if field_values else 'N/A'
             consumer_name = field_values.get('consumer_name', 'N/A') if field_values else 'N/A'
 
-            # Build a map of rule_name -> status for this document
             rule_statuses = {}
             for rule in item.get('rules', []):
                 rule_name = rule.get('rule_name', 'Unknown')
                 status = rule.get('status', 'N/A')
                 message = rule.get('message', '')
 
-                # For PASS status, only show "PASS" without reasoning
                 if status == 'PASS':
                     rule_statuses[rule_name] = 'PASS'
-                # For FAIL/SKIP/ERROR with message
                 elif message and message != status:
-                    # If message already starts with status, don't duplicate it
                     if message.upper().startswith(status.upper()):
                         rule_statuses[rule_name] = message
                     else:
@@ -1131,7 +764,6 @@ def generate_csv_from_dynamodb(validation_run_id, env_config):
                 else:
                     rule_statuses[rule_name] = status
 
-            # Build row with status for each rule (in same order as header)
             row = [service_id, consumer_name]
             for rule_name in sorted_rule_names:
                 row.append(rule_statuses.get(rule_name, 'N/A'))
@@ -1148,9 +780,7 @@ def generate_csv_from_dynamodb(validation_run_id, env_config):
 
 
 def save_csv_to_s3(csv_content, validation_run_id, env_config):
-    """
-    Save CSV report to S3
-    """
+    """Save CSV report to S3."""
     try:
         csv_key = f"validation-reports/{validation_run_id}-validation-report.csv"
 

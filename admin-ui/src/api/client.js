@@ -75,9 +75,16 @@ export const api = {
       body: JSON.stringify({ rule_text: ruleText }),
     }),
 
-  enhanceNote: (orgId, note, ruleText) =>
+  enhanceNote: (orgId, note, ruleText, documentId, validationRunId, ruleId, notes) =>
     request(`/api/organizations/${orgId}/rules/enhance-note`, {
       method: 'POST',
-      body: JSON.stringify({ note, rule_text: ruleText }),
+      body: JSON.stringify({
+        note,
+        rule_text: ruleText,
+        document_id: documentId,
+        validation_run_id: validationRunId,
+        rule_id: ruleId,
+        notes,
+      }),
     }),
 }

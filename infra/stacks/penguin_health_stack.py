@@ -35,6 +35,7 @@ class PenguinHealthStack(Stack):
         # ----- Admin UI -----
         admin_ui = AdminUi(self, "AdminUi",
             org_config_table=db.org_config_table,
+            validation_results_table=db.validation_results_table,
         )
 
         # ----- Audit Engine -----

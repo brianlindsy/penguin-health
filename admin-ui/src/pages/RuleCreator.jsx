@@ -21,6 +21,8 @@ export function RuleCreator() {
   })
 
   const [newNote, setNewNote] = useState('')
+  const [documentId, setDocumentId] = useState('')
+  const [validationRunId, setValidationRunId] = useState('')
   const [saving, setSaving] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [enhancing, setEnhancing] = useState(false)
@@ -52,11 +54,24 @@ export function RuleCreator() {
   const handleAddNote = async () => {
     if (!newNote.trim()) return
 
+    if (!rule.id.trim()) {
+      setError('Save the rule (with a Rule ID) before adding notes')
+      return
+    }
+
     setEnhancing(true)
     setError('')
 
     try {
-      const result = await api.enhanceNote(orgId, newNote, rule.rule_text)
+      const result = await api.enhanceNote(
+        orgId,
+        newNote,
+        rule.rule_text,
+        documentId,
+        validationRunId,
+        rule.id,
+        rule.notes,
+      )
       setRule(prev => ({
         ...prev,
         notes: [...prev.notes, result.enhanced_note],
@@ -242,6 +257,33 @@ export function RuleCreator() {
             >
               {enhancing ? 'Enhancing...' : 'Add & Enhance'}
             </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Document ID
+              </label>
+              <input
+                type="text"
+                value={documentId}
+                onChange={e => setDocumentId(e.target.value)}
+                placeholder="ID of the medical note"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Validation Run ID
+              </label>
+              <input
+                type="text"
+                value={validationRunId}
+                onChange={e => setValidationRunId(e.target.value)}
+                placeholder="ID of the validation run"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
           </div>
 
           {rule.notes.length > 0 && (

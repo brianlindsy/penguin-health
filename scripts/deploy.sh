@@ -10,6 +10,9 @@
 
 set -e  # Exit on error
 
+PROFILE=""
+AWS_ARGS=()
+
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -188,7 +191,7 @@ deploy_function() {
 
     # Update function code
     print_info "Updating function code..."
-    aws lambda update-function-code \
+    aws "${AWS_ARGS[@]}" lambda update-function-code \
         --function-name "$function_name" \
         --zip-file fileb://lambda-package.zip \
         --query 'FunctionArn' \
@@ -196,12 +199,12 @@ deploy_function() {
 
     # Wait for update to complete
     print_info "Waiting for update to complete..."
-    aws lambda wait function-updated \
+    aws "${AWS_ARGS[@]}" lambda wait function-updated \
         --function-name "$function_name"
 
     # Update description
     print_info "Updating function description..."
-    aws lambda update-function-configuration \
+    aws "${AWS_ARGS[@]}" lambda update-function-configuration \
         --function-name "$function_name" \
         --description "$DESCRIPTION" \
         --query 'FunctionArn' \
@@ -222,13 +225,13 @@ tag_function() {
 
     print_info "Tagging $function_name with version info..."
 
-    FUNCTION_ARN=$(aws lambda get-function \
+    FUNCTION_ARN=$(aws "${AWS_ARGS[@]}" lambda get-function \
         --function-name "$function_name" \
         --query 'Configuration.FunctionArn' \
         --output text 2>/dev/null)
 
     if [ -n "$FUNCTION_ARN" ]; then
-        aws lambda tag-resource \
+        aws "${AWS_ARGS[@]}" lambda tag-resource \
             --resource "$FUNCTION_ARN" \
             --tags GitTag="$GIT_TAG" GitCommit="$GIT_COMMIT" DeployedAt="$TIMESTAMP" \
             &> /dev/null || true
@@ -247,6 +250,9 @@ deploy_all() {
     print_info "Git Tag: $GIT_TAG"
     print_info "Commit: $GIT_COMMIT"
     print_info "Timestamp: $TIMESTAMP"
+    if [ -n "$PROFILE" ]; then
+        print_info "AWS Profile: $PROFILE"
+    fi
     echo ""
 
     # Deploy each function with its own package
@@ -261,7 +267,7 @@ deploy_all() {
 
         # Update function code
         print_info "Updating function code..."
-        aws lambda update-function-code \
+        aws "${AWS_ARGS[@]}" lambda update-function-code \
             --function-name "$function_name" \
             --zip-file fileb://lambda-package.zip \
             --query 'FunctionArn' \
@@ -269,12 +275,12 @@ deploy_all() {
 
         # Wait for update to complete
         print_info "Waiting for update to complete..."
-        aws lambda wait function-updated \
+        aws "${AWS_ARGS[@]}" lambda wait function-updated \
             --function-name "$function_name"
 
         # Update description
         print_info "Updating function description..."
-        aws lambda update-function-configuration \
+        aws "${AWS_ARGS[@]}" lambda update-function-configuration \
             --function-name "$function_name" \
             --description "$DESCRIPTION" \
             --query 'FunctionArn' \
@@ -298,7 +304,7 @@ deploy_all() {
 
     print_info "Deployed Functions:"
     for function_name in "${LAMBDA_FUNCTIONS[@]}"; do
-        aws lambda get-function \
+        aws "${AWS_ARGS[@]}" lambda get-function \
             --function-name "$function_name" \
             --query 'Configuration.{Name:FunctionName,Runtime:Runtime,Updated:LastModified}' \
             --output table 2>/dev/null || print_warning "  - $function_name (not found)"
@@ -320,6 +326,10 @@ main() {
         case $1 in
             --function|-f)
                 DEPLOY_TARGET="$2"
+                shift 2
+                ;;
+            --profile|-p)
+                PROFILE="$2"
                 shift 2
                 ;;
             --help|-h)
@@ -344,12 +354,21 @@ main() {
         esac
     done
 
+    # If profile provided, pass it to all AWS CLI calls
+    if [ -n "$PROFILE" ]; then
+        print_info "Using AWS profile: $PROFILE"
+        AWS_ARGS+=(--profile "$PROFILE")
+    fi
+
     # Display banner
     echo ""
     echo "╔════════════════════════════════════════════════════════╗"
     echo "║         Penguin Health Deployment Tool                ║"
     echo "╚════════════════════════════════════════════════════════╝"
     echo ""
+    if [ -n "$PROFILE" ]; then
+        print_info "AWS Profile: $PROFILE"
+    fi
 
     # Deploy
     if [ -z "$DEPLOY_TARGET" ]; then
