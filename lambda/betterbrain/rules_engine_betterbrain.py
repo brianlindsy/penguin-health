@@ -69,7 +69,6 @@ def get_organization(org_id):
  "s3_bucket_name": "penguin-health-catholic-charities-betterbrain",
  "updated_at": "2026-02-17T13:20:21.091648Z"
 }
-        raise
 
 def build_env_config(org_id):
     """

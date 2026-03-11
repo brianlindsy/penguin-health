@@ -315,17 +315,6 @@ def enhance_fields(path_params, body, **kwargs):
 
     rule_text = body['rule_text']
 
-#     system_prompt = """You are an expert at analyzing medical chart validation rules.
-# Given a rule description, identify the key fields that need to be extracted from chart documents to evaluate this rule.
-
-# Return a JSON array of field objects. Each object must have:
-# - "name": A snake_case identifier for the field (e.g., "recipient", "service_location")
-# - "type": The data type - one of "string", "number", "boolean", "datetime"
-# - "description": A brief description of what this field represents in the chart
-
-# Only include fields that are explicitly or implicitly referenced in the rule.
-# Return ONLY the JSON array, no other text."""
-
     system_prompt = """You are an expert at analyzing medical chart validation rules.
     Given a rule description, identify the key fields that need to be extracted from chart documents to evaluate this rule.
 
@@ -552,19 +541,6 @@ def enhance_note(path_params, body, **kwargs):
     validation_run_id = body.get('validation_run_id')
     notes = body.get('notes') or []
 
-#     system_prompt = """You are an expert at optimizing contextual notes for medical chart validation systems.
-
-# Your task is to rewrite notes to be clearer and more actionable for an LLM that will use them when validating charts.
-
-# The enhanced note should:
-# - Be concise but complete
-# - Use precise, unambiguous language
-# - Clarify any implicit assumptions
-# - Provide clear guidance for validation decisions
-# - Be written in a factual, instructional tone
-
-# Return ONLY the enhanced note text, no other text or explanation."""
-
     system_prompt = """
     You are an expert medical chart validation assistant responsible for improving rule clarification notes used by an automated medical chart validation system.
 
@@ -644,42 +620,6 @@ def enhance_note(path_params, body, **kwargs):
     Return JSON only.
     """
 
-
-#     user_prompt = f"""
-# Chart text: {document_text}
-# Previous validation result: {validation_result}
-# Rule text: {rule_text}
-# Existing notes: {notes}
-# Feedback on previous validation result: {note}
-
-# ----
-
-# Ok, now please write a new clarification note based on the above information. Return ONLY the JSON, no other text or explanation. Return null if no new note is necessary.
-# """
-
-
-
-
-#     if rule_text:
-#         user_prompt += f"""
-
-# This note is associated with the following validation rule:
-# {rule_text}"""
-
-    # if notes:
-    #     user_prompt += "\n\nExisting notes for this rule:\n"
-    #     for idx, n in enumerate(notes, start=1):
-    #         user_prompt += f"{idx}. {n}\n"
-
-    # if rule_id or document_id or validation_run_id:
-    #     user_prompt += "\nAdditional context:\n"
-    #     if rule_id:
-    #         user_prompt += f"- Rule ID: {rule_id}\n"
-    #     if document_id:
-    #         user_prompt += f"- Document ID: {document_id}\n"
-    #     if validation_run_id:
-    #         user_prompt += f"- Validation Run ID: {validation_run_id}\n"
-
     print(f"Rule ID: {rule_id}, Document ID: {document_id}, Validation Run ID: {validation_run_id}")
     print(f"Previous notes: {notes}")
     print(f"Organization ID: {org_id}")
@@ -708,15 +648,6 @@ def enhance_note(path_params, body, **kwargs):
 
     validation_result = validation_query['Items'][0]
     print(f"Validation result: {validation_result}")
-
-    # fname = validation_result.get('filename').split('/')[-1]
-    # document = s3_client.get_object(
-    #     Bucket=s3_bucket_name,
-    #     Key=f'archived/validation/{fname}'
-    # )
-    # document = json.loads(document['Body'].read())
-    # document_text = document.get('text', '')
-    # print(f"Document: {document_text}")
     
     user_prompt = f"""
     Rule text: {rule_text}
@@ -759,30 +690,6 @@ def enhance_note(path_params, body, **kwargs):
     except Exception as e:
         print(f"Error in enhance_note invoking Claude model: {e}")
         return response(500, {'error': str(e)})
-
-    # try:
-    #     resp = bedrock.invoke_model(
-    #         modelId=MODEL_ID,
-    #         body=json.dumps({
-    #             'anthropic_version': 'bedrock-2023-05-31',
-    #             'max_tokens': 1024,
-    #             'system': system_prompt,
-    #             'messages': [{'role': 'user', 'content': user_prompt}],
-    #         }),
-    #     )
-    #     result = json.loads(resp['body'].read())
-    #     enhanced_note = result['content'][0]['text'].strip()
-
-    #     return response(200, {'enhanced_note': enhanced_note})
-
-    # except Exception as e:
-    #     print(f"Error in enhance_note: {e}")
-    #     return response(500, {'error': str(e)})
-
-    """
-    to test use:
-    - 
-    """
 
 
 # ---- Helpers ----
