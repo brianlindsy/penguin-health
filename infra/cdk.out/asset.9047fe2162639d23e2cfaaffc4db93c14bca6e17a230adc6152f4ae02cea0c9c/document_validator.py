@@ -264,7 +264,7 @@ def validate_document(data, filename, config, org_id, validation_run_id):
         rule_results = []
     else:
         print(f"Evaluating {len(enabled_rules)} rules in parallel...")
-        max_workers = min(10, len(enabled_rules))
+        max_workers = min(3, len(enabled_rules))
 
         rule_results = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:

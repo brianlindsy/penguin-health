@@ -27,11 +27,7 @@ def extract_fields_from_text(text, field_mappings):
     if not text or not field_mappings:
         return fields
 
-    # Log first 500 chars of text for debugging
-    print(f"Extracting fields from text ({len(text)} chars). First 500 chars: {text[:500]}")
-
     lines = text.split('\n')
-    print(f"Text split into {len(lines)} lines")
 
     for field_name, key_pattern in field_mappings.items():
         value = None

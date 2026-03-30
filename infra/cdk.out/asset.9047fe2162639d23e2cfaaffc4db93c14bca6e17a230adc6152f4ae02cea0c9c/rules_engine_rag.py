@@ -92,12 +92,7 @@ def process_file(bucket, key, config, org_id, env_config, validation_run_id):
         results = validate_document(data, key, config, org_id, validation_run_id)
         store_results(results, env_config)
 
-        # Log document_id extraction for debugging
-        doc_id = results.get('document_id', 'UNKNOWN')
-        if doc_id == 'UNKNOWN' or doc_id is None:
-            print(f"WARNING: No document_id extracted for {key}")
-
-        print(f"Validated {key} (document_id={doc_id}): {results['summary']}")
+        print(f"Validated {key}: {results['summary']}")
 
     except Exception as e:
         print(f"Error processing {key}: {str(e)}")
