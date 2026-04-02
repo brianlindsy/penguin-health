@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { StatusBadge } from '../components/StatusBadge.jsx'
+import { ValidationStatusBadge } from '../components/ValidationStatusBadge.jsx'
 import { JsonEditor } from '../components/JsonEditor.jsx'
 
-const TABS = ['Rules', 'Field Mappings']
+const TABS = ['Rules', 'Field Mappings', 'Validation Results']
 
 export function OrganizationDetail() {
   const { orgId } = useParams()
@@ -104,6 +105,10 @@ export function OrganizationDetail() {
           saving={saving}
           saveMsg={saveMsg}
         />
+      )}
+
+      {activeTab === 'Validation Results' && (
+        <ValidationResultsTab orgId={orgId} />
       )}
     </div>
   )
@@ -210,6 +215,75 @@ function FieldMappingsTab({ config, onSave, saving, saveMsg }) {
           </span>
         )}
       </div>
+    </div>
+  )
+}
+
+
+function ValidationResultsTab({ orgId }) {
+  const [runs, setRuns] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    api.listValidationRuns(orgId)
+      .then(data => setRuns(data.runs || []))
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false))
+  }, [orgId])
+
+  if (loading) return <p className="text-gray-500">Loading validation runs...</p>
+  if (error) return <p className="text-red-600">Error: {error}</p>
+
+  return (
+    <div>
+      <h2 className="text-lg font-medium text-gray-900 mb-4">
+        Validation Runs ({runs.length})
+      </h2>
+
+      {runs.length === 0 ? (
+        <p className="text-gray-500">No validation runs found for this organization.</p>
+      ) : (
+        <div className="bg-white shadow rounded-lg overflow-hidden">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Run ID</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Docs</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Pass</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Fail</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Skip</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {runs.map(run => (
+                <tr key={run.validation_run_id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3">
+                    <Link
+                      to={`/organizations/${orgId}/validation-runs/${run.validation_run_id}`}
+                      className="text-blue-600 hover:text-blue-800 text-sm font-mono"
+                    >
+                      {run.validation_run_id}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-600">
+                    {run.timestamp ? new Date(run.timestamp).toLocaleString() : '-'}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-900 font-medium">{run.total_documents}</td>
+                  <td className="px-4 py-3 text-sm text-green-600 font-medium">{run.passed}</td>
+                  <td className="px-4 py-3 text-sm text-red-600 font-medium">{run.failed}</td>
+                  <td className="px-4 py-3 text-sm text-yellow-600 font-medium">{run.skipped}</td>
+                  <td className="px-4 py-3">
+                    <ValidationStatusBadge status={run.failed > 0 ? 'FAIL' : 'PASS'} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }

@@ -110,16 +110,6 @@ def process_file(bucket, key, config, org_id, env_config, validation_run_id):
 
         print(f"Validated {key} (document_id={doc_id}): {results['summary']}")
 
-        # Archive the processed file to prevent reprocessing
-        archive_key = key.replace(env_config['TEXTRACT_PROCESSED'], 'archived/validation/')
-        s3_client.copy_object(
-            Bucket=bucket,
-            CopySource={'Bucket': bucket, 'Key': key},
-            Key=archive_key
-        )
-        s3_client.delete_object(Bucket=bucket, Key=key)
-        print(f"Archived {key} to {archive_key}")
-
     except Exception as e:
         print(f"Error processing {key}: {str(e)}")
         raise e

@@ -18,13 +18,7 @@ import boto3
 
 from multi_org_config import load_org_rules, build_env_config
 from document_validator import validate_document
-from results_handler import (
-    store_results,
-    aggregate_run_summary,
-    store_run_summary,
-    generate_csv_from_dynamodb,
-    save_csv_to_s3,
-)
+from results_handler import store_results, generate_csv_from_dynamodb, save_csv_to_s3
 
 s3_client = boto3.client('s3')
 
@@ -65,11 +59,6 @@ def lambda_handler(event, context):
             if (key.endswith('.json') or key.endswith('.csv')) and '/raw/' not in key:
                 process_file(env_config['BUCKET_NAME'], key, config, org_id, env_config, validation_run_id)
 
-        # Store run summary for efficient UI querying
-        print(f"Aggregating run summary for: {validation_run_id}")
-        summary = aggregate_run_summary(validation_run_id, env_config)
-        store_run_summary(validation_run_id, org_id, summary, env_config)
-
         print(f"Generating CSV report for run: {validation_run_id}")
         csv_report = generate_csv_from_dynamodb(validation_run_id, env_config)
         save_csv_to_s3(csv_report, validation_run_id, env_config)
@@ -109,16 +98,6 @@ def process_file(bucket, key, config, org_id, env_config, validation_run_id):
             print(f"WARNING: No document_id extracted for {key}")
 
         print(f"Validated {key} (document_id={doc_id}): {results['summary']}")
-
-        # Archive the processed file to prevent reprocessing
-        archive_key = key.replace(env_config['TEXTRACT_PROCESSED'], 'archived/validation/')
-        s3_client.copy_object(
-            Bucket=bucket,
-            CopySource={'Bucket': bucket, 'Key': key},
-            Key=archive_key
-        )
-        s3_client.delete_object(Bucket=bucket, Key=key)
-        print(f"Archived {key} to {archive_key}")
 
     except Exception as e:
         print(f"Error processing {key}: {str(e)}")

@@ -3,7 +3,6 @@ Results Handler for validation results storage and reporting.
 
 Handles:
 - Storing validation results in DynamoDB
-- Storing validation run summaries for efficient querying
 - Generating CSV reports from DynamoDB
 - Saving CSV reports to S3
 """
@@ -11,7 +10,6 @@ Handles:
 import json
 import csv
 import io
-from datetime import datetime
 from decimal import Decimal
 
 import boto3
@@ -47,94 +45,6 @@ def store_results(results, env_config):
 
     except Exception as e:
         print(f"Error storing results in DynamoDB: {str(e)}")
-
-
-def aggregate_run_summary(validation_run_id, env_config):
-    """
-    Aggregate summary statistics for a validation run by querying all documents.
-
-    Args:
-        validation_run_id: ID of the validation run
-        env_config: Environment config with DYNAMODB_TABLE
-
-    Returns:
-        dict: Summary with total, passed, failed, skipped counts
-    """
-    table = dynamodb.Table(env_config['DYNAMODB_TABLE'])
-
-    response = table.query(
-        IndexName='gsi2',
-        KeyConditionExpression='gsi2pk = :run_key',
-        ExpressionAttributeValues={
-            ':run_key': f"RUN#{validation_run_id}"
-        }
-    )
-
-    items = response.get('Items', [])
-
-    total_docs = len(items)
-    docs_passed = 0
-    docs_failed = 0
-    docs_skipped = 0
-
-    for item in items:
-        summary = item.get('summary', {})
-        # A document is considered failed if any rule failed
-        if summary.get('failed', 0) > 0:
-            docs_failed += 1
-        elif summary.get('skipped', 0) > 0 and summary.get('passed', 0) == 0:
-            docs_skipped += 1
-        else:
-            docs_passed += 1
-
-    return {
-        'total': total_docs,
-        'passed': docs_passed,
-        'failed': docs_failed,
-        'skipped': docs_skipped,
-    }
-
-
-def store_run_summary(validation_run_id, org_id, summary, env_config):
-    """
-    Store validation run summary for efficient querying by organization.
-
-    Creates an item with pk=ORG#{org_id}, sk=RUN#{run_id} to enable
-    efficient listing of runs by organization.
-
-    Args:
-        validation_run_id: ID of the validation run
-        org_id: Organization ID
-        summary: Dict with total, passed, failed, skipped counts
-        env_config: Environment config with DYNAMODB_TABLE
-    """
-    try:
-        table = dynamodb.Table(env_config['DYNAMODB_TABLE'])
-
-        timestamp = datetime.utcnow().isoformat()
-        date_str = timestamp[:10]
-
-        item = {
-            'pk': f"ORG#{org_id}",
-            'sk': f"RUN#{validation_run_id}",
-            'gsi1pk': f"DATE#{date_str}",
-            'gsi1sk': f"ORG#{org_id}#RUN#{validation_run_id}",
-            'validation_run_id': validation_run_id,
-            'organization_id': org_id,
-            'timestamp': timestamp,
-            'total_documents': summary['total'],
-            'passed': summary['passed'],
-            'failed': summary['failed'],
-            'skipped': summary['skipped'],
-            'status': 'completed',
-        }
-
-        table.put_item(Item=item)
-        print(f"Stored run summary for {validation_run_id}: {summary}")
-
-    except Exception as e:
-        print(f"Error storing run summary in DynamoDB: {str(e)}")
-        raise e
 
 
 def generate_csv_from_dynamodb(validation_run_id, env_config):

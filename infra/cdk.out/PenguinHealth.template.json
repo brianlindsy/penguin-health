@@ -299,6 +299,13 @@
       "RequireUppercase": true
      }
     },
+    "Schema": [
+     {
+      "AttributeDataType": "String",
+      "Mutable": false,
+      "Name": "organization_id"
+     }
+    ],
     "SmsVerificationMessage": "The verification code to your new account is {####}",
     "UserPoolName": "penguin-health-admin-pool",
     "UserPoolTags": {
@@ -636,7 +643,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "42956b8d7dbd5086b54b859851771e6009685d4870027176056e2e381ff21e00.zip"
+     "S3Key": "2112be49be0cd9b2fa8305ed8fd71326d0e9d49a90bb9094638703ee16ac5812.zip"
     },
     "Environment": {
      "Variables": {
@@ -676,7 +683,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminApiFunction/Resource",
-    "aws:asset:path": "asset.42956b8d7dbd5086b54b859851771e6009685d4870027176056e2e381ff21e00",
+    "aws:asset:path": "asset.2112be49be0cd9b2fa8305ed8fd71326d0e9d49a90bb9094638703ee16ac5812",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -1370,6 +1377,183 @@
    },
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--rules--enhance-note/Resource"
+   }
+  },
+  "AdminUiAdminHttpApiGETapiorganizationsorgIdvalidationrunsAdminApiIntegrationPermission7A7F70C5": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AdminUiAdminApiFunctionF9667708",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:",
+       {
+        "Ref": "AWS::AccountId"
+       },
+       ":",
+       {
+        "Ref": "AdminUiAdminHttpApi90C20B12"
+       },
+       "/*/*/api/organizations/{orgId}/validation-runs"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--validation-runs/AdminApiIntegration-Permission"
+   }
+  },
+  "AdminUiAdminHttpApiGETapiorganizationsorgIdvalidationrunsADE38608": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "AdminUiAdminHttpApi90C20B12"
+    },
+    "AuthorizationType": "JWT",
+    "AuthorizerId": {
+     "Ref": "AdminUiAdminHttpApiCognitoAuthorizerCC473533"
+    },
+    "RouteKey": "GET /api/organizations/{orgId}/validation-runs",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "AdminUiAdminHttpApiGETapiorganizationsAdminApiIntegrationD15C6010"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--validation-runs/Resource"
+   }
+  },
+  "AdminUiAdminHttpApiGETapiorganizationsorgIdvalidationrunsrunIdAdminApiIntegrationPermission56CCD0D7": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AdminUiAdminApiFunctionF9667708",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:",
+       {
+        "Ref": "AWS::AccountId"
+       },
+       ":",
+       {
+        "Ref": "AdminUiAdminHttpApi90C20B12"
+       },
+       "/*/*/api/organizations/{orgId}/validation-runs/{runId}"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--validation-runs--{runId}/AdminApiIntegration-Permission"
+   }
+  },
+  "AdminUiAdminHttpApiGETapiorganizationsorgIdvalidationrunsrunId9D85077E": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "AdminUiAdminHttpApi90C20B12"
+    },
+    "AuthorizationType": "JWT",
+    "AuthorizerId": {
+     "Ref": "AdminUiAdminHttpApiCognitoAuthorizerCC473533"
+    },
+    "RouteKey": "GET /api/organizations/{orgId}/validation-runs/{runId}",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "AdminUiAdminHttpApiGETapiorganizationsAdminApiIntegrationD15C6010"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--validation-runs--{runId}/Resource"
+   }
+  },
+  "AdminUiAdminHttpApiGETapiorganizationsorgIdvalidationrunsrunIddocumentsdocIdAdminApiIntegrationPermissionC5445838": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AdminUiAdminApiFunctionF9667708",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:",
+       {
+        "Ref": "AWS::AccountId"
+       },
+       ":",
+       {
+        "Ref": "AdminUiAdminHttpApi90C20B12"
+       },
+       "/*/*/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--validation-runs--{runId}--documents--{docId}/AdminApiIntegration-Permission"
+   }
+  },
+  "AdminUiAdminHttpApiGETapiorganizationsorgIdvalidationrunsrunIddocumentsdocIdF84EACD0": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "AdminUiAdminHttpApi90C20B12"
+    },
+    "AuthorizationType": "JWT",
+    "AuthorizerId": {
+     "Ref": "AdminUiAdminHttpApiCognitoAuthorizerCC473533"
+    },
+    "RouteKey": "GET /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "AdminUiAdminHttpApiGETapiorganizationsAdminApiIntegrationD15C6010"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--validation-runs--{runId}--documents--{docId}/Resource"
    }
   },
   "AdminUiFrontendBucket2357732C": {
@@ -2246,7 +2430,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "edc06393e75a47449c738aebaf7c99b6570d038c75d8ec735ad3adbfcbdcc091.zip"
+     "S3Key": "7317b71b22b4123e054ac2510ab1c71690c0caee1daf50a9daf1e9a07193b314.zip"
     },
     "FunctionName": "penguin-health-rules-engine-rag",
     "Handler": "rules_engine_rag.lambda_handler",
@@ -2276,7 +2460,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/RulesEngineRagFn/Resource",
-    "aws:asset:path": "asset.edc06393e75a47449c738aebaf7c99b6570d038c75d8ec735ad3adbfcbdcc091",
+    "aws:asset:path": "asset.7317b71b22b4123e054ac2510ab1c71690c0caee1daf50a9daf1e9a07193b314",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }

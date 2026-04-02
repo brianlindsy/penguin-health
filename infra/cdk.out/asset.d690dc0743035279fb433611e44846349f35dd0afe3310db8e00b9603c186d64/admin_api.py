@@ -36,17 +36,23 @@ def get_user_claims(event):
     authorizer = request_context.get('authorizer', {})
     jwt_claims = authorizer.get('jwt', {}).get('claims', {})
 
+    # Debug: log all available claims to help diagnose auth issues
+    print(f"JWT claims from authorizer: {json.dumps(jwt_claims, default=str)}")
+
     # cognito:groups comes as a string like "[Admins]" or as a list
     groups = jwt_claims.get('cognito:groups', [])
     if isinstance(groups, str):
         # Parse string format "[Admins, Users]" to list
         groups = [g.strip() for g in groups.strip('[]').split(',') if g.strip()]
 
-    return {
+    claims = {
         'email': jwt_claims.get('email'),
         'groups': groups,
         'organization_id': jwt_claims.get('custom:organization_id'),
     }
+
+    print(f"Parsed user claims: {json.dumps(claims, default=str)}")
+    return claims
 
 
 def is_super_admin(claims):
@@ -85,6 +91,7 @@ def authorize_request(event, org_id=None):
     # Use email or sub as identity - sub is always present in valid JWT
     user_identity = claims.get('email') or jwt_claims.get('sub')
     if not user_identity:
+        print(f"No user identity found. Full authorizer context: {json.dumps(authorizer, default=str)}")
         return None, response(401, {'error': 'Unauthorized - no valid user claims'})
 
     if org_id and not can_access_org(claims, org_id):
@@ -116,9 +123,6 @@ def lambda_handler(event, context):
         'PUT /api/organizations/{orgId}/rules-config': update_rules_config,
         'POST /api/organizations/{orgId}/rules/enhance-fields': enhance_fields,
         'POST /api/organizations/{orgId}/rules/enhance-note': enhance_note,
-        'GET /api/organizations/{orgId}/validation-runs': list_validation_runs,
-        'GET /api/organizations/{orgId}/validation-runs/{runId}': get_validation_run,
-        'GET /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}': get_validation_result,
     }
 
     handler = routes.get(route_key)
@@ -421,121 +425,6 @@ def update_rules_config(event, path_params, body, **kwargs):
         'field_mappings': body['field_mappings'],
         'version': item['version'],
         'updated_at': item['updated_at'],
-    })
-
-
-# ---- Validation Results ----
-
-def list_validation_runs(event, path_params, **kwargs):
-    """
-    List validation runs for an organization.
-
-    Queries validation run summaries stored with pk=ORG#{org_id}, sk=RUN#{run_id}.
-    Returns runs sorted by timestamp descending (most recent first).
-    """
-    org_id = path_params.get('orgId')
-
-    claims, error = authorize_request(event, org_id=org_id)
-    if error:
-        return error
-
-    result = validation_results_table.query(
-        KeyConditionExpression=Key('pk').eq(f'ORG#{org_id}') & Key('sk').begins_with('RUN#'),
-        ScanIndexForward=False,  # Descending order (newest first)
-    )
-
-    runs = []
-    for item in result.get('Items', []):
-        runs.append({
-            'validation_run_id': item.get('validation_run_id'),
-            'timestamp': item.get('timestamp'),
-            'total_documents': convert_decimals(item.get('total_documents', 0)),
-            'passed': convert_decimals(item.get('passed', 0)),
-            'failed': convert_decimals(item.get('failed', 0)),
-            'skipped': convert_decimals(item.get('skipped', 0)),
-            'status': item.get('status', 'completed'),
-        })
-
-    return response(200, {'runs': runs, 'count': len(runs)})
-
-
-def get_validation_run(event, path_params, **kwargs):
-    """
-    Get all validation results for a specific run.
-
-    Queries GSI2 with gsi2pk=RUN#{run_id} to get all documents validated in the run.
-    """
-    org_id = path_params.get('orgId')
-    run_id = path_params.get('runId')
-
-    claims, error = authorize_request(event, org_id=org_id)
-    if error:
-        return error
-
-    result = validation_results_table.query(
-        IndexName='gsi2',
-        KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}'),
-    )
-
-    documents = []
-    for item in result.get('Items', []):
-        # Filter by organization_id for RBAC (non-super-admins)
-        if item.get('organization_id') != org_id and not is_super_admin(claims):
-            continue
-
-        documents.append({
-            'document_id': item.get('document_id'),
-            'validation_timestamp': item.get('validation_timestamp'),
-            'filename': item.get('filename'),
-            'summary': convert_decimals(item.get('summary', {})),
-            'rules': convert_decimals(item.get('rules', [])),
-        })
-
-    return response(200, {
-        'validation_run_id': run_id,
-        'organization_id': org_id,
-        'documents': documents,
-        'total_count': len(documents),
-    })
-
-
-def get_validation_result(event, path_params, **kwargs):
-    """
-    Get detailed validation result for a single document.
-
-    Queries GSI2 with both partition and sort key to get a specific document.
-    """
-    org_id = path_params.get('orgId')
-    run_id = path_params.get('runId')
-    doc_id = path_params.get('docId')
-
-    claims, error = authorize_request(event, org_id=org_id)
-    if error:
-        return error
-
-    result = validation_results_table.query(
-        IndexName='gsi2',
-        KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}') & Key('gsi2sk').eq(f'DOC#{doc_id}'),
-    )
-
-    if not result.get('Items'):
-        return response(404, {'error': f'Validation result not found for document {doc_id} in run {run_id}'})
-
-    item = result['Items'][0]
-
-    # RBAC check
-    if item.get('organization_id') != org_id and not is_super_admin(claims):
-        return response(403, {'error': 'Access denied to this validation result'})
-
-    return response(200, {
-        'document_id': item.get('document_id'),
-        'validation_run_id': item.get('validation_run_id'),
-        'organization_id': item.get('organization_id'),
-        'validation_timestamp': item.get('validation_timestamp'),
-        'filename': item.get('filename'),
-        'summary': convert_decimals(item.get('summary', {})),
-        'rules': convert_decimals(item.get('rules', [])),
-        'field_values': convert_decimals(item.get('field_values', {})),
     })
 
 

@@ -46,6 +46,12 @@ class AdminUi(Construct):
             ),
             account_recovery=cognito.AccountRecovery.EMAIL_ONLY,
             removal_policy=RemovalPolicy.RETAIN,
+            # Custom attributes for RBAC
+            custom_attributes={
+                "organization_id": cognito.StringAttribute(
+                    mutable=False,  # Immutable - only admins can set via Admin API
+                ),
+            },
         )
 
         self.app_client = self.user_pool.add_client("AdminAppClient",
@@ -56,6 +62,10 @@ class AdminUi(Construct):
             id_token_validity=Duration.hours(1),
             access_token_validity=Duration.hours(1),
             refresh_token_validity=Duration.days(30),
+            # Note: By NOT specifying read_attributes/write_attributes,
+            # Cognito will include all readable attributes in tokens by default.
+            # This is safer for compatibility. The custom:organization_id attribute
+            # is already set as mutable=False on the User Pool, so users can't modify it.
         )
 
         cognito.CfnUserPoolGroup(self, "AdminsGroup",
@@ -148,6 +158,9 @@ class AdminUi(Construct):
             ("PUT",  "/api/organizations/{orgId}/rules-config"),
             ("POST", "/api/organizations/{orgId}/rules/enhance-fields"),
             ("POST", "/api/organizations/{orgId}/rules/enhance-note"),
+            ("GET",  "/api/organizations/{orgId}/validation-runs"),
+            ("GET",  "/api/organizations/{orgId}/validation-runs/{runId}"),
+            ("GET",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}"),
         ]
 
         for method, path in routes:

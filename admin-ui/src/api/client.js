@@ -87,4 +87,14 @@ export const api = {
         notes,
       }),
     }),
+
+  // Validation Results
+  listValidationRuns: (orgId) =>
+    request(`/api/organizations/${orgId}/validation-runs`),
+
+  getValidationRun: (orgId, runId) =>
+    request(`/api/organizations/${orgId}/validation-runs/${runId}`),
+
+  getValidationResult: (orgId, runId, docId) =>
+    request(`/api/organizations/${orgId}/validation-runs/${runId}/documents/${docId}`),
 }

@@ -12,8 +12,41 @@ const userPool = new CognitoUserPool({
   ClientId: import.meta.env.VITE_COGNITO_CLIENT_ID,
 })
 
+/**
+ * Extract user claims from Cognito ID token payload.
+ * Returns email, groups, organizationId, and isSuperAdmin flag.
+ */
+function extractUserClaims(idToken) {
+  if (!idToken) {
+    return { email: null, groups: [], organizationId: null, isSuperAdmin: false }
+  }
+
+  const payload = idToken.payload || {}
+
+  // cognito:groups can be an array or undefined
+  let groups = payload['cognito:groups'] || []
+  if (!Array.isArray(groups)) {
+    groups = []
+  }
+
+  const isSuperAdmin = groups.includes('Admins')
+
+  return {
+    email: payload.email || null,
+    groups,
+    organizationId: payload['custom:organization_id'] || null,
+    isSuperAdmin,
+  }
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
+  const [userClaims, setUserClaims] = useState({
+    email: null,
+    groups: [],
+    organizationId: null,
+    isSuperAdmin: false,
+  })
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -22,11 +55,16 @@ export function AuthProvider({ children }) {
       cognitoUser.getSession((err, session) => {
         if (err || !session?.isValid()) {
           setUser(null)
+          setUserClaims({ email: null, groups: [], organizationId: null, isSuperAdmin: false })
         } else {
+          const idToken = session.getIdToken()
+          const claims = extractUserClaims(idToken)
+
           setUser({
             email: cognitoUser.getUsername(),
             token: session.getAccessToken().getJwtToken(),
           })
+          setUserClaims(claims)
         }
         setLoading(false)
       })
@@ -49,10 +87,14 @@ export function AuthProvider({ children }) {
 
       cognitoUser.authenticateUser(authDetails, {
         onSuccess: (session) => {
+          const idToken = session.getIdToken()
+          const claims = extractUserClaims(idToken)
+
           setUser({
             email,
             token: session.getAccessToken().getJwtToken(),
           })
+          setUserClaims(claims)
           resolve(session)
         },
         onFailure: (err) => {
@@ -70,10 +112,14 @@ export function AuthProvider({ children }) {
     return new Promise((resolve, reject) => {
       cognitoUser.completeNewPasswordChallenge(newPassword, {}, {
         onSuccess: (session) => {
+          const idToken = session.getIdToken()
+          const claims = extractUserClaims(idToken)
+
           setUser({
             email: cognitoUser.getUsername(),
             token: session.getAccessToken().getJwtToken(),
           })
+          setUserClaims(claims)
           resolve(session)
         },
         onFailure: reject,
@@ -87,6 +133,7 @@ export function AuthProvider({ children }) {
       cognitoUser.signOut()
     }
     setUser(null)
+    setUserClaims({ email: null, groups: [], organizationId: null, isSuperAdmin: false })
   }, [])
 
   const getToken = useCallback(() => {
@@ -107,7 +154,16 @@ export function AuthProvider({ children }) {
   }, [])
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, getToken, completeNewPassword }}>
+    <AuthContext.Provider value={{
+      user,
+      userClaims,
+      isSuperAdmin: userClaims.isSuperAdmin,
+      loading,
+      login,
+      logout,
+      getToken,
+      completeNewPassword,
+    }}>
       {children}
     </AuthContext.Provider>
   )

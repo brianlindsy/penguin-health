@@ -2,8 +2,10 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { StatusBadge } from '../components/StatusBadge.jsx'
+import { useAuth } from '../auth/AuthProvider.jsx'
 
 export function OrganizationsPage() {
+  const { isSuperAdmin, userClaims } = useAuth()
   const [orgs, setOrgs] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -20,7 +22,14 @@ export function OrganizationsPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold text-gray-900 mb-6">Organizations</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-semibold text-gray-900">Organizations</h1>
+        {isSuperAdmin && (
+          <span className="px-3 py-1 text-xs font-medium bg-purple-100 text-purple-800 rounded-full">
+            Super Admin
+          </span>
+        )}
+      </div>
 
       <div className="bg-white shadow rounded-lg overflow-hidden">
         <table className="min-w-full divide-y divide-gray-200">
