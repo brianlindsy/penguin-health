@@ -122,6 +122,14 @@ class AdminUi(Construct):
             ],
         ))
 
+        # Lambda invoke permission for triggering validation runs
+        self.api_function.add_to_role_policy(iam.PolicyStatement(
+            actions=["lambda:InvokeFunction"],
+            resources=[
+                f"arn:aws:lambda:{config.AWS_REGION}:*:function:{config.PROJECT_NAME}-rules-engine-rag"
+            ],
+        ))
+
         # ----- API Gateway HTTP API -----
         jwt_authorizer = HttpJwtAuthorizer(
             "CognitoAuthorizer",
@@ -159,6 +167,7 @@ class AdminUi(Construct):
             ("POST", "/api/organizations/{orgId}/rules/enhance-fields"),
             ("POST", "/api/organizations/{orgId}/rules/enhance-note"),
             ("GET",  "/api/organizations/{orgId}/validation-runs"),
+            ("POST", "/api/organizations/{orgId}/validation-runs"),
             ("GET",  "/api/organizations/{orgId}/validation-runs/{runId}"),
             ("GET",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}"),
         ]

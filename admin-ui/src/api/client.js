@@ -92,6 +92,11 @@ export const api = {
   listValidationRuns: (orgId) =>
     request(`/api/organizations/${orgId}/validation-runs`),
 
+  triggerValidationRun: (orgId) =>
+    request(`/api/organizations/${orgId}/validation-runs`, {
+      method: 'POST',
+    }),
+
   getValidationRun: (orgId, runId) =>
     request(`/api/organizations/${orgId}/validation-runs/${runId}`),
 

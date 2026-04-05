@@ -621,6 +621,11 @@
         "arn:aws:bedrock:*::foundation-model/anthropic.*",
         "arn:aws:bedrock:*:*:inference-profile/*"
        ]
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": "arn:aws:lambda:us-east-1:*:function:penguin-health-rules-engine-rag"
       }
      ],
      "Version": "2012-10-17"
@@ -643,7 +648,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "2112be49be0cd9b2fa8305ed8fd71326d0e9d49a90bb9094638703ee16ac5812.zip"
+     "S3Key": "11cbe086ffcf8383d0ddd27a7168a0fc608d765e39ca168c07de407afb04fef2.zip"
     },
     "Environment": {
      "Variables": {
@@ -683,7 +688,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminApiFunction/Resource",
-    "aws:asset:path": "asset.2112be49be0cd9b2fa8305ed8fd71326d0e9d49a90bb9094638703ee16ac5812",
+    "aws:asset:path": "asset.11cbe086ffcf8383d0ddd27a7168a0fc608d765e39ca168c07de407afb04fef2",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -1436,6 +1441,65 @@
    },
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--validation-runs/Resource"
+   }
+  },
+  "AdminUiAdminHttpApiPOSTapiorganizationsorgIdvalidationrunsAdminApiIntegrationPermission2CE939AD": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AdminUiAdminApiFunctionF9667708",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:",
+       {
+        "Ref": "AWS::AccountId"
+       },
+       ":",
+       {
+        "Ref": "AdminUiAdminHttpApi90C20B12"
+       },
+       "/*/*/api/organizations/{orgId}/validation-runs"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--validation-runs/AdminApiIntegration-Permission"
+   }
+  },
+  "AdminUiAdminHttpApiPOSTapiorganizationsorgIdvalidationruns09298F57": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "AdminUiAdminHttpApi90C20B12"
+    },
+    "AuthorizationType": "JWT",
+    "AuthorizerId": {
+     "Ref": "AdminUiAdminHttpApiCognitoAuthorizerCC473533"
+    },
+    "RouteKey": "POST /api/organizations/{orgId}/validation-runs",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "AdminUiAdminHttpApiGETapiorganizationsAdminApiIntegrationD15C6010"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--validation-runs/Resource"
    }
   },
   "AdminUiAdminHttpApiGETapiorganizationsorgIdvalidationrunsrunIdAdminApiIntegrationPermission56CCD0D7": {
@@ -2430,7 +2494,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "7317b71b22b4123e054ac2510ab1c71690c0caee1daf50a9daf1e9a07193b314.zip"
+     "S3Key": "d9e5eed9d253d3f2299fb9928f06a114fbb36ecacf6be24e06ef236879002249.zip"
     },
     "FunctionName": "penguin-health-rules-engine-rag",
     "Handler": "rules_engine_rag.lambda_handler",
@@ -2460,7 +2524,190 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/RulesEngineRagFn/Resource",
-    "aws:asset:path": "asset.7317b71b22b4123e054ac2510ab1c71690c0caee1daf50a9daf1e9a07193b314",
+    "aws:asset:path": "asset.d9e5eed9d253d3f2299fb9928f06a114fbb36ecacf6be24e06ef236879002249",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "AuditEngineCsvSplitterFnServiceRole64475505": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Project",
+      "Value": "penguin-health"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CsvSplitterFn/ServiceRole/Resource"
+   }
+  },
+  "AuditEngineCsvSplitterFnServiceRoleDefaultPolicy51AE7EC6": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket",
+        "s3:GetObjectTagging",
+        "s3:PutObjectTagging",
+        "s3:CopyObject"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:s3:::penguin-health-*",
+        "arn:aws:s3:::penguin-health-*/*"
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "DatabaseOrgConfigTable10356BB8",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DatabaseOrgConfigTable10356BB8",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "DatabaseOrgConfigTable10356BB8",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DatabaseOrgConfigTable10356BB8",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "AuditEngineCsvSplitterFnServiceRoleDefaultPolicy51AE7EC6",
+    "Roles": [
+     {
+      "Ref": "AuditEngineCsvSplitterFnServiceRole64475505"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CsvSplitterFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "AuditEngineCsvSplitterFn2779AE35": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": {
+      "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+     },
+     "S3Key": "648b7199c48c58beb6667b0df610f67e958d1491ade21447a8a88ad2abf0e910.zip"
+    },
+    "FunctionName": "penguin-health-csv-splitter-multi-org",
+    "Handler": "csv_splitter_multi_org.lambda_handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "AuditEngineCsvSplitterFnServiceRole64475505",
+      "Arn"
+     ]
+    },
+    "Runtime": "python3.12",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Project",
+      "Value": "penguin-health"
+     }
+    ],
+    "Timeout": 60
+   },
+   "DependsOn": [
+    "AuditEngineCsvSplitterFnServiceRoleDefaultPolicy51AE7EC6",
+    "AuditEngineCsvSplitterFnServiceRole64475505"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CsvSplitterFn/Resource",
+    "aws:asset:path": "asset.648b7199c48c58beb6667b0df610f67e958d1491ade21447a8a88ad2abf0e910",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -2559,6 +2806,15 @@
    "Value": {
     "Fn::GetAtt": [
      "AuditEngineRulesEngineRagFnB2BFCB1D",
+     "Arn"
+    ]
+   }
+  },
+  "CsvSplitterFnArn": {
+   "Description": "csv-splitter-multi-org Lambda ARN",
+   "Value": {
+    "Fn::GetAtt": [
+     "AuditEngineCsvSplitterFn2779AE35",
      "Arn"
     ]
    }

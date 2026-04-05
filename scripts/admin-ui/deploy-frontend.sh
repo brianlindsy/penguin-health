@@ -38,7 +38,7 @@ echo -e "${BLUE}Invalidating CloudFront cache...${NC}"
 
 # Get distribution ID from CDK stack outputs
 DIST_ID=$(aws cloudformation describe-stacks \
-  --stack-name PenguinHealthAdminUi \
+  --stack-name PenguinHealth \
   --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" \
   --output text \
   --region "$REGION" 2>/dev/null || echo "")
@@ -58,7 +58,7 @@ echo -e "${GREEN}Deploy complete!${NC}"
 
 # Print CloudFront URL
 CF_URL=$(aws cloudformation describe-stacks \
-  --stack-name PenguinHealthAdminUi \
+  --stack-name PenguinHealth \
   --query "Stacks[0].Outputs[?OutputKey=='CloudFrontUrl'].OutputValue" \
   --output text \
   --region "$REGION" 2>/dev/null || echo "")

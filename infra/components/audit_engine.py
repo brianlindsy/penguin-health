@@ -16,7 +16,7 @@ from aws_cdk import (
 from constructs import Construct
 
 import config
-from components.bundler import CopyFileBundler, MultiFileBundler
+from components.bundler import CopyFileBundler, MultiFileBundler, DirectoryBundler
 
 
 class AuditEngine(Construct):
@@ -30,6 +30,7 @@ class AuditEngine(Construct):
 
         lambda_dir = os.path.join(os.path.dirname(__file__), "..", "..", "lambda", "multi-org")
         rules_engine_dir = os.path.join(lambda_dir, "rules-engine")
+        csv_splitter_dir = os.path.join(lambda_dir, "csv-splitter")
 
         # Wildcard ARN for all per-org buckets (penguin-health-*)
         s3_bucket_arn = "arn:aws:s3:::penguin-health-*"
@@ -165,3 +166,27 @@ class AuditEngine(Construct):
                 f"arn:aws:lambda:{config.AWS_REGION}:*:function:{config.PROJECT_NAME}-rules-engine-rag"
             ],
         ))
+
+        # ----- csv-splitter-multi-org -----
+        # Splits bulk CSV files uploaded via SFTP into individual chart files
+        self.csv_splitter_fn = _lambda.Function(self, "CsvSplitterFn",
+            function_name=f"{config.PROJECT_NAME}-csv-splitter-multi-org",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="csv_splitter_multi_org.lambda_handler",
+            code=_lambda.Code.from_asset(
+                csv_splitter_dir,
+                bundling=BundlingOptions(
+                    image=_lambda.Runtime.PYTHON_3_12.bundling_image,
+                    local=DirectoryBundler([
+                        (os.path.join(csv_splitter_dir, "csv_splitter_multi_org.py"), None),
+                        (os.path.join(csv_splitter_dir, "splitters"), "splitters"),
+                        (os.path.join(rules_engine_dir, "multi_org_config.py"), None),
+                    ]),
+                ),
+            ),
+            timeout=Duration.seconds(60),
+            memory_size=256,
+        )
+
+        self.csv_splitter_fn.add_to_role_policy(s3_policy)
+        org_config_table.grant_read_data(self.csv_splitter_fn)

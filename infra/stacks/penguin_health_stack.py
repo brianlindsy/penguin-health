@@ -85,6 +85,10 @@ class PenguinHealthStack(Stack):
             value=audit_engine.rules_engine_fn.function_arn,
             description="rules-engine-rag Lambda ARN",
         )
+        CfnOutput(self, "CsvSplitterFnArn",
+            value=audit_engine.csv_splitter_fn.function_arn,
+            description="csv-splitter-multi-org Lambda ARN",
+        )
         CfnOutput(self, "NotificationsTopicArn",
             value=db.notifications_topic.topic_arn,
             description="SNS topic ARN for Textract notifications",

@@ -22,7 +22,7 @@
         "validateOnSynth": false,
         "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-deploy-role-${AWS::AccountId}-us-east-1",
         "cloudFormationExecutionRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-cfn-exec-role-${AWS::AccountId}-us-east-1",
-        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1/1d7ac1765040047bb72a0f0398004f5b176ebb3540b7db31d5587c5a88e3e215.json",
+        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1/f650707838665d5839263821bdbef85516459c76f8da72d99322dbcf98ed90b5.json",
         "requiresBootstrapStackVersion": 6,
         "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/hnb659fds/version",
         "additionalDependencies": [
@@ -293,6 +293,18 @@
             "data": "AdminUiAdminHttpApiGETapiorganizationsorgIdvalidationrunsADE38608"
           }
         ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--validation-runs/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPOSTapiorganizationsorgIdvalidationrunsAdminApiIntegrationPermission2CE939AD"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--validation-runs/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPOSTapiorganizationsorgIdvalidationruns09298F57"
+          }
+        ],
         "/PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--validation-runs--{runId}/AdminApiIntegration-Permission": [
           {
             "type": "aws:cdk:logicalId",
@@ -407,6 +419,24 @@
             "data": "AuditEngineRulesEngineRagFnB2BFCB1D"
           }
         ],
+        "/PenguinHealth/AuditEngine/CsvSplitterFn/ServiceRole/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AuditEngineCsvSplitterFnServiceRole64475505"
+          }
+        ],
+        "/PenguinHealth/AuditEngine/CsvSplitterFn/ServiceRole/DefaultPolicy/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AuditEngineCsvSplitterFnServiceRoleDefaultPolicy51AE7EC6"
+          }
+        ],
+        "/PenguinHealth/AuditEngine/CsvSplitterFn/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AuditEngineCsvSplitterFn2779AE35"
+          }
+        ],
         "/PenguinHealth/UserPoolId": [
           {
             "type": "aws:cdk:logicalId",
@@ -459,6 +489,12 @@
           {
             "type": "aws:cdk:logicalId",
             "data": "RulesEngineFnArn"
+          }
+        ],
+        "/PenguinHealth/CsvSplitterFnArn": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "CsvSplitterFnArn"
           }
         ],
         "/PenguinHealth/NotificationsTopicArn": [

@@ -33,11 +33,13 @@ export function OrganizationDetail() {
       .finally(() => setLoading(false))
   }, [orgId])
 
-  const handleSaveFieldMappings = async (fieldMappings) => {
+  const handleSaveRulesConfig = async (configUpdate) => {
     setSaving(true)
     setSaveMsg('')
     try {
-      await api.updateRulesConfig(orgId, { field_mappings: fieldMappings })
+      await api.updateRulesConfig(orgId, configUpdate)
+      // Update local state with saved values
+      setRulesConfig(prev => ({ ...prev, ...configUpdate }))
       setSaveMsg('Saved')
       setTimeout(() => setSaveMsg(''), 3000)
     } catch (err) {
@@ -101,7 +103,7 @@ export function OrganizationDetail() {
       {activeTab === 'Field Mappings' && (
         <FieldMappingsTab
           config={rulesConfig}
-          onSave={handleSaveFieldMappings}
+          onSave={handleSaveRulesConfig}
           saving={saving}
           saveMsg={saveMsg}
         />
@@ -184,30 +186,59 @@ function RulesTab({ orgId, rules, onToggle }) {
 
 
 function FieldMappingsTab({ config, onSave, saving, saveMsg }) {
-  const [mappings, setMappings] = useState(config?.field_mappings || {})
+  const [fieldMappings, setFieldMappings] = useState(config?.field_mappings || {})
+  const [csvColumnMappings, setCsvColumnMappings] = useState(config?.csv_column_mappings || {})
+
+  const handleSave = () => {
+    onSave({
+      field_mappings: fieldMappings,
+      csv_column_mappings: csvColumnMappings,
+    })
+  }
 
   return (
-    <div className="max-w-2xl">
-      <h2 className="text-lg font-medium text-gray-900 mb-2">Field Mappings</h2>
-      <p className="text-sm text-gray-500 mb-4">
-        Maps field names to text patterns used to extract values from documents.
-        For example, <code className="bg-gray-100 px-1 rounded">document_id</code> maps to the
-        text label in the document like "Consumer Service ID:".
-      </p>
+    <div className="max-w-2xl space-y-8">
+      {/* Text Field Mappings (for PDFs) */}
+      <div>
+        <h2 className="text-lg font-medium text-gray-900 mb-2">Text Field Mappings (PDFs)</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Maps field names to text patterns used to extract values from PDF/Textract documents.
+          For example, <code className="bg-gray-100 px-1 rounded">document_id</code> maps to the
+          text label in the document like "Consumer Service ID:".
+        </p>
 
-      <JsonEditor
-        value={mappings}
-        onChange={setMappings}
-        label="field_mappings"
-      />
+        <JsonEditor
+          value={fieldMappings}
+          onChange={setFieldMappings}
+          label="field_mappings"
+        />
+      </div>
 
-      <div className="flex items-center gap-3 mt-4">
+      {/* CSV Column Mappings */}
+      <div>
+        <h2 className="text-lg font-medium text-gray-900 mb-2">CSV Column Mappings</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Maps internal field names to CSV column names for SFTP-uploaded data.
+          Use <code className="bg-gray-100 px-1 rounded">null</code> for fields not available in this org's CSV format.
+        </p>
+        <p className="text-xs text-gray-400 mb-3">
+          Standard fields: service_id, date, program, service_type, diagnosis_code, cpt_code, rate, employee_name
+        </p>
+
+        <JsonEditor
+          value={csvColumnMappings}
+          onChange={setCsvColumnMappings}
+          label="csv_column_mappings"
+        />
+      </div>
+
+      <div className="flex items-center gap-3">
         <button
-          onClick={() => onSave(mappings)}
+          onClick={handleSave}
           disabled={saving}
           className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50"
         >
-          {saving ? 'Saving...' : 'Save'}
+          {saving ? 'Saving...' : 'Save All Mappings'}
         </button>
         {saveMsg && (
           <span className={`text-sm ${saveMsg.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
@@ -224,22 +255,73 @@ function ValidationResultsTab({ orgId }) {
   const [runs, setRuns] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [triggering, setTriggering] = useState(false)
+  const [triggerMsg, setTriggerMsg] = useState('')
 
-  useEffect(() => {
+  const loadRuns = () => {
+    setLoading(true)
     api.listValidationRuns(orgId)
       .then(data => setRuns(data.runs || []))
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
+  }
+
+  useEffect(() => {
+    loadRuns()
   }, [orgId])
+
+  const handleTriggerValidation = async () => {
+    setTriggering(true)
+    setTriggerMsg('')
+    try {
+      await api.triggerValidationRun(orgId)
+      setTriggerMsg('Validation run started. Results will appear shortly.')
+      // Refresh the list after a short delay to show the new run
+      setTimeout(() => {
+        loadRuns()
+        setTriggerMsg('')
+      }, 5000)
+    } catch (err) {
+      setTriggerMsg(`Error: ${err.message}`)
+    } finally {
+      setTriggering(false)
+    }
+  }
 
   if (loading) return <p className="text-gray-500">Loading validation runs...</p>
   if (error) return <p className="text-red-600">Error: {error}</p>
 
   return (
     <div>
-      <h2 className="text-lg font-medium text-gray-900 mb-4">
-        Validation Runs ({runs.length})
-      </h2>
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-lg font-medium text-gray-900">
+          Validation Runs ({runs.length})
+        </h2>
+        <div className="flex items-center gap-3">
+          {triggerMsg && (
+            <span className={`text-sm ${triggerMsg.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
+              {triggerMsg}
+            </span>
+          )}
+          <button
+            onClick={handleTriggerValidation}
+            disabled={triggering}
+            className="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
+          >
+            {triggering ? (
+              <>
+                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Running...
+              </>
+            ) : (
+              'Run Validation'
+            )}
+          </button>
+        </div>
+      </div>
 
       {runs.length === 0 ? (
         <p className="text-gray-500">No validation runs found for this organization.</p>
