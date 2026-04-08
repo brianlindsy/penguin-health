@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { useAuth } from './auth/AuthProvider.jsx'
 import { ProtectedRoute } from './auth/ProtectedRoute.jsx'
 import { LoginPage } from './auth/LoginPage.jsx'
@@ -9,7 +9,14 @@ import { OrganizationDetail } from './pages/OrganizationDetail.jsx'
 import { RuleEditor } from './pages/RuleEditor.jsx'
 import { RuleCreator } from './pages/RuleCreator.jsx'
 import { ValidationRunDetailPage } from './pages/ValidationRunDetailPage.jsx'
+import { StaffPerformancePage } from './pages/StaffPerformancePage.jsx'
 import { setTokenProvider, setOnUnauthorized } from './api/client.js'
+
+// Redirect /organizations/:orgId/validation-runs to org detail with validation tab
+function ValidationRunsRedirect() {
+  const { orgId } = useParams()
+  return <Navigate to={`/organizations/${orgId}?tab=validation`} replace />
+}
 
 function App() {
   const { user, loading, getToken, logout } = useAuth()
@@ -35,7 +42,9 @@ function App() {
         <Route path="/organizations/:orgId" element={<OrganizationDetail />} />
         <Route path="/organizations/:orgId/rules/new" element={<RuleCreator />} />
         <Route path="/organizations/:orgId/rules/:ruleId" element={<RuleEditor />} />
+        <Route path="/organizations/:orgId/validation-runs" element={<ValidationRunsRedirect />} />
         <Route path="/organizations/:orgId/validation-runs/:runId" element={<ValidationRunDetailPage />} />
+        <Route path="/organizations/:orgId/staff-performance" element={<StaffPerformancePage />} />
       </Route>
     </Routes>
   )

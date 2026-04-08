@@ -1,18 +1,27 @@
 import { useState, useEffect } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { StatusBadge } from '../components/StatusBadge.jsx'
 import { ValidationStatusBadge } from '../components/ValidationStatusBadge.jsx'
 import { JsonEditor } from '../components/JsonEditor.jsx'
 
 const TABS = ['Rules', 'Field Mappings', 'Validation Results']
+const TAB_PARAM_MAP = {
+  'validation': 'Validation Results',
+  'rules': 'Rules',
+  'field-mappings': 'Field Mappings',
+}
 
 export function OrganizationDetail() {
   const { orgId } = useParams()
+  const [searchParams] = useSearchParams()
+  const tabParam = searchParams.get('tab')
+  const initialTab = TAB_PARAM_MAP[tabParam] || 'Rules'
+
   const [org, setOrg] = useState(null)
   const [rules, setRules] = useState([])
   const [rulesConfig, setRulesConfig] = useState(null)
-  const [activeTab, setActiveTab] = useState('Rules')
+  const [activeTab, setActiveTab] = useState(initialTab)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
@@ -67,13 +76,24 @@ export function OrganizationDetail() {
   return (
     <div>
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold text-gray-900">{org.organization_name}</h1>
-        <div className="flex items-center gap-4 mt-2">
-          <span className="text-sm text-gray-500 font-mono">{org.organization_id}</span>
-          <StatusBadge enabled={org.enabled} />
-          <span className="text-sm text-gray-500">{org.s3_bucket_name}</span>
+      <div className="mb-6 flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">{org.organization_name}</h1>
+          <div className="flex items-center gap-4 mt-2">
+            <span className="text-sm text-gray-500 font-mono">{org.organization_id}</span>
+            <StatusBadge enabled={org.enabled} />
+            <span className="text-sm text-gray-500">{org.s3_bucket_name}</span>
+          </div>
         </div>
+        <Link
+          to={`/organizations/${orgId}/staff-performance`}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+          </svg>
+          Staff Performance
+        </Link>
       </div>
 
       {/* Tabs */}

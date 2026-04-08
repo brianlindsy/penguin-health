@@ -1,128 +1,568 @@
-import { useState, useEffect } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useState, useEffect, useMemo } from 'react'
+import { useParams } from 'react-router-dom'
 import { api } from '../api/client.js'
-import { ValidationStatusBadge } from '../components/ValidationStatusBadge.jsx'
+
+// Field display labels for different organizations
+const FIELD_LABELS = {
+  service_id: 'Service ID',
+  date: 'Service Date',
+  program: 'Program',
+  service_type: 'Service Type',
+  diagnosis_code: 'Diagnosis Code',
+  cpt_code: 'CPT Code',
+  rate: 'Rate',
+  employee_name: 'Employee',
+  document_id: 'Document ID',
+}
+
+const PAGE_SIZE = 10
 
 export function ValidationRunDetailPage() {
   const { orgId, runId } = useParams()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [expandedDoc, setExpandedDoc] = useState(null)
+  const [selectedDoc, setSelectedDoc] = useState(null)
+  const [selectedRule, setSelectedRule] = useState(null)
+  const [searchTerm, setSearchTerm] = useState('')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [programFilter, setProgramFilter] = useState('all')
+  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [currentPage, setCurrentPage] = useState(1)
 
   useEffect(() => {
     api.getValidationRun(orgId, runId)
-      .then(setData)
+      .then(result => {
+        setData(result)
+        // Auto-select first document with failures
+        const firstFailed = result.documents?.find(d => d.summary?.failed > 0)
+        if (firstFailed) {
+          setSelectedDoc(firstFailed)
+          const firstFailedRule = firstFailed.rules?.find(r => r.status === 'FAIL')
+          if (firstFailedRule) setSelectedRule(firstFailedRule)
+        } else if (result.documents?.length > 0) {
+          setSelectedDoc(result.documents[0])
+          if (result.documents[0].rules?.length > 0) {
+            setSelectedRule(result.documents[0].rules[0])
+          }
+        }
+      })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
   }, [orgId, runId])
 
-  if (loading) return <p className="text-gray-500">Loading validation run...</p>
-  if (error) return <p className="text-red-600">Error: {error}</p>
-  if (!data) return <p className="text-gray-500">Validation run not found</p>
+  // Compute summary stats
+  const stats = useMemo(() => {
+    if (!data?.documents) return { needsAction: 0, opportunities: 0, confirmed: 0, revenueAtRisk: 0 }
 
-  const getOverallStatus = (summary) => {
-    if (summary?.failed > 0) return 'FAIL'
-    if (summary?.skipped > 0 && summary?.passed === 0) return 'SKIP'
-    return 'PASS'
-  }
+    let needsAction = 0
+    let opportunities = 0
+    let confirmed = 0
+    let revenueAtRisk = 0
+
+    data.documents.forEach(doc => {
+      if (doc.summary?.failed > 0) {
+        needsAction++
+        // Sum up rate for documents with failures
+        const rate = parseFloat(doc.field_values?.rate) || 0
+        revenueAtRisk += rate
+      }
+      else if (doc.summary?.skipped > 0) opportunities++
+      else confirmed++
+    })
+
+    return { needsAction, opportunities, confirmed, revenueAtRisk }
+  }, [data])
+
+  // Get unique programs and categories for filters
+  const { programs, categories } = useMemo(() => {
+    if (!data?.documents) return { programs: [], categories: [] }
+
+    const programSet = new Set()
+    const categorySet = new Set()
+
+    data.documents.forEach(doc => {
+      const program = doc.field_values?.program
+      if (program) programSet.add(program)
+
+      doc.rules?.forEach(rule => {
+        if (rule.category) categorySet.add(rule.category)
+      })
+    })
+
+    return {
+      programs: Array.from(programSet).sort(),
+      categories: Array.from(categorySet).sort()
+    }
+  }, [data])
+
+  // Filter documents
+  const filteredDocs = useMemo(() => {
+    if (!data?.documents) return []
+
+    return data.documents.filter(doc => {
+      // Search filter
+      if (searchTerm) {
+        const search = searchTerm.toLowerCase()
+        const matchesId = doc.document_id?.toLowerCase().includes(search)
+        const matchesEmployee = doc.field_values?.employee_name?.toLowerCase().includes(search)
+        const matchesProgram = doc.field_values?.program?.toLowerCase().includes(search)
+        if (!matchesId && !matchesEmployee && !matchesProgram) return false
+      }
+
+      // Status filter
+      if (statusFilter !== 'all') {
+        if (statusFilter === 'needs_action' && !(doc.summary?.failed > 0)) return false
+        if (statusFilter === 'opportunities' && !(doc.summary?.skipped > 0 && doc.summary?.failed === 0)) return false
+        if (statusFilter === 'confirmed' && !(doc.summary?.failed === 0 && doc.summary?.skipped === 0)) return false
+      }
+
+      // Program filter
+      if (programFilter !== 'all' && doc.field_values?.program !== programFilter) return false
+
+      // Category filter (document has at least one rule in category)
+      if (categoryFilter !== 'all') {
+        const hasCategory = doc.rules?.some(r => r.category === categoryFilter)
+        if (!hasCategory) return false
+      }
+
+      return true
+    })
+  }, [data, searchTerm, statusFilter, programFilter, categoryFilter])
+
+  // Reset page when filters change
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [searchTerm, statusFilter, programFilter, categoryFilter])
+
+  // Paginate filtered documents
+  const totalPages = Math.ceil(filteredDocs.length / PAGE_SIZE)
+  const paginatedDocs = useMemo(() => {
+    const start = (currentPage - 1) * PAGE_SIZE
+    return filteredDocs.slice(start, start + PAGE_SIZE)
+  }, [filteredDocs, currentPage])
+
+  if (loading) return <div className="flex items-center justify-center h-64"><p className="text-gray-500">Loading validation run...</p></div>
+  if (error) return <div className="p-4"><p className="text-red-600">Error: {error}</p></div>
+  if (!data) return <div className="p-4"><p className="text-gray-500">Validation run not found</p></div>
 
   return (
-    <div>
-      {/* Header */}
-      <div className="mb-6">
-        <div className="flex items-center gap-2 text-sm text-gray-500 mb-2">
-          <Link to={`/organizations/${orgId}`} className="hover:text-blue-600">
-            Organization
-          </Link>
-          <span>/</span>
-          <span>Validation Results</span>
-          <span>/</span>
-          <span className="font-mono">{runId}</span>
-        </div>
-        <h1 className="text-2xl font-semibold text-gray-900">
-          Validation Run: {runId}
-        </h1>
-        <p className="text-sm text-gray-500 mt-1">
-          {data.total_count} document{data.total_count !== 1 ? 's' : ''} validated
-        </p>
+    <div className="h-full flex flex-col">
+      {/* Summary Cards */}
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        <SummaryCard
+          label="NEEDS ACTION"
+          value={stats.needsAction}
+          color="red"
+          active={statusFilter === 'needs_action'}
+          onClick={() => setStatusFilter(statusFilter === 'needs_action' ? 'all' : 'needs_action')}
+        />
+        <SummaryCard
+          label="CONFIRMED"
+          value={stats.confirmed}
+          color="green"
+          active={statusFilter === 'confirmed'}
+          onClick={() => setStatusFilter(statusFilter === 'confirmed' ? 'all' : 'confirmed')}
+        />
+        <SummaryCard
+          label="REVENUE AT RISK"
+          value={`$${stats.revenueAtRisk.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          subtext={`${stats.needsAction} blocked claim${stats.needsAction !== 1 ? 's' : ''}`}
+          color="blue"
+          onClick={() => {}}
+        />
       </div>
 
-      {/* Results Table */}
-      {data.documents.length === 0 ? (
-        <p className="text-gray-500">No documents found in this validation run.</p>
-      ) : (
-        <div className="bg-white shadow rounded-lg overflow-hidden">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Document ID</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Timestamp</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Pass</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Fail</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Skip</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {data.documents.map(doc => (
-                <>
-                  <tr
-                    key={doc.document_id}
-                    className="hover:bg-gray-50 cursor-pointer"
-                    onClick={() => setExpandedDoc(expandedDoc === doc.document_id ? null : doc.document_id)}
-                  >
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-gray-400">
-                          {expandedDoc === doc.document_id ? '▼' : '▶'}
-                        </span>
-                        <span className="text-sm font-mono text-gray-900">{doc.document_id}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-600">
-                      {doc.validation_timestamp
-                        ? new Date(doc.validation_timestamp).toLocaleString()
-                        : '-'}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-green-600 font-medium">
-                      {doc.summary?.passed ?? 0}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-red-600 font-medium">
-                      {doc.summary?.failed ?? 0}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-yellow-600 font-medium">
-                      {doc.summary?.skipped ?? 0}
-                    </td>
-                    <td className="px-4 py-3">
-                      <ValidationStatusBadge status={getOverallStatus(doc.summary)} />
-                    </td>
-                  </tr>
-                  {expandedDoc === doc.document_id && (
-                    <tr key={`${doc.document_id}-rules`}>
-                      <td colSpan={6} className="px-4 py-4 bg-gray-50">
-                        <RuleResultsPanel rules={doc.rules} />
-                      </td>
-                    </tr>
-                  )}
-                </>
-              ))}
-            </tbody>
-          </table>
+      {/* Search and Filters */}
+      <div className="flex items-center gap-3 mb-4">
+        <div className="flex-1 relative">
+          <input
+            type="text"
+            placeholder="Search by ID, employee, or program..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          />
+          <svg className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
         </div>
-      )}
+
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="all">All Statuses</option>
+          <option value="needs_action">Needs Action</option>
+          <option value="confirmed">Confirmed</option>
+        </select>
+
+        <select
+          value={programFilter}
+          onChange={(e) => setProgramFilter(e.target.value)}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="all">All Programs</option>
+          {programs.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+
+        <select
+          value={categoryFilter}
+          onChange={(e) => setCategoryFilter(e.target.value)}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="all">All Categories</option>
+          {categories.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+
+      {/* Split Panel */}
+      <div className="flex-1 flex gap-4 min-h-0">
+        {/* Left Panel - Document List */}
+        <div className="w-1/3 bg-white rounded-lg shadow overflow-hidden flex flex-col">
+          <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
+            <span className="text-sm font-medium text-gray-700">
+              {filteredDocs.length} Document{filteredDocs.length !== 1 ? 's' : ''}
+            </span>
+            {totalPages > 1 && (
+              <span className="text-xs text-gray-500">
+                Page {currentPage} of {totalPages}
+              </span>
+            )}
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {paginatedDocs.map(doc => (
+              <DocumentListItem
+                key={doc.document_id}
+                doc={doc}
+                selected={selectedDoc?.document_id === doc.document_id}
+                onClick={() => {
+                  setSelectedDoc(doc)
+                  const firstFailedRule = doc.rules?.find(r => r.status === 'FAIL')
+                  setSelectedRule(firstFailedRule || doc.rules?.[0] || null)
+                }}
+              />
+            ))}
+            {filteredDocs.length === 0 && (
+              <p className="p-4 text-sm text-gray-500">No documents match your filters.</p>
+            )}
+          </div>
+          {/* Pagination Controls */}
+          {totalPages > 1 && (
+            <div className="px-4 py-2 border-t border-gray-200 bg-gray-50 flex items-center justify-between">
+              <button
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="px-3 py-1 text-sm rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Previous
+              </button>
+              <div className="flex items-center gap-1">
+                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                  let pageNum
+                  if (totalPages <= 5) {
+                    pageNum = i + 1
+                  } else if (currentPage <= 3) {
+                    pageNum = i + 1
+                  } else if (currentPage >= totalPages - 2) {
+                    pageNum = totalPages - 4 + i
+                  } else {
+                    pageNum = currentPage - 2 + i
+                  }
+                  return (
+                    <button
+                      key={pageNum}
+                      onClick={() => setCurrentPage(pageNum)}
+                      className={`w-8 h-8 text-sm rounded ${
+                        currentPage === pageNum
+                          ? 'bg-blue-600 text-white'
+                          : 'border border-gray-300 bg-white hover:bg-gray-50'
+                      }`}
+                    >
+                      {pageNum}
+                    </button>
+                  )
+                })}
+              </div>
+              <button
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="px-3 py-1 text-sm rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Next
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Right Panel - Detail View */}
+        <div className="flex-1 bg-white rounded-lg shadow overflow-hidden flex flex-col">
+          {selectedDoc ? (
+            <DocumentDetailPanel
+              doc={selectedDoc}
+              selectedRule={selectedRule}
+              onSelectRule={setSelectedRule}
+            />
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-gray-500">
+              Select a document to view details
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
 
 
-function RuleResultsPanel({ rules }) {
-  if (!rules || rules.length === 0) {
-    return <p className="text-sm text-gray-500">No rule results available.</p>
+function SummaryCard({ label, value, subtext, color, active, onClick }) {
+  const colorStyles = {
+    red: 'border-red-200 bg-red-50',
+    yellow: 'border-yellow-200 bg-yellow-50',
+    green: 'border-green-200 bg-green-50',
+    blue: 'border-blue-200 bg-blue-50',
   }
 
+  const textStyles = {
+    red: 'text-red-700',
+    yellow: 'text-yellow-700',
+    green: 'text-green-700',
+    blue: 'text-blue-700',
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      className={`p-4 rounded-lg border-2 text-left transition-all ${
+        active ? `${colorStyles[color]} ring-2 ring-offset-2 ring-${color}-400` : 'border-gray-200 bg-white hover:border-gray-300'
+      }`}
+    >
+      <div className={`text-2xl font-bold ${active ? textStyles[color] : 'text-gray-900'}`}>
+        {value}
+      </div>
+      <div className={`text-xs font-medium uppercase tracking-wide ${active ? textStyles[color] : 'text-gray-500'}`}>
+        {label}
+      </div>
+      {subtext && (
+        <div className="text-xs text-gray-400 mt-1">{subtext}</div>
+      )}
+    </button>
+  )
+}
+
+
+function DocumentListItem({ doc, selected, onClick }) {
+  const failCount = doc.summary?.failed || 0
+  const hasFailures = failCount > 0
+  const fv = doc.field_values || {}
+
+  return (
+    <div
+      onClick={onClick}
+      className={`px-4 py-3 border-b border-gray-100 cursor-pointer transition-colors ${
+        selected ? 'bg-blue-50 border-l-4 border-l-blue-500' : 'hover:bg-gray-50'
+      }`}
+    >
+      {/* Header row: Employee name + fail badge */}
+      <div className="flex items-start justify-between mb-1">
+        <span className="text-sm font-medium text-gray-900">
+          {fv.employee_name || doc.document_id}
+        </span>
+        {hasFailures && (
+          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">
+            {failCount} fail{failCount !== 1 ? 's' : ''}
+          </span>
+        )}
+      </div>
+
+      {/* Field values grid */}
+      <div className="text-xs text-gray-500 space-y-1">
+        {/* Program */}
+        {fv.program && (
+          <div className="flex items-center gap-1">
+            <span className="text-gray-400">Program:</span>
+            <span className="text-gray-600">{fv.program}</span>
+          </div>
+        )}
+
+        {/* Service type */}
+        {fv.service_type && (
+          <div className="flex items-center gap-1">
+            <span className="text-gray-400">Type:</span>
+            <span className="text-gray-600">{fv.service_type}</span>
+          </div>
+        )}
+
+        {/* Date and CPT on same row */}
+        <div className="flex items-center gap-3">
+          {fv.date && (
+            <div className="flex items-center gap-1">
+              <span className="text-gray-400">Date:</span>
+              <span className="text-gray-600">{fv.date}</span>
+            </div>
+          )}
+          {fv.cpt_code && (
+            <div className="flex items-center gap-1">
+              <span className="text-gray-400">CPT:</span>
+              <span className="text-gray-600">{fv.cpt_code}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Diagnosis and Rate on same row */}
+        <div className="flex items-center gap-3">
+          {fv.diagnosis_code && (
+            <div className="flex items-center gap-1">
+              <span className="text-gray-400">Dx:</span>
+              <span className="text-gray-600">{fv.diagnosis_code}</span>
+            </div>
+          )}
+          {fv.rate && (
+            <div className="flex items-center gap-1">
+              <span className="text-gray-400">Rate:</span>
+              <span className="text-gray-600">${fv.rate}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Service ID */}
+        {fv.service_id && fv.service_id !== doc.document_id && (
+          <div className="flex items-center gap-1">
+            <span className="text-gray-400">Service ID:</span>
+            <span className="text-gray-600 font-mono text-[10px]">{fv.service_id}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Rule status indicators */}
+      <div className="flex gap-1 mt-2">
+        {doc.rules?.slice(0, 8).map((rule, idx) => (
+          <div
+            key={idx}
+            className={`w-2 h-2 rounded-full ${
+              rule.status === 'PASS' ? 'bg-green-400' :
+              rule.status === 'FAIL' ? 'bg-red-400' :
+              'bg-yellow-400'
+            }`}
+            title={`${rule.rule_name}: ${rule.status}`}
+          />
+        ))}
+        {doc.rules?.length > 8 && (
+          <span className="text-xs text-gray-400">+{doc.rules.length - 8}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+function DocumentDetailPanel({ doc, selectedRule, onSelectRule }) {
+  const failedRules = doc.rules?.filter(r => r.status === 'FAIL') || []
+  const passedRules = doc.rules?.filter(r => r.status === 'PASS') || []
+  const skippedRules = doc.rules?.filter(r => r.status === 'SKIP') || []
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Document Header */}
+      <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-medium text-gray-900">
+              {doc.field_values?.employee_name || 'Document'}
+            </h3>
+            <p className="text-sm text-gray-500">ID: {doc.document_id}</p>
+          </div>
+          <div className="text-right text-sm">
+            <div className="text-gray-500">{doc.field_values?.program}</div>
+            <div className="text-gray-400">{doc.field_values?.date}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Rules Tabs */}
+      <div className="px-4 py-2 border-b border-gray-200 flex gap-4">
+        <RuleTab
+          label="Failed"
+          count={failedRules.length}
+          color="red"
+          rules={failedRules}
+          selectedRule={selectedRule}
+          onSelectRule={onSelectRule}
+        />
+        <RuleTab
+          label="Skipped"
+          count={skippedRules.length}
+          color="yellow"
+          rules={skippedRules}
+          selectedRule={selectedRule}
+          onSelectRule={onSelectRule}
+        />
+        <RuleTab
+          label="Passed"
+          count={passedRules.length}
+          color="green"
+          rules={passedRules}
+          selectedRule={selectedRule}
+          onSelectRule={onSelectRule}
+        />
+      </div>
+
+      {/* Rule Selector */}
+      <div className="px-4 py-2 border-b border-gray-200 bg-gray-50 overflow-x-auto">
+        <div className="flex gap-2">
+          {doc.rules?.map((rule, idx) => (
+            <button
+              key={idx}
+              onClick={() => onSelectRule(rule)}
+              className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
+                selectedRule === rule
+                  ? rule.status === 'FAIL' ? 'bg-red-600 text-white' :
+                    rule.status === 'PASS' ? 'bg-green-600 text-white' :
+                    'bg-yellow-600 text-white'
+                  : rule.status === 'FAIL' ? 'bg-red-100 text-red-700 hover:bg-red-200' :
+                    rule.status === 'PASS' ? 'bg-green-100 text-green-700 hover:bg-green-200' :
+                    'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'
+              }`}
+            >
+              {rule.rule_name || rule.rule_id}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Selected Rule Detail */}
+      <div className="flex-1 overflow-y-auto p-4">
+        {selectedRule ? (
+          <RuleDetailView rule={selectedRule} fieldValues={doc.field_values} />
+        ) : (
+          <p className="text-gray-500">Select a rule to view details</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+function RuleTab({ label, count, color }) {
+  const colorStyles = {
+    red: 'text-red-600',
+    yellow: 'text-yellow-600',
+    green: 'text-green-600',
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className={`font-medium ${colorStyles[color]}`}>{count}</span>
+      <span className="text-sm text-gray-500">{label}</span>
+    </div>
+  )
+}
+
+
+function RuleDetailView({ rule, fieldValues }) {
   // Extract reasoning from message (format: "STATUS - reasoning")
-  const extractReasoning = (rule) => {
+  const extractReasoning = () => {
     const message = rule.message || ''
     const status = rule.status || ''
     if (message.startsWith(`${status} - `)) {
@@ -131,38 +571,80 @@ function RuleResultsPanel({ rules }) {
     if (message.startsWith(`${status}: `)) {
       return message.substring(status.length + 2)
     }
-    return message || '-'
+    return message || 'No reasoning provided.'
   }
 
+  const statusColors = {
+    FAIL: { bg: 'bg-red-100', text: 'text-red-800', border: 'border-red-200' },
+    PASS: { bg: 'bg-green-100', text: 'text-green-800', border: 'border-green-200' },
+    SKIP: { bg: 'bg-yellow-100', text: 'text-yellow-800', border: 'border-yellow-200' },
+    ERROR: { bg: 'bg-gray-100', text: 'text-gray-800', border: 'border-gray-200' },
+  }
+
+  const colors = statusColors[rule.status] || statusColors.ERROR
+
   return (
-    <div>
-      <h4 className="text-sm font-medium text-gray-700 mb-3">Rule Results</h4>
-      <div className="bg-white rounded border">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-100">
-            <tr>
-              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Rule</th>
-              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
-              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase w-20">Status</th>
-              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Reasoning</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-200">
-            {rules.map((rule, idx) => (
-              <tr key={rule.rule_id || idx}>
-                <td className="px-3 py-2 text-sm text-gray-900">{rule.rule_name || rule.rule_id}</td>
-                <td className="px-3 py-2 text-sm text-gray-600">{rule.category || '-'}</td>
-                <td className="px-3 py-2">
-                  <ValidationStatusBadge status={rule.status} />
-                </td>
-                <td className="px-3 py-2 text-sm text-gray-600 max-w-md">
-                  {extractReasoning(rule)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div className="space-y-4">
+      {/* Tags */}
+      <div className="flex flex-wrap gap-2">
+        <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium ${colors.bg} ${colors.text}`}>
+          {rule.status}
+        </span>
+        {rule.category && (
+          <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-blue-100 text-blue-800">
+            {rule.category}
+          </span>
+        )}
+        {rule.status === 'FAIL' && (
+          <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-orange-100 text-orange-800">
+            BILLING BLOCKER
+          </span>
+        )}
       </div>
+
+      {/* Rule Name */}
+      <div>
+        <h4 className="text-lg font-semibold text-gray-900">{rule.rule_name || rule.rule_id}</h4>
+        {rule.rule_id && rule.rule_name && (
+          <p className="text-sm text-gray-500">Rule ID: {rule.rule_id}</p>
+        )}
+      </div>
+
+      {/* Reasoning */}
+      <div className={`p-4 rounded-lg border ${colors.border} ${colors.bg}`}>
+        <h5 className="text-sm font-medium text-gray-700 mb-2">Reasoning</h5>
+        <p className="text-sm text-gray-800">{extractReasoning()}</p>
+      </div>
+
+      {/* Recommended Next Steps */}
+      {rule.status === 'FAIL' && (
+        <div className="p-4 rounded-lg border border-blue-200 bg-blue-50">
+          <h5 className="text-sm font-medium text-blue-800 mb-2">Recommended Next Step</h5>
+          <p className="text-sm text-blue-700">
+            Review the documentation for this service to verify compliance with billing requirements.
+            Update the chart if corrections are needed before resubmitting for validation.
+          </p>
+        </div>
+      )}
+
+      {/* Evidence / Field Values */}
+      {fieldValues && Object.keys(fieldValues).length > 0 && (
+        <div className="p-4 rounded-lg border border-gray-200 bg-gray-50">
+          <h5 className="text-sm font-medium text-gray-700 mb-3">Evidence (Field Values)</h5>
+          <div className="grid grid-cols-2 gap-3">
+            {Object.entries(fieldValues).map(([key, value]) => (
+              value && (
+                <div key={key}>
+                  <dt className="text-xs text-gray-500 uppercase tracking-wide">
+                    {FIELD_LABELS[key] || key}
+                  </dt>
+                  <dd className="text-sm text-gray-900 font-medium">{value}</dd>
+                </div>
+              )
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

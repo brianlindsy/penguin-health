@@ -37,14 +37,38 @@ export function Layout() {
 
       {/* Breadcrumb */}
       {location.pathname !== '/' && (
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2">
-          <Link to="/" className="text-sm text-blue-600 hover:text-blue-800">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center text-sm">
+          <Link to="/" className="text-blue-600 hover:text-blue-800">
             Organizations
           </Link>
-          <span className="text-sm text-gray-400 mx-2">/</span>
-          <span className="text-sm text-gray-600">
-            {location.pathname.split('/').filter(Boolean).slice(1).join(' / ')}
-          </span>
+          {(() => {
+            const segments = location.pathname.split('/').filter(Boolean)
+            const breadcrumbs = []
+
+            // Build clickable breadcrumb links for each segment
+            for (let i = 1; i < segments.length; i++) {
+              const path = '/' + segments.slice(0, i + 1).join('/')
+              const isLast = i === segments.length - 1
+
+              breadcrumbs.push(
+                <span key={`sep-${i}`} className="text-gray-400 mx-2">/</span>
+              )
+
+              if (isLast) {
+                breadcrumbs.push(
+                  <span key={path} className="text-gray-600">{segments[i]}</span>
+                )
+              } else {
+                breadcrumbs.push(
+                  <Link key={path} to={path} className="text-blue-600 hover:text-blue-800">
+                    {segments[i]}
+                  </Link>
+                )
+              }
+            }
+
+            return breadcrumbs
+          })()}
         </div>
       )}
 

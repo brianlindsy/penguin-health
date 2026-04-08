@@ -10,7 +10,6 @@ into individual chart files that are staged for validation.
 """
 
 import boto3
-from urllib.parse import unquote_plus
 
 from multi_org_config import extract_org_id_from_bucket
 
@@ -59,8 +58,7 @@ def lambda_handler(event, context):
 
     for record in event.get('Records', []):
         bucket = record['s3']['bucket']['name']
-        # S3 event keys are URL-encoded, decode them
-        key = unquote_plus(record['s3']['object']['key'])
+        key = record['s3']['object']['key']
 
         # Only process CSV files in the SFTP upload folder
         if not key.startswith('uploaded-data-sftp/') or not key.endswith('.csv'):
