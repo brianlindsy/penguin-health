@@ -62,7 +62,7 @@ export function AuthProvider({ children }) {
 
           setUser({
             email: cognitoUser.getUsername(),
-            token: session.getAccessToken().getJwtToken(),
+            token: session.getIdToken().getJwtToken(),
           })
           setUserClaims(claims)
         }
@@ -92,7 +92,7 @@ export function AuthProvider({ children }) {
 
           setUser({
             email,
-            token: session.getAccessToken().getJwtToken(),
+            token: session.getIdToken().getJwtToken(),
           })
           setUserClaims(claims)
           resolve(session)
@@ -117,7 +117,7 @@ export function AuthProvider({ children }) {
 
           setUser({
             email: cognitoUser.getUsername(),
-            token: session.getAccessToken().getJwtToken(),
+            token: session.getIdToken().getJwtToken(),
           })
           setUserClaims(claims)
           resolve(session)
@@ -146,7 +146,7 @@ export function AuthProvider({ children }) {
           setUser(null)
           return reject(err || new Error('Invalid session'))
         }
-        const token = session.getAccessToken().getJwtToken()
+        const token = session.getIdToken().getJwtToken()
         setUser(prev => prev ? { ...prev, token } : null)
         resolve(token)
       })
