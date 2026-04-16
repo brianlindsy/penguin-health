@@ -15,6 +15,10 @@ const FIELD_LABELS = {
   document_id: 'Document ID',
 }
 
+// Generate link to Credible BH for a document ID
+const getCredibleLink = (documentId) =>
+  `https://www.cbh3.crediblebh.com/visit/clientvisit_view.asp?clientvisit_id=${documentId}&provportal=0`
+
 const PAGE_SIZE = 10
 
 export function ValidationRunDetailPage() {
@@ -366,9 +370,21 @@ function DocumentListItem({ doc, selected, onClick }) {
     >
       {/* Header row: Employee name + fail badge */}
       <div className="flex items-start justify-between mb-1">
-        <span className="text-sm font-medium text-gray-900">
-          {fv.employee_name || doc.document_id}
-        </span>
+        {fv.employee_name ? (
+          <span className="text-sm font-medium text-gray-900">
+            {fv.employee_name}
+          </span>
+        ) : (
+          <a
+            href={getCredibleLink(doc.document_id)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {doc.document_id}
+          </a>
+        )}
         {hasFailures && (
           <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">
             {failCount} fail{failCount !== 1 ? 's' : ''}
@@ -430,7 +446,15 @@ function DocumentListItem({ doc, selected, onClick }) {
         {fv.service_id && fv.service_id !== doc.document_id && (
           <div className="flex items-center gap-1">
             <span className="text-gray-400">Service ID:</span>
-            <span className="text-gray-600 font-mono text-[10px]">{fv.service_id}</span>
+            <a
+              href={getCredibleLink(fv.service_id)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-600 hover:text-blue-800 hover:underline font-mono text-[10px]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {fv.service_id}
+            </a>
           </div>
         )}
       </div>
@@ -471,7 +495,17 @@ function DocumentDetailPanel({ doc, selectedRule, onSelectRule }) {
             <h3 className="text-lg font-medium text-gray-900">
               {doc.field_values?.employee_name || 'Document'}
             </h3>
-            <p className="text-sm text-gray-500">ID: {doc.document_id}</p>
+            <p className="text-sm text-gray-500">
+              ID:{' '}
+              <a
+                href={getCredibleLink(doc.document_id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-800 hover:underline"
+              >
+                {doc.document_id}
+              </a>
+            </p>
           </div>
           <div className="text-right text-sm">
             <div className="text-gray-500">{doc.field_values?.program}</div>

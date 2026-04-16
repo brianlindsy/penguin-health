@@ -2,6 +2,10 @@ import { useState, useEffect, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { api } from '../api/client.js'
 
+// Generate link to Credible BH for a document ID
+const getCredibleLink = (documentId) =>
+  `https://www.cbh3.crediblebh.com/visit/clientvisit_view.asp?clientvisit_id=${documentId}&provportal=0`
+
 export function StaffPerformancePage() {
   const { orgId } = useParams()
   const [data, setData] = useState(null)
@@ -332,7 +336,15 @@ function StaffDetailPanel({ staff }) {
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-gray-900">#{doc.document_id}</span>
+                        <a
+                          href={getCredibleLink(doc.document_id)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          #{doc.document_id}
+                        </a>
                         <span className={`px-2 py-0.5 rounded text-xs font-medium ${
                           severity === 'Blocker' ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700'
                         }`}>

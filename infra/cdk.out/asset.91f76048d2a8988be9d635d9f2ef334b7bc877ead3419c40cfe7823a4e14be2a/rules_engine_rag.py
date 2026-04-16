@@ -35,8 +35,6 @@ def lambda_handler(event, context):
 
     Expects event with:
     - organization_id: Organization ID (looks up bucket and rules from DynamoDB)
-    - validation_run_id: (optional) ID for this validation run. If not provided, generates one.
-                         Passing this ensures retries use the same run ID.
     """
     org_id = event.get('organization_id')
     if not org_id:
@@ -46,9 +44,7 @@ def lambda_handler(event, context):
     env_config = build_env_config(org_id)
     config = load_org_rules(org_id)
 
-    # Use provided validation_run_id or generate a new one
-    # This ensures retries use the same run ID for consistent reporting
-    validation_run_id = event.get('validation_run_id') or datetime.utcnow().strftime('%Y%m%d-%H%M%S')
+    validation_run_id = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
     print(f"Starting validation run: {validation_run_id}")
 
     try:
