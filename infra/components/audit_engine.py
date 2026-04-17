@@ -171,12 +171,12 @@ class AuditEngine(Construct):
         # Splits bulk CSV files uploaded via SFTP into individual chart files
         self.csv_splitter_fn = _lambda.Function(self, "CsvSplitterFn",
             function_name=f"{config.PROJECT_NAME}-csv-splitter-multi-org",
-            runtime=_lambda.Runtime.PYTHON_3_12,
+            runtime=_lambda.Runtime.PYTHON_3_14,
             handler="csv_splitter_multi_org.lambda_handler",
             code=_lambda.Code.from_asset(
                 csv_splitter_dir,
                 bundling=BundlingOptions(
-                    image=_lambda.Runtime.PYTHON_3_12.bundling_image,
+                    image=_lambda.Runtime.PYTHON_3_14.bundling_image,
                     local=DirectoryBundler([
                         (os.path.join(csv_splitter_dir, "csv_splitter_multi_org.py"), None),
                         (os.path.join(csv_splitter_dir, "splitters"), "splitters"),
