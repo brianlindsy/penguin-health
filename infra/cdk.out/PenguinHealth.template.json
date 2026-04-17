@@ -2677,7 +2677,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "4c70b8b29bc485b913b9f6864321f103c5c0bac289603854470d5d3c8c8be896.zip"
+     "S3Key": "8f916175dce67dc2b46a42303f1c7d37a78b00ef28d706b31eebeddb35bc80bb.zip"
     },
     "FunctionName": "penguin-health-csv-splitter-multi-org",
     "Handler": "csv_splitter_multi_org.lambda_handler",
@@ -2688,7 +2688,7 @@
       "Arn"
      ]
     },
-    "Runtime": "python3.12",
+    "Runtime": "python3.14",
     "Tags": [
      {
       "Key": "ManagedBy",
@@ -2707,7 +2707,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/CsvSplitterFn/Resource",
-    "aws:asset:path": "asset.4c70b8b29bc485b913b9f6864321f103c5c0bac289603854470d5d3c8c8be896",
+    "aws:asset:path": "asset.8f916175dce67dc2b46a42303f1c7d37a78b00ef28d706b31eebeddb35bc80bb",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }

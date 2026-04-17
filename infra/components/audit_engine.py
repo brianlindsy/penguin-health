@@ -12,6 +12,8 @@ from aws_cdk import (
     aws_dynamodb as dynamodb,
     aws_sns as sns,
     aws_sns_subscriptions as subscriptions,
+    aws_events as events,
+    aws_events_targets as targets,
 )
 from constructs import Construct
 
@@ -190,3 +192,33 @@ class AuditEngine(Construct):
 
         self.csv_splitter_fn.add_to_role_policy(s3_policy)
         org_config_table.grant_read_data(self.csv_splitter_fn)
+
+        # ----- Scheduled validation runs -----
+        # Catholic Charities: 11PM EDT = 03:00 UTC (next day)
+        events.Rule(self, "CatholicCharitiesValidationSchedule",
+            rule_name=f"{config.PROJECT_NAME}-catholic-charities-validation-schedule",
+            schedule=events.Schedule.cron(hour="3", minute="0"),
+            targets=[
+                targets.LambdaFunction(
+                    self.rules_engine_fn,
+                    event=events.RuleTargetInput.from_object({
+                        "organization_id": "catholic-charities-multi-org"
+                    })
+                )
+            ],
+        )
+
+        # Circles of Care: 6:30AM EDT = 10:30 UTC
+        events.Rule(self, "CirclesOfCareValidationSchedule",
+            rule_name=f"{config.PROJECT_NAME}-circles-of-care-validation-schedule",
+            schedule=events.Schedule.cron(hour="10", minute="30"),
+            targets=[
+                targets.LambdaFunction(
+                    self.rules_engine_fn,
+                    event=events.RuleTargetInput.from_object({
+                        "organization_id": "circles-of-care"
+                    })
+                )
+            ],
+        )
+
