@@ -13,16 +13,22 @@ export function StaffPerformancePage() {
   const [error, setError] = useState('')
   const [selectedStaff, setSelectedStaff] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
+  const [periodFilter, setPeriodFilter] = useState('all')
+  const [customStartDate, setCustomStartDate] = useState('')
+  const [customEndDate, setCustomEndDate] = useState('')
 
   useEffect(() => {
     // Load all validation runs to aggregate staff performance
     api.listValidationRuns(orgId)
       .then(async (runsData) => {
+        const runList = runsData.runs.slice(0, 10)
         // Load details for each run to get staff data
         const runsWithDetails = await Promise.all(
-          runsData.runs.slice(0, 10).map(run =>
-            api.getValidationRun(orgId, run.validation_run_id)
-          )
+          runList.map(async run => ({
+            ...(await api.getValidationRun(orgId, run.validation_run_id)),
+            validation_run_id: run.validation_run_id,
+            timestamp: run.timestamp,
+          }))
         )
         setData(runsWithDetails)
       })
@@ -36,7 +42,30 @@ export function StaffPerformancePage() {
 
     const staffMap = new Map()
 
-    data.forEach(run => {
+    const dayMs = 24 * 60 * 60 * 1000
+    const now = Date.now()
+    let startCutoff = null
+    let endCutoff = null
+    if (periodFilter === '7d') startCutoff = now - 7 * dayMs
+    else if (periodFilter === '30d') startCutoff = now - 30 * dayMs
+    else if (periodFilter === '90d') startCutoff = now - 90 * dayMs
+    else if (periodFilter === 'custom') {
+      if (customStartDate) startCutoff = new Date(customStartDate).getTime()
+      // endCutoff is exclusive — include the full end day
+      if (customEndDate) endCutoff = new Date(customEndDate).getTime() + dayMs
+    }
+
+    const filteredData = (startCutoff == null && endCutoff == null)
+      ? data
+      : data.filter(run => {
+          if (!run.timestamp) return true
+          const t = new Date(run.timestamp).getTime()
+          if (startCutoff != null && t < startCutoff) return false
+          if (endCutoff != null && t >= endCutoff) return false
+          return true
+        })
+
+    filteredData.forEach(run => {
       run.documents?.forEach(doc => {
         const employeeName = doc.field_values?.employee_name || 'Unknown'
         const program = doc.field_values?.program || 'Unknown'
@@ -90,7 +119,7 @@ export function StaffPerformancePage() {
           .map(([name, count]) => ({ name, count })),
       }))
       .sort((a, b) => a.passRate - b.passRate) // Sort by pass rate ascending (worst first)
-  }, [data])
+  }, [data, periodFilter, customStartDate, customEndDate])
 
   // Filter staff by search
   const filteredStaff = useMemo(() => {
@@ -102,9 +131,17 @@ export function StaffPerformancePage() {
     )
   }, [staffPerformance, searchTerm])
 
-  // Auto-select first staff member
+  // Auto-select first staff member, or refresh the selected staff's data when the filter changes
   useEffect(() => {
-    if (filteredStaff.length > 0 && !selectedStaff) {
+    if (filteredStaff.length === 0) return
+    if (!selectedStaff) {
+      setSelectedStaff(filteredStaff[0])
+      return
+    }
+    const match = filteredStaff.find(s => s.name === selectedStaff.name)
+    if (match && match !== selectedStaff) {
+      setSelectedStaff(match)
+    } else if (!match) {
       setSelectedStaff(filteredStaff[0])
     }
   }, [filteredStaff, selectedStaff])
@@ -122,9 +159,9 @@ export function StaffPerformancePage() {
   }
 
   return (
-    <div className="flex gap-6 h-[calc(100vh-180px)]">
+    <div className="flex gap-6">
       {/* Left Panel - Staff Standings */}
-      <div className="w-80 flex flex-col bg-white rounded-lg shadow">
+      <div className="w-80 flex flex-col bg-white rounded-lg shadow sticky top-4 self-start max-h-[calc(100vh-100px)]">
         <div className="p-4 border-b border-gray-200">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold text-blue-600 uppercase tracking-wide">
@@ -166,12 +203,98 @@ export function StaffPerformancePage() {
       {/* Right Panel - Staff Detail */}
       <div className="flex-1 flex flex-col">
         {selectedStaff ? (
-          <StaffDetailPanel staff={selectedStaff} />
+          <StaffDetailPanel
+            staff={selectedStaff}
+            filterBar={
+              <FilterBar
+                periodFilter={periodFilter}
+                onPeriodChange={setPeriodFilter}
+                customStartDate={customStartDate}
+                onCustomStartChange={setCustomStartDate}
+                customEndDate={customEndDate}
+                onCustomEndChange={setCustomEndDate}
+                allStaff={staffPerformance}
+                selectedStaffName={selectedStaff?.name || ''}
+                onSelectStaffName={(name) => {
+                  const staff = staffPerformance.find(s => s.name === name)
+                  if (staff) setSelectedStaff(staff)
+                }}
+              />
+            }
+          />
         ) : (
           <div className="flex-1 flex items-center justify-center bg-white rounded-lg shadow">
             <p className="text-gray-500">Select a staff member to view details</p>
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+
+function FilterBar({
+  periodFilter,
+  onPeriodChange,
+  customStartDate,
+  onCustomStartChange,
+  customEndDate,
+  onCustomEndChange,
+  allStaff,
+  selectedStaffName,
+  onSelectStaffName,
+}) {
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6 flex flex-wrap items-end gap-3">
+      <div className="flex flex-col">
+        <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Period</label>
+        <select
+          value={periodFilter}
+          onChange={(e) => onPeriodChange(e.target.value)}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="all">All time</option>
+          <option value="7d">Last 7 days</option>
+          <option value="30d">Last 30 days</option>
+          <option value="90d">Last 90 days</option>
+          <option value="custom">Custom range</option>
+        </select>
+      </div>
+
+      {periodFilter === 'custom' && (
+        <>
+          <div className="flex flex-col">
+            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">From</label>
+            <input
+              type="date"
+              value={customStartDate}
+              onChange={(e) => onCustomStartChange(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div className="flex flex-col">
+            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">To</label>
+            <input
+              type="date"
+              value={customEndDate}
+              onChange={(e) => onCustomEndChange(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+        </>
+      )}
+
+      <div className="flex flex-col flex-1 min-w-[200px]">
+        <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Staff name</label>
+        <select
+          value={selectedStaffName}
+          onChange={(e) => onSelectStaffName(e.target.value)}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          {allStaff.map(s => (
+            <option key={s.name} value={s.name}>{s.name}</option>
+          ))}
+        </select>
       </div>
     </div>
   )
@@ -234,13 +357,13 @@ function StaffListItem({ staff, selected, onClick }) {
 }
 
 
-function StaffDetailPanel({ staff }) {
+function StaffDetailPanel({ staff, filterBar }) {
   const activeBlockers = staff.failedDocuments.length
   const avgAuditScore = staff.passRate
   const primaryRisk = staff.recurringFailures[0]?.name || 'None'
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col">
       {/* Header */}
       <div className="flex items-start justify-between mb-6">
         <div>
@@ -272,6 +395,9 @@ function StaffDetailPanel({ staff }) {
           <div className="text-xl font-bold text-gray-900 truncate">{primaryRisk}</div>
         </div>
       </div>
+
+      {/* Filters */}
+      {filterBar}
 
       {/* Recurring Rule Failures */}
       {staff.recurringFailures.length > 0 && (
@@ -310,14 +436,14 @@ function StaffDetailPanel({ staff }) {
       )}
 
       {/* Flagged Notes for Review */}
-      <div className="bg-white rounded-lg border border-gray-200 p-4 flex-1 overflow-hidden flex flex-col">
+      <div className="bg-white rounded-lg border border-gray-200 p-4">
         <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4 flex items-center gap-2">
           <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
           </svg>
           Flagged Notes for Review ({staff.failedDocuments.length})
         </h3>
-        <div className="flex-1 overflow-y-auto space-y-3">
+        <div className="space-y-3">
           {staff.failedDocuments.slice(0, 10).map((doc, idx) => {
             const failedRule = doc.rules?.find(r => r.status === 'FAIL')
             const severity = doc.summary?.failed > 2 ? 'Blocker' : 'High'
