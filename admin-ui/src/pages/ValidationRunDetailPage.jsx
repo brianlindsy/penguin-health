@@ -19,8 +19,6 @@ const FIELD_LABELS = {
 const getCredibleLink = (documentId) =>
   `https://www.cbh3.crediblebh.com/visit/clientvisit_view.asp?clientvisit_id=${documentId}&provportal=0`
 
-const PAGE_SIZE = 10
-
 export function ValidationRunDetailPage() {
   const { orgId, runId } = useParams()
   const [data, setData] = useState(null)
@@ -32,7 +30,6 @@ export function ValidationRunDetailPage() {
   const [statusFilter, setStatusFilter] = useState('all')
   const [programFilter, setProgramFilter] = useState('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
-  const [currentPage, setCurrentPage] = useState(1)
 
   useEffect(() => {
     api.getValidationRun(orgId, runId)
@@ -134,18 +131,6 @@ export function ValidationRunDetailPage() {
     })
   }, [data, searchTerm, statusFilter, programFilter, categoryFilter])
 
-  // Reset page when filters change
-  useEffect(() => {
-    setCurrentPage(1)
-  }, [searchTerm, statusFilter, programFilter, categoryFilter])
-
-  // Paginate filtered documents
-  const totalPages = Math.ceil(filteredDocs.length / PAGE_SIZE)
-  const paginatedDocs = useMemo(() => {
-    const start = (currentPage - 1) * PAGE_SIZE
-    return filteredDocs.slice(start, start + PAGE_SIZE)
-  }, [filteredDocs, currentPage])
-
   if (loading) return <div className="flex items-center justify-center h-64"><p className="text-gray-500">Loading validation run...</p></div>
   if (error) return <div className="p-4"><p className="text-red-600">Error: {error}</p></div>
   if (!data) return <div className="p-4"><p className="text-gray-500">Validation run not found</p></div>
@@ -229,14 +214,9 @@ export function ValidationRunDetailPage() {
             <span className="text-sm font-medium text-gray-700">
               {filteredDocs.length} Document{filteredDocs.length !== 1 ? 's' : ''}
             </span>
-            {totalPages > 1 && (
-              <span className="text-xs text-gray-500">
-                Page {currentPage} of {totalPages}
-              </span>
-            )}
           </div>
-          <div className="flex-1 overflow-y-auto">
-            {paginatedDocs.map(doc => (
+          <div className="flex-1 overflow-y-auto max-h-[calc(5*9rem)]">
+            {filteredDocs.map(doc => (
               <DocumentListItem
                 key={doc.document_id}
                 doc={doc}
@@ -252,52 +232,6 @@ export function ValidationRunDetailPage() {
               <p className="p-4 text-sm text-gray-500">No documents match your filters.</p>
             )}
           </div>
-          {/* Pagination Controls */}
-          {totalPages > 1 && (
-            <div className="px-4 py-2 border-t border-gray-200 bg-gray-50 flex items-center justify-between">
-              <button
-                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                disabled={currentPage === 1}
-                className="px-3 py-1 text-sm rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Previous
-              </button>
-              <div className="flex items-center gap-1">
-                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                  let pageNum
-                  if (totalPages <= 5) {
-                    pageNum = i + 1
-                  } else if (currentPage <= 3) {
-                    pageNum = i + 1
-                  } else if (currentPage >= totalPages - 2) {
-                    pageNum = totalPages - 4 + i
-                  } else {
-                    pageNum = currentPage - 2 + i
-                  }
-                  return (
-                    <button
-                      key={pageNum}
-                      onClick={() => setCurrentPage(pageNum)}
-                      className={`w-8 h-8 text-sm rounded ${
-                        currentPage === pageNum
-                          ? 'bg-blue-600 text-white'
-                          : 'border border-gray-300 bg-white hover:bg-gray-50'
-                      }`}
-                    >
-                      {pageNum}
-                    </button>
-                  )
-                })}
-              </div>
-              <button
-                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                disabled={currentPage === totalPages}
-                className="px-3 py-1 text-sm rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Next
-              </button>
-            </div>
-          )}
         </div>
 
         {/* Right Panel - Detail View */}
