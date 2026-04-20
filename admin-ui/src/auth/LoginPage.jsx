@@ -78,8 +78,7 @@ export function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="w-full max-w-sm p-8 bg-white rounded-lg shadow">
-        <h1 className="text-xl font-semibold text-gray-900 mb-1">Penguin Health</h1>
-        <p className="text-sm text-gray-600 mb-6">Admin Console</p>
+        <h1 className="text-xl font-semibold text-gray-900 mb-6">Penguin Health</h1>
 
         {error && (
           <div className="mb-4 p-3 bg-red-50 text-red-700 text-sm rounded">{error}</div>
