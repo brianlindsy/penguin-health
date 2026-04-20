@@ -401,7 +401,7 @@ function DocumentListItem({ doc, selected, onClick }) {
             className={`w-2 h-2 rounded-full ${
               rule.status === 'PASS' ? 'bg-green-400' :
               rule.status === 'FAIL' ? 'bg-red-400' :
-              'bg-yellow-400'
+              'bg-gray-300'
             }`}
             title={`${rule.rule_name}: ${rule.status}`}
           />
@@ -461,7 +461,7 @@ function DocumentDetailPanel({ doc, selectedRule, onSelectRule }) {
         <RuleTab
           label="Skipped"
           count={skippedRules.length}
-          color="yellow"
+          color="gray"
           rules={skippedRules}
           selectedRule={selectedRule}
           onSelectRule={onSelectRule}
@@ -487,10 +487,10 @@ function DocumentDetailPanel({ doc, selectedRule, onSelectRule }) {
                 selectedRule === rule
                   ? rule.status === 'FAIL' ? 'bg-red-600 text-white' :
                     rule.status === 'PASS' ? 'bg-green-600 text-white' :
-                    'bg-yellow-600 text-white'
+                    'bg-gray-500 text-white'
                   : rule.status === 'FAIL' ? 'bg-red-100 text-red-700 hover:bg-red-200' :
                     rule.status === 'PASS' ? 'bg-green-100 text-green-700 hover:bg-green-200' :
-                    'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'
+                    'bg-gray-100 text-gray-700 hover:bg-gray-200'
               }`}
             >
               {rule.rule_name || rule.rule_id}
@@ -515,7 +515,7 @@ function DocumentDetailPanel({ doc, selectedRule, onSelectRule }) {
 function RuleTab({ label, count, color }) {
   const colorStyles = {
     red: 'text-red-600',
-    yellow: 'text-yellow-600',
+    gray: 'text-gray-600',
     green: 'text-green-600',
   }
 
@@ -545,7 +545,7 @@ function RuleDetailView({ rule, fieldValues }) {
   const statusColors = {
     FAIL: { bg: 'bg-red-100', text: 'text-red-800', border: 'border-red-200' },
     PASS: { bg: 'bg-green-100', text: 'text-green-800', border: 'border-green-200' },
-    SKIP: { bg: 'bg-yellow-100', text: 'text-yellow-800', border: 'border-yellow-200' },
+    SKIP: { bg: 'bg-gray-100', text: 'text-gray-700', border: 'border-gray-200' },
     ERROR: { bg: 'bg-gray-100', text: 'text-gray-800', border: 'border-gray-200' },
   }
 
