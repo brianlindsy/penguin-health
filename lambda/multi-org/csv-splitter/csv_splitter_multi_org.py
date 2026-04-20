@@ -63,8 +63,12 @@ def lambda_handler(event, context):
         key = unquote_plus(record['s3']['object']['key'])
 
         # Only process CSV files in the SFTP upload folder
-        if not key.startswith('uploaded-data-sftp/') or not key.endswith('.csv'):
-            print(f"Skipping non-CSV or non-SFTP file: {key}")
+        # Also accept .filepart files (Circles of Care sends these as fully processed CSVs)
+        if not key.startswith('uploaded-data-sftp/'):
+            print(f"Skipping non-SFTP file: {key}")
+            continue
+        if not (key.endswith('.csv') or key.endswith('.filepart')):
+            print(f"Skipping non-CSV file: {key}")
             continue
 
         # Extract org ID from bucket name

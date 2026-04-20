@@ -2712,10 +2712,120 @@
     "aws:asset:property": "Code"
    }
   },
+  "AuditEngineCatholicCharitiesValidationSchedule9A50A971": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Name": "penguin-health-catholic-charities-validation-schedule",
+    "ScheduleExpression": "cron(0 3 * * ? *)",
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Project",
+      "Value": "penguin-health"
+     }
+    ],
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "AuditEngineRulesEngineRagFnB2BFCB1D",
+        "Arn"
+       ]
+      },
+      "Id": "Target0",
+      "Input": "{\"organization_id\":\"catholic-charities-multi-org\"}"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CatholicCharitiesValidationSchedule/Resource"
+   }
+  },
+  "AuditEngineCatholicCharitiesValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822BE7FB03B6": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AuditEngineRulesEngineRagFnB2BFCB1D",
+      "Arn"
+     ]
+    },
+    "Principal": "events.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "AuditEngineCatholicCharitiesValidationSchedule9A50A971",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CatholicCharitiesValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B"
+   }
+  },
+  "AuditEngineCirclesOfCareValidationScheduleB1C09086": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Name": "penguin-health-circles-of-care-validation-schedule",
+    "ScheduleExpression": "cron(30 10 * * ? *)",
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Project",
+      "Value": "penguin-health"
+     }
+    ],
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "AuditEngineRulesEngineRagFnB2BFCB1D",
+        "Arn"
+       ]
+      },
+      "Id": "Target0",
+      "Input": "{\"organization_id\":\"circles-of-care\"}"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CirclesOfCareValidationSchedule/Resource"
+   }
+  },
+  "AuditEngineCirclesOfCareValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B1C1EBE01": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AuditEngineRulesEngineRagFnB2BFCB1D",
+      "Arn"
+     ]
+    },
+    "Principal": "events.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "AuditEngineCirclesOfCareValidationScheduleB1C09086",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CirclesOfCareValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B"
+   }
+  },
   "CDKMetadata": {
    "Type": "AWS::CDK::Metadata",
    "Properties": {
-    "Analytics": "v2:deflate64:H4sIAAAAAAAA/3VRS0/DMAz+Lbtnga0S4toN8ThRdXCe0jQUszapYoepRP3vJCnbKhCn75HPie2s+Tq74dcLccSlrA/LFirudyTkgQVr7+tBi87UwXwRVavY9k0nMjLUGEzTg0xmIjtXobTQExgd3bkemTSNBjLcv6KyhTFtjJz5iWxbUJrmR3+dB2tcP7JWdFUtuL93Wp6enPNC2Q4Q0+MgOu5LM42QsDAtyCHlEgsjZXuBqAh5HiFo7jdOHhRtBCo20Vjwwya43DPXIxM9NILUUQyfa+4fifq8hxiLEGVYc5PamUi0SuNoYk+aVGPFaZRf8pLLHb0bC1/KpqvPKqy7Na5+s0YT93eAZKFyqX6XPVtoQOdSKsRtCNjpL/6x58XjyEqFxlmpWFpS7B10k8od9Y5GVgyhCX2V8dWK3y4+EGBpnSboFC8n/AYlSFmjdgIAAA=="
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/3VRyU7DMBD9Fu6uoY2EuLZFLCeiFM6V47hhaGJHnnGrEPnfsZ0uEYjTWzyLZ2bBF9k9v7sRR5zJaj9roOTDhoTcs2Bth6rXojVVMN9F2Si23ulEPEONwTQdyGQmsnElSgsdgdHRnWrPpKk1kOHDByqbG9PEkAs/k3UDStP06a/zbI3rPGtEW1aCD09Oy3PLKc+VbQExNQfR8qEw4wgJc9OA7FNcYmGkbCsQFSFfRgiaDysn94pWAhUbaUw4sRGudabaM9FBLUgdRX9Y8OGFqFt2EMMiRBnWXKfvjCRahXE0sldNqrbiPMoveY1bOvo0Fr6VTaUvKqy7Ma7aWaOJD4+AZKF0KX+TvVmoQS+lVIjrEGDHW/xjT5M9U4dwjHD6wp12GdB7Vig0zkrF0uriRKDrVNRR58izvA9f07cZn8/5w80XAsys0wSt4sWIPzplRhGMAgAA"
    },
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/CDKMetadata/Default"
