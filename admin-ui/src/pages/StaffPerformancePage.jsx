@@ -281,29 +281,66 @@ export function StaffPerformancePage() {
 function ProgramSummaryView({ staffPerformance, onSelectStaff, onSelectProgram }) {
   // 'staff' = card lists staff ranked by errors; 'rules' = card lists recurring rule failures ranked by frequency.
   const [viewMode, setViewMode] = useState('staff')
+  // Set of category strings to include; empty Set = no filter (show everything).
+  const [categoryFilter, setCategoryFilter] = useState(() => new Set())
+
+  // Derive the list of categories that actually appear in failed rules across
+  // the current data, so the filter chips reflect real options.
+  const availableCategories = useMemo(() => {
+    const set = new Set()
+    staffPerformance.forEach(s => {
+      s.failedDocuments?.forEach(doc => {
+        doc.rules?.forEach(r => {
+          if (r.status === 'FAIL' && r.category) set.add(r.category)
+        })
+      })
+    })
+    return Array.from(set).sort()
+  }, [staffPerformance])
 
   // Group staff by program, sort each list by errors desc (tie-break by name),
-  // and sort programs by total errors desc (most problematic first). Also roll
-  // up each program's rule failures across all its staff.
+  // and sort programs by total errors desc (most problematic first). Re-derive
+  // per-staff error counts + per-program rule failures from the raw failed
+  // documents so the category filter can be applied cleanly.
   const programs = useMemo(() => {
+    const isIncluded = (category) =>
+      categoryFilter.size === 0 || categoryFilter.has(category)
+
     const map = new Map()
     staffPerformance.forEach(s => {
       const key = s.program || 'Unknown'
       if (!map.has(key)) map.set(key, [])
       map.get(key).push(s)
     })
+
     const entries = Array.from(map.entries()).map(([program, staff]) => {
-      const sorted = [...staff].sort((a, b) =>
+      // Per-staff filtered error count.
+      const staffWithFilteredCounts = staff.map(s => {
+        let filteredErrorCount = 0
+        s.failedDocuments?.forEach(doc => {
+          doc.rules?.forEach(r => {
+            if (r.status === 'FAIL' && isIncluded(r.category)) filteredErrorCount += 1
+          })
+        })
+        return { ...s, errorCount: filteredErrorCount }
+      })
+
+      const sorted = [...staffWithFilteredCounts].sort((a, b) =>
         (b.errorCount ?? 0) - (a.errorCount ?? 0) || a.name.localeCompare(b.name)
       )
       const totalErrors = sorted.reduce((sum, s) => sum + (s.errorCount ?? 0), 0)
 
-      // Aggregate rule_name -> failure count across everyone in this program.
+      // Per-program rule_name -> count, restricted to the selected categories.
       const ruleCounts = new Map()
-      sorted.forEach(s => {
-        s.ruleFailures?.forEach((count, ruleName) => {
-          if (!ruleName) return
-          ruleCounts.set(ruleName, (ruleCounts.get(ruleName) || 0) + count)
+      staff.forEach(s => {
+        s.failedDocuments?.forEach(doc => {
+          doc.rules?.forEach(r => {
+            if (r.status !== 'FAIL') return
+            if (!isIncluded(r.category)) return
+            const name = r.rule_name || r.rule_id
+            if (!name) return
+            ruleCounts.set(name, (ruleCounts.get(name) || 0) + 1)
+          })
         })
       })
       const ruleFailures = Array.from(ruleCounts.entries())
@@ -314,7 +351,7 @@ function ProgramSummaryView({ staffPerformance, onSelectStaff, onSelectProgram }
     })
     entries.sort((a, b) => b.totalErrors - a.totalErrors || a.program.localeCompare(b.program))
     return entries
-  }, [staffPerformance])
+  }, [staffPerformance, categoryFilter])
 
   if (staffPerformance.length === 0) {
     return (
@@ -324,35 +361,77 @@ function ProgramSummaryView({ staffPerformance, onSelectStaff, onSelectProgram }
     )
   }
 
+  const toggleCategory = (cat) => {
+    setCategoryFilter(prev => {
+      const next = new Set(prev)
+      if (next.has(cat)) next.delete(cat)
+      else next.add(cat)
+      return next
+    })
+  }
+
   return (
     <div className="flex flex-col">
-      <div className="mb-4 flex items-end justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Program Summary</h1>
-          <p className="text-sm text-gray-500">
-            {viewMode === 'staff'
-              ? 'Staff ranked by errors within each program. Click a name to open the risk profile.'
-              : 'Rule failures ranked by frequency within each program.'}
-          </p>
+      <div className="mb-4">
+        <div className="flex items-end justify-between gap-4 flex-wrap">
+          <div>
+            <h1 className="text-2xl font-semibold text-gray-900">Program Summary</h1>
+            <p className="text-sm text-gray-500">
+              {viewMode === 'staff'
+                ? 'Staff ranked by errors within each program. Click a name to open the risk profile.'
+                : 'Rule failures ranked by frequency within each program.'}
+            </p>
+          </div>
+          <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+            {[
+              { value: 'staff', label: 'By Staff' },
+              { value: 'rules', label: 'By Rule' },
+            ].map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => setViewMode(opt.value)}
+                className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                  viewMode === opt.value
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
-          {[
-            { value: 'staff', label: 'By Staff' },
-            { value: 'rules', label: 'By Rule' },
-          ].map(opt => (
-            <button
-              key={opt.value}
-              onClick={() => setViewMode(opt.value)}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                viewMode === opt.value
-                  ? 'bg-blue-600 text-white'
-                  : 'text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
+
+        {availableCategories.length > 0 && (
+          <div className="mt-3 flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Category</span>
+            {availableCategories.map(cat => {
+              const active = categoryFilter.has(cat)
+              return (
+                <button
+                  key={cat}
+                  onClick={() => toggleCategory(cat)}
+                  aria-pressed={active}
+                  className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                    active
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  {cat}
+                </button>
+              )
+            })}
+            {categoryFilter.size > 0 && (
+              <button
+                onClick={() => setCategoryFilter(new Set())}
+                className="text-xs text-blue-600 hover:text-blue-800 ml-1"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/*
