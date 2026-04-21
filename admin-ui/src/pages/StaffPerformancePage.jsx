@@ -353,7 +353,7 @@ function StaffListItem({ staff, selected, onClick }) {
       <div className="flex items-start justify-between mb-1">
         <div>
           <span className="text-sm font-medium text-gray-900">{staff.name}</span>
-          <div className="text-xs text-red-600 uppercase">{staff.program}</div>
+          <div className="text-xs text-gray-600 uppercase">{staff.program}</div>
         </div>
         <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${getPassRateBadgeStyle(staff.passRate)}`}>
           {staff.passRate == null ? '-' : `${staff.passRate}%`} Pass
