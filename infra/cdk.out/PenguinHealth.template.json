@@ -2494,7 +2494,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "7794f7778d90fbbae6aa7a7de8ec133c74830aa2fcbc3b1ddcbbbb98e7361a87.zip"
+     "S3Key": "7a0d6d7d6cf45775a8166ffc08514407f10498aa7939ccc6428ae073c516ea5a.zip"
     },
     "FunctionName": "penguin-health-rules-engine-rag",
     "Handler": "rules_engine_rag.lambda_handler",
@@ -2524,7 +2524,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/RulesEngineRagFn/Resource",
-    "aws:asset:path": "asset.7794f7778d90fbbae6aa7a7de8ec133c74830aa2fcbc3b1ddcbbbb98e7361a87",
+    "aws:asset:path": "asset.7a0d6d7d6cf45775a8166ffc08514407f10498aa7939ccc6428ae073c516ea5a",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
