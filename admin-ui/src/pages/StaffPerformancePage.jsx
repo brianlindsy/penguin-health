@@ -9,6 +9,7 @@ const getCredibleLink = (documentId) =>
 export function StaffPerformancePage() {
   const { orgId } = useParams()
   const [data, setData] = useState(null)
+  const [ruleDefinitions, setRuleDefinitions] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selectedStaff, setSelectedStaff] = useState(null)
@@ -19,23 +20,37 @@ export function StaffPerformancePage() {
   const [sortOrder, setSortOrder] = useState('asc') // 'asc' = worst first, 'desc' = best first
 
   useEffect(() => {
-    // Load all validation runs to aggregate staff performance
-    api.listValidationRuns(orgId)
-      .then(async (runsData) => {
+    // Load rule definitions + validation runs in parallel. Rule definitions
+    // are the authoritative source for rule.category (same as the admin table).
+    Promise.all([
+      api.listRules(orgId),
+      api.listValidationRuns(orgId).then(async (runsData) => {
         const runList = runsData.runs.slice(0, 10)
-        // Load details for each run to get staff data
-        const runsWithDetails = await Promise.all(
+        return Promise.all(
           runList.map(async run => ({
             ...(await api.getValidationRun(orgId, run.validation_run_id)),
             validation_run_id: run.validation_run_id,
             timestamp: run.timestamp,
           }))
         )
+      }),
+    ])
+      .then(([rulesResponse, runsWithDetails]) => {
+        setRuleDefinitions(Array.isArray(rulesResponse) ? rulesResponse : rulesResponse?.rules || [])
         setData(runsWithDetails)
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
   }, [orgId])
+
+  // rule_id -> category, drawn from the authoritative rule definitions.
+  const ruleCategoryById = useMemo(() => {
+    const map = new Map()
+    ruleDefinitions.forEach(r => {
+      if (r?.rule_id && r?.category) map.set(r.rule_id, r.category)
+    })
+    return map
+  }, [ruleDefinitions])
 
   // Aggregate staff performance from all validation runs
   const staffPerformance = useMemo(() => {
@@ -268,6 +283,8 @@ export function StaffPerformancePage() {
         ) : (
           <ProgramSummaryView
             staffPerformance={staffPerformance}
+            ruleDefinitions={ruleDefinitions}
+            ruleCategoryById={ruleCategoryById}
             onSelectStaff={setSelectedStaff}
             onSelectProgram={(program) => setSearchTerm(program)}
           />
@@ -278,25 +295,37 @@ export function StaffPerformancePage() {
 }
 
 
-function ProgramSummaryView({ staffPerformance, onSelectStaff, onSelectProgram }) {
+function ProgramSummaryView({
+  staffPerformance,
+  ruleDefinitions,
+  ruleCategoryById,
+  onSelectStaff,
+  onSelectProgram,
+}) {
   // 'staff' = card lists staff ranked by errors; 'rules' = card lists recurring rule failures ranked by frequency.
   const [viewMode, setViewMode] = useState('staff')
   // Set of category strings to include; empty Set = no filter (show everything).
   const [categoryFilter, setCategoryFilter] = useState(() => new Set())
 
-  // Derive the list of categories that actually appear in failed rules across
-  // the current data, so the filter chips reflect real options.
+  // Authoritative category list: pulled directly from the rule definitions
+  // (same source the admin Validation Rules table uses). That way every chip
+  // matches the `category` shown next to the rule, nothing is invented, and
+  // renaming a category in the admin UI shows up here on reload.
   const availableCategories = useMemo(() => {
     const set = new Set()
-    staffPerformance.forEach(s => {
-      s.failedDocuments?.forEach(doc => {
-        doc.rules?.forEach(r => {
-          if (r.status === 'FAIL' && r.category) set.add(r.category)
-        })
-      })
+    ruleDefinitions.forEach(r => {
+      if (r?.category) set.add(r.category)
     })
     return Array.from(set).sort()
-  }, [staffPerformance])
+  }, [ruleDefinitions])
+
+  // Resolve a validation-result rule's category from the authoritative
+  // definition by rule_id; only falls back to any category on the result
+  // itself if we somehow don't have the definition loaded.
+  const categoryForRule = (r) => {
+    if (r?.rule_id && ruleCategoryById.has(r.rule_id)) return ruleCategoryById.get(r.rule_id)
+    return r?.category || null
+  }
 
   // Group staff by program, sort each list by errors desc (tie-break by name),
   // and sort programs by total errors desc (most problematic first). Re-derive
@@ -314,12 +343,12 @@ function ProgramSummaryView({ staffPerformance, onSelectStaff, onSelectProgram }
     })
 
     const entries = Array.from(map.entries()).map(([program, staff]) => {
-      // Per-staff filtered error count.
+      // Per-staff filtered error count (category resolved via rule definitions).
       const staffWithFilteredCounts = staff.map(s => {
         let filteredErrorCount = 0
         s.failedDocuments?.forEach(doc => {
           doc.rules?.forEach(r => {
-            if (r.status === 'FAIL' && isIncluded(r.category)) filteredErrorCount += 1
+            if (r.status === 'FAIL' && isIncluded(categoryForRule(r))) filteredErrorCount += 1
           })
         })
         return { ...s, errorCount: filteredErrorCount }
@@ -336,7 +365,7 @@ function ProgramSummaryView({ staffPerformance, onSelectStaff, onSelectProgram }
         s.failedDocuments?.forEach(doc => {
           doc.rules?.forEach(r => {
             if (r.status !== 'FAIL') return
-            if (!isIncluded(r.category)) return
+            if (!isIncluded(categoryForRule(r))) return
             const name = r.rule_name || r.rule_id
             if (!name) return
             ruleCounts.set(name, (ruleCounts.get(name) || 0) + 1)
@@ -351,7 +380,7 @@ function ProgramSummaryView({ staffPerformance, onSelectStaff, onSelectProgram }
     })
     entries.sort((a, b) => b.totalErrors - a.totalErrors || a.program.localeCompare(b.program))
     return entries
-  }, [staffPerformance, categoryFilter])
+  }, [staffPerformance, categoryFilter, ruleCategoryById])
 
   if (staffPerformance.length === 0) {
     return (
