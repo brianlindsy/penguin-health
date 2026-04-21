@@ -375,7 +375,7 @@ function ProgramSummaryCard({
         >
           {program}
         </button>
-        <p className="text-xs text-gray-500 mt-0.5">
+        <p className="text-sm text-gray-600 mt-1">
           {staff.length} staff · {totalErrors} {totalErrors === 1 ? 'error' : 'errors'}
         </p>
       </div>
