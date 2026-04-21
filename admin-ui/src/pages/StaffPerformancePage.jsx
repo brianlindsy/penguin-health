@@ -449,26 +449,8 @@ function ProgramSummaryView({
           </div>
         </div>
 
-        {/* Filters row: compact date select + category pills share one line */}
+        {/* Filters row: category pills on the left, compact date chip on the right */}
         <div className="mt-3 flex items-center gap-3 flex-wrap">
-          <div className="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded-full pl-2 pr-1 py-0.5 shadow-sm">
-            <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
-            <select
-              value={periodFilter}
-              onChange={(e) => onPeriodChange(e.target.value)}
-              className="text-xs font-medium text-gray-700 bg-transparent border-0 focus:outline-none focus:ring-0 pr-1 py-0.5 cursor-pointer"
-            >
-              <option value="all">All time</option>
-              <option value="24h">Last 24 hours</option>
-              <option value="7d">Last 7 days</option>
-              <option value="30d">Last 30 days</option>
-              <option value="90d">Last 90 days</option>
-              <option value="custom">Custom range</option>
-            </select>
-          </div>
-
           {availableCategories.length > 0 && (
             <>
               <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Category</span>
@@ -499,6 +481,24 @@ function ProgramSummaryView({
               )}
             </>
           )}
+
+          <div className="ml-auto inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded-full pl-2 pr-1 py-0.5 shadow-sm">
+            <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            <select
+              value={periodFilter}
+              onChange={(e) => onPeriodChange(e.target.value)}
+              className="text-xs font-medium text-gray-700 bg-transparent border-0 focus:outline-none focus:ring-0 pr-1 py-0.5 cursor-pointer"
+            >
+              <option value="all">All time</option>
+              <option value="24h">Last 24 hours</option>
+              <option value="7d">Last 7 days</option>
+              <option value="30d">Last 30 days</option>
+              <option value="90d">Last 90 days</option>
+              <option value="custom">Custom range</option>
+            </select>
+          </div>
         </div>
 
         {periodFilter === 'custom' && (
