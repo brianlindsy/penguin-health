@@ -180,7 +180,7 @@ export function StaffPerformancePage() {
   return (
     <div className="flex gap-6">
       {/* Left Panel - Staff Standings */}
-      <div className="w-80 flex flex-col bg-white rounded-lg shadow sticky top-4 self-start max-h-[calc(100vh-100px)]">
+      <div className="w-64 flex flex-col bg-white rounded-lg shadow sticky top-4 self-start max-h-[calc(100vh-100px)]">
         <div className="p-4 border-b border-gray-200">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold text-blue-600 uppercase tracking-wide">
@@ -246,6 +246,7 @@ export function StaffPerformancePage() {
           <ProgramSummaryView
             staffPerformance={staffPerformance}
             onSelectStaff={setSelectedStaff}
+            onSelectProgram={(program) => setSearchTerm(program)}
           />
         )}
       </div>
@@ -254,7 +255,7 @@ export function StaffPerformancePage() {
 }
 
 
-function ProgramSummaryView({ staffPerformance, onSelectStaff }) {
+function ProgramSummaryView({ staffPerformance, onSelectStaff, onSelectProgram }) {
   // Group staff by program, sort each list by errors desc (tie-break by name),
   // and sort programs by total errors desc (most problematic first).
   const programs = useMemo(() => {
@@ -300,6 +301,7 @@ function ProgramSummaryView({ staffPerformance, onSelectStaff }) {
             staff={p.staff}
             totalErrors={p.totalErrors}
             onSelectStaff={onSelectStaff}
+            onSelectProgram={onSelectProgram}
           />
         ))}
       </div>
@@ -308,13 +310,17 @@ function ProgramSummaryView({ staffPerformance, onSelectStaff }) {
 }
 
 
-function ProgramSummaryCard({ program, staff, totalErrors, onSelectStaff }) {
+function ProgramSummaryCard({ program, staff, totalErrors, onSelectStaff, onSelectProgram }) {
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-md hover:shadow-lg transition-shadow p-5 flex flex-col">
-      <div className="mb-3 pb-3 border-b border-gray-100">
-        <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wide truncate" title={program}>
+    <div className="bg-gray-50 rounded-xl border border-gray-200 shadow-md hover:shadow-lg transition-shadow p-6 flex flex-col">
+      <div className="mb-3 pb-3 border-b border-gray-200">
+        <button
+          onClick={() => onSelectProgram?.(program)}
+          className="text-sm font-semibold text-blue-600 hover:text-blue-800 hover:underline uppercase tracking-wide truncate block text-left w-full"
+          title={`Filter staff list by ${program}`}
+        >
           {program}
-        </h3>
+        </button>
         <p className="text-xs text-gray-500 mt-0.5">
           {staff.length} staff · {totalErrors} {totalErrors === 1 ? 'error' : 'errors'}
         </p>
@@ -325,7 +331,7 @@ function ProgramSummaryCard({ program, staff, totalErrors, onSelectStaff }) {
           <button
             key={s.name}
             onClick={() => onSelectStaff(s)}
-            className="w-full flex items-center justify-between px-2 py-1.5 rounded text-sm hover:bg-gray-50 transition-colors"
+            className="w-full flex items-center justify-between px-2 py-1.5 rounded text-sm hover:bg-white transition-colors"
           >
             <span className="text-gray-900 truncate">{s.name}</span>
             <span className="text-xs text-gray-500 tabular-nums flex-shrink-0 ml-2">
