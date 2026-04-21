@@ -180,7 +180,7 @@ export function StaffPerformancePage() {
   return (
     <div className="flex gap-6">
       {/* Left Panel - Staff Standings */}
-      <div className="w-64 flex flex-col bg-white rounded-lg shadow sticky top-4 self-start max-h-[calc(100vh-100px)]">
+      <div className="w-96 flex flex-col bg-white rounded-lg shadow sticky top-4 self-start max-h-[calc(100vh-100px)]">
         <div className="p-4 border-b border-gray-200">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold text-blue-600 uppercase tracking-wide">
