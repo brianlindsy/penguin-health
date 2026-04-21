@@ -123,6 +123,7 @@ class AuditEngine(Construct):
             "rate_limiter.py",           # Rate limiting for Bedrock API
             "bedrock_client.py",         # Claude model invocation
             "document_validator.py",     # Per-rule LLM validation with multi-threading
+            "deterministic_evaluator.py", # Code-based deterministic rule evaluation
             "results_handler.py",        # DynamoDB storage and CSV reports
             "field_extractor.py",        # Text field extraction
         ]
