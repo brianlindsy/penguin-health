@@ -16,6 +16,7 @@ export function StaffPerformancePage() {
   const [periodFilter, setPeriodFilter] = useState('all')
   const [customStartDate, setCustomStartDate] = useState('')
   const [customEndDate, setCustomEndDate] = useState('')
+  const [sortOrder, setSortOrder] = useState('asc') // 'asc' = worst first, 'desc' = best first
 
   useEffect(() => {
     // Load all validation runs to aggregate staff performance
@@ -139,15 +140,23 @@ export function StaffPerformancePage() {
       })
   }, [data, periodFilter, customStartDate, customEndDate])
 
-  // Filter staff by search
+  // Filter staff by search and apply the user-selected sort order. Null pass
+  // rates (unaudited) always sink to the bottom regardless of direction.
   const filteredStaff = useMemo(() => {
-    if (!searchTerm) return staffPerformance
     const search = searchTerm.toLowerCase()
-    return staffPerformance.filter(s =>
-      s.name.toLowerCase().includes(search) ||
-      s.program.toLowerCase().includes(search)
-    )
-  }, [staffPerformance, searchTerm])
+    const list = search
+      ? staffPerformance.filter(s =>
+          s.name.toLowerCase().includes(search) ||
+          s.program.toLowerCase().includes(search)
+        )
+      : staffPerformance
+    return [...list].sort((a, b) => {
+      if (a.passRate == null && b.passRate == null) return 0
+      if (a.passRate == null) return 1
+      if (b.passRate == null) return -1
+      return sortOrder === 'asc' ? a.passRate - b.passRate : b.passRate - a.passRate
+    })
+  }, [staffPerformance, searchTerm, sortOrder])
 
   // Keep the selected staff's data in sync as filters change; drop the
   // selection (falling back to the summary view) if they disappear.
@@ -183,12 +192,24 @@ export function StaffPerformancePage() {
       <div className="w-96 flex flex-col bg-white rounded-lg shadow sticky top-4 self-start max-h-[calc(100vh-100px)]">
         <div className="p-4 border-b border-gray-200">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-blue-600 uppercase tracking-wide">
-              Staff Standings
-            </h2>
-            <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded">
-              {orgId}
-            </span>
+            <div className="flex items-center gap-2 min-w-0">
+              <h2 className="text-sm font-semibold text-blue-600 uppercase tracking-wide">
+                Staff Standings
+              </h2>
+              <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded truncate">
+                {orgId}
+              </span>
+            </div>
+            <button
+              onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+              className="flex-shrink-0 p-1.5 rounded-md text-blue-600 hover:bg-blue-50 transition-colors"
+              title={sortOrder === 'asc' ? 'Sort: low to high (click to reverse)' : 'Sort: high to low (click to reverse)'}
+              aria-label="Toggle sort order"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+              </svg>
+            </button>
           </div>
           <div className="relative">
             <input
