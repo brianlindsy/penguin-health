@@ -159,6 +159,7 @@ export function StaffPerformancePage() {
   }, [staffPerformance, searchTerm, sortOrder])
 
   // Keep the selected staff's data in sync as filters change; drop the
+  // Keep the selected staff's data in sync as filters change; drop the
   // selection (falling back to the summary view) if they disappear.
   useEffect(() => {
     if (!selectedStaff) return
@@ -173,6 +174,7 @@ export function StaffPerformancePage() {
       setSelectedStaff(null)
     }
   }, [filteredStaff, selectedStaff])
+
 
   if (loading) {
     return (
