@@ -391,7 +391,7 @@ function ProgramSummaryCard({
                 className="w-full flex items-center justify-between px-2 py-1.5 text-sm"
               >
                 <span className="text-gray-900 truncate" title={rule.name}>{rule.name}</span>
-                <span className="text-xs text-gray-500 tabular-nums flex-shrink-0 ml-2">
+                <span className="text-base font-semibold text-gray-700 tabular-nums flex-shrink-0 ml-2">
                   {rule.count}
                 </span>
               </div>
@@ -405,7 +405,7 @@ function ProgramSummaryCard({
               className="w-full flex items-center justify-between px-2 py-1.5 rounded text-sm hover:bg-white transition-colors"
             >
               <span className="text-gray-900 truncate">{s.name}</span>
-              <span className="text-xs text-gray-500 tabular-nums flex-shrink-0 ml-2">
+              <span className="text-base font-semibold text-gray-700 tabular-nums flex-shrink-0 ml-2">
                 {s.errorCount ?? 0}
               </span>
             </button>
