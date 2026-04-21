@@ -29,6 +29,7 @@ export function ValidationRunDetailPage() {
   const [selectedRule, setSelectedRule] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [ruleFilter, setRuleFilter] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all') // 'all' | 'needs_action' | 'confirmed'
   const [programFilter, setProgramFilter] = useState('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [dateFilter, setDateFilter] = useState('all')
@@ -137,6 +138,10 @@ export function ValidationRunDetailPage() {
         if (!matchesId && !matchesEmployee && !matchesProgram) return false
       }
 
+      // Status filter (from the Needs Action / Confirmed summary cards at top)
+      if (statusFilter === 'needs_action' && !(doc.summary?.failed > 0)) return false
+      if (statusFilter === 'confirmed' && !(doc.summary?.failed === 0)) return false
+
       // Rule filter (document has at least one rule matching the selected rule name/id)
       if (ruleFilter !== 'all') {
         const hasRule = doc.rules?.some(r => (r.rule_name || r.rule_id) === ruleFilter)
@@ -168,7 +173,7 @@ export function ValidationRunDetailPage() {
 
       return true
     })
-  }, [data, searchTerm, ruleFilter, programFilter, categoryFilter, dateFilter, customStartDate, customEndDate])
+  }, [data, searchTerm, statusFilter, ruleFilter, programFilter, categoryFilter, dateFilter, customStartDate, customEndDate])
 
   if (loading) return <OrgWorkspaceLayout><div className="flex items-center justify-center h-64"><p className="text-gray-500">Loading validation run...</p></div></OrgWorkspaceLayout>
   if (error) return <OrgWorkspaceLayout><div className="p-4"><p className="text-red-600">Error: {error}</p></div></OrgWorkspaceLayout>
@@ -183,13 +188,15 @@ export function ValidationRunDetailPage() {
           label="NEEDS ACTION"
           value={stats.needsAction}
           color="red"
-          onClick={() => {}}
+          active={statusFilter === 'needs_action'}
+          onClick={() => setStatusFilter(statusFilter === 'needs_action' ? 'all' : 'needs_action')}
         />
         <SummaryCard
           label="CONFIRMED"
           value={stats.confirmed}
           color="green"
-          onClick={() => {}}
+          active={statusFilter === 'confirmed'}
+          onClick={() => setStatusFilter(statusFilter === 'confirmed' ? 'all' : 'confirmed')}
         />
         <SummaryCard
           label="REVENUE AT RISK"
@@ -335,11 +342,12 @@ export function ValidationRunDetailPage() {
 
 
 function SummaryCard({ label, value, subtext, color, active, onClick }) {
-  const colorStyles = {
-    red: 'border-red-200 bg-red-50',
-    yellow: 'border-yellow-200 bg-yellow-50',
-    green: 'border-green-200 bg-green-50',
-    blue: 'border-blue-200 bg-blue-50',
+  // Active = soft transparent tint, matching the card's accent color.
+  const activeStyles = {
+    red: 'border-red-300 bg-red-500/10',
+    yellow: 'border-yellow-300 bg-yellow-500/10',
+    green: 'border-green-300 bg-green-500/10',
+    blue: 'border-blue-300 bg-blue-500/10',
   }
 
   const textStyles = {
@@ -353,7 +361,7 @@ function SummaryCard({ label, value, subtext, color, active, onClick }) {
     <button
       onClick={onClick}
       className={`p-4 rounded-lg border-2 text-left transition-all ${
-        active ? `${colorStyles[color]} ring-2 ring-offset-2 ring-${color}-400` : 'border-gray-200 bg-white hover:border-gray-300'
+        active ? activeStyles[color] : 'border-gray-200 bg-white hover:border-gray-300'
       }`}
     >
       <div className={`text-2xl font-bold ${active ? textStyles[color] : 'text-gray-900'}`}>
