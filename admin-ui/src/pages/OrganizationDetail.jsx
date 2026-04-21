@@ -26,6 +26,7 @@ export function OrganizationDetail() {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
+  const [latestRunId, setLatestRunId] = useState(null)
 
   useEffect(() => {
     Promise.all([
@@ -40,6 +41,26 @@ export function OrganizationDetail() {
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
+  }, [orgId])
+
+  // Grab the most recent validation run so the header can deep-link to it.
+  // Kept separate from the main load so a failure here doesn't blow up the page.
+  useEffect(() => {
+    let cancelled = false
+    api.listValidationRuns(orgId)
+      .then(data => {
+        if (cancelled) return
+        const runs = (Array.isArray(data) ? data : data?.runs) || []
+        if (runs.length === 0) return
+        const sorted = [...runs].sort((a, b) => {
+          const at = a.timestamp ? new Date(a.timestamp).getTime() : 0
+          const bt = b.timestamp ? new Date(b.timestamp).getTime() : 0
+          return bt - at
+        })
+        setLatestRunId(sorted[0].validation_run_id)
+      })
+      .catch(() => { /* silent — button stays disabled */ })
+    return () => { cancelled = true }
   }, [orgId])
 
   const handleSaveRulesConfig = async (configUpdate) => {
@@ -85,15 +106,38 @@ export function OrganizationDetail() {
             <span className="text-sm text-gray-500">{org.s3_bucket_name}</span>
           </div>
         </div>
-        <Link
-          to={`/organizations/${orgId}/staff-performance`}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-          </svg>
-          Staff Performance
-        </Link>
+        <div className="flex flex-col items-end gap-2">
+          <Link
+            to={`/organizations/${orgId}/staff-performance`}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+            </svg>
+            Staff Performance
+          </Link>
+          {latestRunId ? (
+            <Link
+              to={`/organizations/${orgId}/validation-runs/${latestRunId}`}
+              className="flex items-center gap-2 px-4 py-2 bg-white border border-blue-600 text-blue-600 rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              Today's Validation
+            </Link>
+          ) : (
+            <span
+              className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-400 rounded-lg text-sm font-medium cursor-not-allowed"
+              title="No validation runs yet"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              Today's Validation
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Tabs */}
