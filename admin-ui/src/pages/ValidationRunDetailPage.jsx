@@ -71,9 +71,10 @@ export function ValidationRunDetailPage() {
         // Sum up rate for documents with failures
         const rate = parseFloat(doc.field_values?.rate) || 0
         revenueAtRisk += rate
+      } else {
+        // No failures — confirmed. Skips are acceptable and still count here.
+        confirmed++
       }
-      else if (doc.summary?.skipped > 0) opportunities++
-      else confirmed++
     })
 
     return { needsAction, opportunities, confirmed, revenueAtRisk }
@@ -135,8 +136,8 @@ export function ValidationRunDetailPage() {
       // Status filter
       if (statusFilter !== 'all') {
         if (statusFilter === 'needs_action' && !(doc.summary?.failed > 0)) return false
-        if (statusFilter === 'opportunities' && !(doc.summary?.skipped > 0 && doc.summary?.failed === 0)) return false
-        if (statusFilter === 'confirmed' && !(doc.summary?.failed === 0 && doc.summary?.skipped === 0)) return false
+        // Confirmed = no failures (skips are fine).
+        if (statusFilter === 'confirmed' && !(doc.summary?.failed === 0)) return false
       }
 
       // Program filter
