@@ -28,7 +28,7 @@ export function ValidationRunDetailPage() {
   const [selectedDoc, setSelectedDoc] = useState(null)
   const [selectedRule, setSelectedRule] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
-  const [statusFilter, setStatusFilter] = useState('all')
+  const [ruleFilter, setRuleFilter] = useState('all')
   const [programFilter, setProgramFilter] = useState('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [dateFilter, setDateFilter] = useState('all')
@@ -80,12 +80,13 @@ export function ValidationRunDetailPage() {
     return { needsAction, opportunities, confirmed, revenueAtRisk }
   }, [data])
 
-  // Get unique programs and categories for filters
-  const { programs, categories } = useMemo(() => {
-    if (!data?.documents) return { programs: [], categories: [] }
+  // Get unique programs, categories, and rules for filters
+  const { programs, categories, rules } = useMemo(() => {
+    if (!data?.documents) return { programs: [], categories: [], rules: [] }
 
     const programSet = new Set()
     const categorySet = new Set()
+    const ruleSet = new Set()
 
     data.documents.forEach(doc => {
       const program = doc.field_values?.program
@@ -93,12 +94,15 @@ export function ValidationRunDetailPage() {
 
       doc.rules?.forEach(rule => {
         if (rule.category) categorySet.add(rule.category)
+        const name = rule.rule_name || rule.rule_id
+        if (name) ruleSet.add(name)
       })
     })
 
     return {
       programs: Array.from(programSet).sort(),
-      categories: Array.from(categorySet).sort()
+      categories: Array.from(categorySet).sort(),
+      rules: Array.from(ruleSet).sort(),
     }
   }, [data])
 
@@ -133,11 +137,10 @@ export function ValidationRunDetailPage() {
         if (!matchesId && !matchesEmployee && !matchesProgram) return false
       }
 
-      // Status filter
-      if (statusFilter !== 'all') {
-        if (statusFilter === 'needs_action' && !(doc.summary?.failed > 0)) return false
-        // Confirmed = no failures (skips are fine).
-        if (statusFilter === 'confirmed' && !(doc.summary?.failed === 0)) return false
+      // Rule filter (document has at least one rule matching the selected rule name/id)
+      if (ruleFilter !== 'all') {
+        const hasRule = doc.rules?.some(r => (r.rule_name || r.rule_id) === ruleFilter)
+        if (!hasRule) return false
       }
 
       // Program filter
@@ -165,7 +168,7 @@ export function ValidationRunDetailPage() {
 
       return true
     })
-  }, [data, searchTerm, statusFilter, programFilter, categoryFilter, dateFilter, customStartDate, customEndDate])
+  }, [data, searchTerm, ruleFilter, programFilter, categoryFilter, dateFilter, customStartDate, customEndDate])
 
   if (loading) return <OrgWorkspaceLayout><div className="flex items-center justify-center h-64"><p className="text-gray-500">Loading validation run...</p></div></OrgWorkspaceLayout>
   if (error) return <OrgWorkspaceLayout><div className="p-4"><p className="text-red-600">Error: {error}</p></div></OrgWorkspaceLayout>
@@ -180,15 +183,13 @@ export function ValidationRunDetailPage() {
           label="NEEDS ACTION"
           value={stats.needsAction}
           color="red"
-          active={statusFilter === 'needs_action'}
-          onClick={() => setStatusFilter(statusFilter === 'needs_action' ? 'all' : 'needs_action')}
+          onClick={() => {}}
         />
         <SummaryCard
           label="CONFIRMED"
           value={stats.confirmed}
           color="green"
-          active={statusFilter === 'confirmed'}
-          onClick={() => setStatusFilter(statusFilter === 'confirmed' ? 'all' : 'confirmed')}
+          onClick={() => {}}
         />
         <SummaryCard
           label="REVENUE AT RISK"
@@ -215,13 +216,12 @@ export function ValidationRunDetailPage() {
         </div>
 
         <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          value={ruleFilter}
+          onChange={(e) => setRuleFilter(e.target.value)}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 max-w-[240px] truncate"
         >
-          <option value="all">All Statuses</option>
-          <option value="needs_action">Needs Action</option>
-          <option value="confirmed">Confirmed</option>
+          <option value="all">All Rules</option>
+          {rules.map(r => <option key={r} value={r}>{r}</option>)}
         </select>
 
         <select
