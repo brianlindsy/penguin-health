@@ -256,8 +256,12 @@ export function StaffPerformancePage() {
 
 
 function ProgramSummaryView({ staffPerformance, onSelectStaff, onSelectProgram }) {
+  // 'staff' = card lists staff ranked by errors; 'rules' = card lists recurring rule failures ranked by frequency.
+  const [viewMode, setViewMode] = useState('staff')
+
   // Group staff by program, sort each list by errors desc (tie-break by name),
-  // and sort programs by total errors desc (most problematic first).
+  // and sort programs by total errors desc (most problematic first). Also roll
+  // up each program's rule failures across all its staff.
   const programs = useMemo(() => {
     const map = new Map()
     staffPerformance.forEach(s => {
@@ -270,7 +274,20 @@ function ProgramSummaryView({ staffPerformance, onSelectStaff, onSelectProgram }
         (b.errorCount ?? 0) - (a.errorCount ?? 0) || a.name.localeCompare(b.name)
       )
       const totalErrors = sorted.reduce((sum, s) => sum + (s.errorCount ?? 0), 0)
-      return { program, staff: sorted, totalErrors }
+
+      // Aggregate rule_name -> failure count across everyone in this program.
+      const ruleCounts = new Map()
+      sorted.forEach(s => {
+        s.ruleFailures?.forEach((count, ruleName) => {
+          if (!ruleName) return
+          ruleCounts.set(ruleName, (ruleCounts.get(ruleName) || 0) + count)
+        })
+      })
+      const ruleFailures = Array.from(ruleCounts.entries())
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+
+      return { program, staff: sorted, totalErrors, ruleFailures }
     })
     entries.sort((a, b) => b.totalErrors - a.totalErrors || a.program.localeCompare(b.program))
     return entries
@@ -286,11 +303,33 @@ function ProgramSummaryView({ staffPerformance, onSelectStaff, onSelectProgram }
 
   return (
     <div className="flex flex-col">
-      <div className="mb-4">
-        <h1 className="text-2xl font-semibold text-gray-900">Program Summary</h1>
-        <p className="text-sm text-gray-500">
-          Staff ranked by errors within each program. Click a name to open the risk profile.
-        </p>
+      <div className="mb-4 flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">Program Summary</h1>
+          <p className="text-sm text-gray-500">
+            {viewMode === 'staff'
+              ? 'Staff ranked by errors within each program. Click a name to open the risk profile.'
+              : 'Rule failures ranked by frequency within each program.'}
+          </p>
+        </div>
+        <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+          {[
+            { value: 'staff', label: 'By Staff' },
+            { value: 'rules', label: 'By Rule' },
+          ].map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => setViewMode(opt.value)}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                viewMode === opt.value
+                  ? 'bg-blue-600 text-white'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/*
@@ -305,6 +344,8 @@ function ProgramSummaryView({ staffPerformance, onSelectStaff, onSelectProgram }
             program={p.program}
             staff={p.staff}
             totalErrors={p.totalErrors}
+            ruleFailures={p.ruleFailures}
+            viewMode={viewMode}
             onSelectStaff={onSelectStaff}
             onSelectProgram={onSelectProgram}
           />
@@ -315,7 +356,15 @@ function ProgramSummaryView({ staffPerformance, onSelectStaff, onSelectProgram }
 }
 
 
-function ProgramSummaryCard({ program, staff, totalErrors, onSelectStaff, onSelectProgram }) {
+function ProgramSummaryCard({
+  program,
+  staff,
+  totalErrors,
+  ruleFailures,
+  viewMode,
+  onSelectStaff,
+  onSelectProgram,
+}) {
   return (
     <div className="bg-gray-50 rounded-xl border border-gray-200 shadow-md hover:shadow-lg transition-shadow p-6 flex flex-col">
       <div className="mb-3 pb-3 border-b border-gray-200">
@@ -332,18 +381,36 @@ function ProgramSummaryCard({ program, staff, totalErrors, onSelectStaff, onSele
       </div>
       {/* Fixed height for ~5 rows (each row ≈ 32px) before scrolling kicks in */}
       <div className="overflow-y-auto max-h-40 -mx-2">
-        {staff.map(s => (
-          <button
-            key={s.name}
-            onClick={() => onSelectStaff(s)}
-            className="w-full flex items-center justify-between px-2 py-1.5 rounded text-sm hover:bg-white transition-colors"
-          >
-            <span className="text-gray-900 truncate">{s.name}</span>
-            <span className="text-xs text-gray-500 tabular-nums flex-shrink-0 ml-2">
-              {s.errorCount ?? 0}
-            </span>
-          </button>
-        ))}
+        {viewMode === 'rules' ? (
+          ruleFailures.length === 0 ? (
+            <p className="px-2 py-1.5 text-sm text-gray-400">No rule failures.</p>
+          ) : (
+            ruleFailures.map(rule => (
+              <div
+                key={rule.name}
+                className="w-full flex items-center justify-between px-2 py-1.5 text-sm"
+              >
+                <span className="text-gray-900 truncate" title={rule.name}>{rule.name}</span>
+                <span className="text-xs text-gray-500 tabular-nums flex-shrink-0 ml-2">
+                  {rule.count}
+                </span>
+              </div>
+            ))
+          )
+        ) : (
+          staff.map(s => (
+            <button
+              key={s.name}
+              onClick={() => onSelectStaff(s)}
+              className="w-full flex items-center justify-between px-2 py-1.5 rounded text-sm hover:bg-white transition-colors"
+            >
+              <span className="text-gray-900 truncate">{s.name}</span>
+              <span className="text-xs text-gray-500 tabular-nums flex-shrink-0 ml-2">
+                {s.errorCount ?? 0}
+              </span>
+            </button>
+          ))
+        )}
       </div>
     </div>
   )
