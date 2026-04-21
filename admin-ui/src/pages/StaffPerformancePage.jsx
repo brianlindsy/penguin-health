@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { api } from '../api/client.js'
+import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
 
 // Generate link to Credible BH for a document ID
 const getCredibleLink = (documentId) =>
@@ -193,17 +194,20 @@ export function StaffPerformancePage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <p className="text-gray-500">Loading staff performance data...</p>
-      </div>
+      <OrgWorkspaceLayout>
+        <div className="flex items-center justify-center h-64">
+          <p className="text-gray-500">Loading staff performance data...</p>
+        </div>
+      </OrgWorkspaceLayout>
     )
   }
 
   if (error) {
-    return <div className="p-4"><p className="text-red-600">Error: {error}</p></div>
+    return <OrgWorkspaceLayout><div className="p-4"><p className="text-red-600">Error: {error}</p></div></OrgWorkspaceLayout>
   }
 
   return (
+    <OrgWorkspaceLayout>
     <div className="flex gap-6">
       {/* Left Panel - Staff Standings */}
       <div className="w-96 flex flex-col bg-white rounded-lg shadow sticky top-4 self-start max-h-[calc(100vh-100px)]">
@@ -291,6 +295,7 @@ export function StaffPerformancePage() {
         )}
       </div>
     </div>
+    </OrgWorkspaceLayout>
   )
 }
 

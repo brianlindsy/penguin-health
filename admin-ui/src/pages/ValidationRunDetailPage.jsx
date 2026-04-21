@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { api } from '../api/client.js'
+import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
 
 // Field display labels for different organizations
 const FIELD_LABELS = {
@@ -131,11 +132,12 @@ export function ValidationRunDetailPage() {
     })
   }, [data, searchTerm, statusFilter, programFilter, categoryFilter])
 
-  if (loading) return <div className="flex items-center justify-center h-64"><p className="text-gray-500">Loading validation run...</p></div>
-  if (error) return <div className="p-4"><p className="text-red-600">Error: {error}</p></div>
-  if (!data) return <div className="p-4"><p className="text-gray-500">Validation run not found</p></div>
+  if (loading) return <OrgWorkspaceLayout><div className="flex items-center justify-center h-64"><p className="text-gray-500">Loading validation run...</p></div></OrgWorkspaceLayout>
+  if (error) return <OrgWorkspaceLayout><div className="p-4"><p className="text-red-600">Error: {error}</p></div></OrgWorkspaceLayout>
+  if (!data) return <OrgWorkspaceLayout><div className="p-4"><p className="text-gray-500">Validation run not found</p></div></OrgWorkspaceLayout>
 
   return (
+    <OrgWorkspaceLayout>
     <div className="h-full flex flex-col">
       {/* Summary Cards */}
       <div className="grid grid-cols-3 gap-4 mb-6">
@@ -250,6 +252,7 @@ export function ValidationRunDetailPage() {
         </div>
       </div>
     </div>
+    </OrgWorkspaceLayout>
   )
 }
 
