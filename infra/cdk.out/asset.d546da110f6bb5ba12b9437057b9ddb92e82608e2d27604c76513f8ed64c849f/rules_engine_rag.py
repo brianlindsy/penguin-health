@@ -12,7 +12,6 @@ This module is the Lambda entry point. Core functionality is split into:
 """
 
 import json
-import os
 from datetime import datetime
 
 import boto3
@@ -28,25 +27,6 @@ from results_handler import (
 )
 
 s3_client = boto3.client('s3')
-lambda_client = boto3.client('lambda')
-
-
-def invoke_continuation(org_id, validation_run_id):
-    """Invoke self to continue processing remaining files."""
-    function_name = os.environ.get('AWS_LAMBDA_FUNCTION_NAME')
-
-    payload = {
-        'organization_id': org_id,
-        'validation_run_id': validation_run_id,
-        'is_continuation': True,
-    }
-
-    lambda_client.invoke(
-        FunctionName=function_name,
-        InvocationType='Event',  # Async - don't wait
-        Payload=json.dumps(payload),
-    )
-    print(f"Invoked continuation Lambda for run {validation_run_id}")
 
 
 def lambda_handler(event, context):
@@ -69,12 +49,7 @@ def lambda_handler(event, context):
     # Use provided validation_run_id or generate a new one
     # This ensures retries use the same run ID for consistent reporting
     validation_run_id = event.get('validation_run_id') or datetime.utcnow().strftime('%Y%m%d-%H%M%S')
-    is_continuation = event.get('is_continuation', False)
-
-    if is_continuation:
-        print(f"Continuing validation run: {validation_run_id}")
-    else:
-        print(f"Starting validation run: {validation_run_id}")
+    print(f"Starting validation run: {validation_run_id}")
 
     try:
         # Process files from multiple source folders
@@ -115,19 +90,6 @@ def lambda_handler(event, context):
                     print(f"DEBUG: SKIPPED key (is_csv={is_csv}, is_json={is_json}, has_raw={has_raw}): {key[-20:]}")  # Last 20 chars only
 
                 if is_eligible:
-                    # Check remaining time before processing (leave 2 min buffer)
-                    remaining_ms = context.get_remaining_time_in_millis()
-                    if remaining_ms < 120_000:
-                        print(f"Timeout approaching ({remaining_ms}ms remaining). Invoking continuation...")
-                        invoke_continuation(org_id, validation_run_id)
-                        return {
-                            'statusCode': 200,
-                            'body': json.dumps({
-                                'status': 'continuing',
-                                'validation_run_id': validation_run_id
-                            })
-                        }
-
                     eligible_count += 1
                     files_found = True
                     process_file(env_config['BUCKET_NAME'], key, config, org_id, env_config, validation_run_id)
@@ -167,25 +129,7 @@ def lambda_handler(event, context):
 def process_file(bucket, key, config, org_id, env_config, validation_run_id):
     """Process a single JSON or CSV file from S3."""
     try:
-        # Move file to processing folder FIRST to prevent duplicate processing
-        # if a continuation Lambda is invoked while we're still validating
-        if key.startswith('csv-staging/'):
-            processing_key = key.replace('csv-staging/', 'processing/csv/')
-            archive_key = key.replace('csv-staging/', 'archived/csv/')
-        else:
-            processing_key = key.replace(env_config['TEXTRACT_PROCESSED'], 'processing/validation/')
-            archive_key = key.replace(env_config['TEXTRACT_PROCESSED'], 'archived/validation/')
-
-        s3_client.copy_object(
-            Bucket=bucket,
-            CopySource={'Bucket': bucket, 'Key': key},
-            Key=processing_key
-        )
-        s3_client.delete_object(Bucket=bucket, Key=key)
-        print(f"Moved {key} to processing: {processing_key}")
-
-        # Now read from processing location
-        response = s3_client.get_object(Bucket=bucket, Key=processing_key)
+        response = s3_client.get_object(Bucket=bucket, Key=key)
         content = response['Body'].read().decode('utf-8')
 
         if key.endswith('.csv'):
@@ -205,14 +149,20 @@ def process_file(bucket, key, config, org_id, env_config, validation_run_id):
 
         print(f"Validated {key} (document_id={doc_id}): {results['summary']}")
 
-        # Move from processing to final archive
+        # Archive the processed file to prevent reprocessing
+        # Handle files from different source folders
+        if key.startswith('csv-staging/'):
+            archive_key = key.replace('csv-staging/', 'archived/csv/')
+        else:
+            archive_key = key.replace(env_config['TEXTRACT_PROCESSED'], 'archived/validation/')
+
         s3_client.copy_object(
             Bucket=bucket,
-            CopySource={'Bucket': bucket, 'Key': processing_key},
+            CopySource={'Bucket': bucket, 'Key': key},
             Key=archive_key
         )
-        s3_client.delete_object(Bucket=bucket, Key=processing_key)
-        print(f"Archived to {archive_key}")
+        s3_client.delete_object(Bucket=bucket, Key=key)
+        print(f"Archived {key} to {archive_key}")
 
     except Exception as e:
         print(f"Error processing {key}: {str(e)}")
