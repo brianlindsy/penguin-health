@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
+import { api } from '../api/client.js'
 
 // Shared left-nav "bumper" for org-scoped workspace pages. Sections + items
 // mirror the product mockup (Dashboard, Audit Rules, Analytics & Insights,
@@ -10,6 +12,35 @@ export function OrgWorkspaceLayout({ children }) {
   const location = useLocation()
   const pathname = location.pathname
   const tab = new URLSearchParams(location.search).get('tab')
+
+  // Fetch the most recent validation run so the "Today's Validation" shortcut
+  // can deep-link straight to its detail page. Runs are ordered by timestamp
+  // (desc); if the list is empty the shortcut renders as disabled.
+  const [latestRunId, setLatestRunId] = useState(null)
+
+  useEffect(() => {
+    if (!orgId) return
+    let cancelled = false
+    api.listValidationRuns(orgId)
+      .then(data => {
+        if (cancelled) return
+        const runs = (Array.isArray(data) ? data : data?.runs) || []
+        if (runs.length === 0) return
+        const sorted = [...runs].sort((a, b) => {
+          const at = a.timestamp ? new Date(a.timestamp).getTime() : 0
+          const bt = b.timestamp ? new Date(b.timestamp).getTime() : 0
+          return bt - at
+        })
+        setLatestRunId(sorted[0].validation_run_id)
+      })
+      .catch(() => { /* silent — nav just stays disabled */ })
+    return () => { cancelled = true }
+  }, [orgId])
+
+  const latestRunPath = latestRunId
+    ? `/organizations/${orgId}/validation-runs/${latestRunId}`
+    : null
+  const onLatestRun = !!latestRunPath && pathname === latestRunPath
 
   const sections = [
     {
@@ -43,9 +74,13 @@ export function OrgWorkspaceLayout({ children }) {
           label: 'Validation Results',
           to: `/organizations/${orgId}?tab=validation`,
           icon: DocumentIcon,
+          // Avoid double-highlighting when we're already on the latest run —
+          // that case lights up "Today's Validation" instead.
           active:
-            pathname.startsWith(`/organizations/${orgId}/validation-runs`) ||
-            (pathname === `/organizations/${orgId}` && tab === 'validation'),
+            !onLatestRun && (
+              pathname.startsWith(`/organizations/${orgId}/validation-runs`) ||
+              (pathname === `/organizations/${orgId}` && tab === 'validation')
+            ),
         },
         {
           key: 'staff-performance',
@@ -53,6 +88,15 @@ export function OrgWorkspaceLayout({ children }) {
           to: `/organizations/${orgId}/staff-performance`,
           icon: UsersIcon,
           active: pathname === `/organizations/${orgId}/staff-performance`,
+        },
+        {
+          key: 'todays-validation',
+          label: "Today's Validation",
+          to: latestRunPath,
+          icon: BoltIcon,
+          active: onLatestRun,
+          disabled: !latestRunPath,
+          disabledTitle: 'No validation runs yet',
         },
       ],
     },
@@ -101,7 +145,7 @@ function NavItem({ item }) {
     return (
       <div
         className={`${base} text-gray-400 cursor-not-allowed`}
-        title="Coming soon"
+        title={item.disabledTitle || 'Coming soon'}
       >
         <Icon className="w-4 h-4 flex-shrink-0" />
         <span className="truncate">{item.label}</span>
@@ -152,6 +196,14 @@ function DocumentIcon({ className }) {
   return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+    </svg>
+  )
+}
+
+function BoltIcon({ className }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
     </svg>
   )
 }
