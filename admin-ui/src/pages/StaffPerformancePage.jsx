@@ -293,7 +293,12 @@ function ProgramSummaryView({ staffPerformance, onSelectStaff, onSelectProgram }
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-5">
+      {/*
+        auto-fit + minmax makes the grid responsive: with few programs the cards
+        stretch to fill the row; with many, they wrap at the min width. Bump
+        the floor (420px) to keep each card visibly "wide".
+      */}
+      <div className="grid gap-5 grid-cols-[repeat(auto-fit,minmax(420px,1fr))]">
         {programs.map(p => (
           <ProgramSummaryCard
             key={p.program}

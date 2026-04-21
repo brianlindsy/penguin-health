@@ -14,7 +14,7 @@ export function Layout() {
   return (
     <div className="min-h-screen bg-gray-50">
       <nav className="bg-white border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-14 items-center">
             <div className="flex items-center gap-6">
               <Link to="/" className="text-lg font-semibold text-gray-900">
@@ -37,7 +37,7 @@ export function Layout() {
 
       {/* Breadcrumb */}
       {location.pathname !== '/' && (
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center text-sm">
+        <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center text-sm">
           <Link to="/" className="text-blue-600 hover:text-blue-800">
             Organizations
           </Link>
@@ -72,7 +72,7 @@ export function Layout() {
         </div>
       )}
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         <Outlet />
       </main>
     </div>
