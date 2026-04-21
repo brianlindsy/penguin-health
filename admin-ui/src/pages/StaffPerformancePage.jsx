@@ -429,11 +429,36 @@ function ProgramSummaryView({
                 : 'Rule failures ranked by frequency within each program.'}
             </p>
           </div>
-          <div className="flex items-center gap-3 flex-wrap">
+          <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+            {[
+              { value: 'staff', label: 'By Staff' },
+              { value: 'rules', label: 'By Rule' },
+            ].map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => setViewMode(opt.value)}
+                className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                  viewMode === opt.value
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Filters row: compact date select + category pills share one line */}
+        <div className="mt-3 flex items-center gap-3 flex-wrap">
+          <div className="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded-full pl-2 pr-1 py-0.5 shadow-sm">
+            <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
             <select
               value={periodFilter}
               onChange={(e) => onPeriodChange(e.target.value)}
-              className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="text-xs font-medium text-gray-700 bg-transparent border-0 focus:outline-none focus:ring-0 pr-1 py-0.5 cursor-pointer"
             >
               <option value="all">All time</option>
               <option value="24h">Last 24 hours</option>
@@ -442,25 +467,38 @@ function ProgramSummaryView({
               <option value="90d">Last 90 days</option>
               <option value="custom">Custom range</option>
             </select>
-            <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
-              {[
-                { value: 'staff', label: 'By Staff' },
-                { value: 'rules', label: 'By Rule' },
-              ].map(opt => (
-                <button
-                  key={opt.value}
-                  onClick={() => setViewMode(opt.value)}
-                  className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                    viewMode === opt.value
-                      ? 'bg-blue-600 text-white'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
           </div>
+
+          {availableCategories.length > 0 && (
+            <>
+              <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Category</span>
+              {availableCategories.map(cat => {
+                const active = categoryFilter.has(cat)
+                return (
+                  <button
+                    key={cat}
+                    onClick={() => toggleCategory(cat)}
+                    aria-pressed={active}
+                    className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                      active
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                )
+              })}
+              {categoryFilter.size > 0 && (
+                <button
+                  onClick={() => setCategoryFilter(new Set())}
+                  className="text-xs text-blue-600 hover:text-blue-800"
+                >
+                  Clear
+                </button>
+              )}
+            </>
+          )}
         </div>
 
         {periodFilter === 'custom' && (
@@ -471,7 +509,7 @@ function ProgramSummaryView({
                 type="date"
                 value={customStartDate}
                 onChange={(e) => onCustomStartChange(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
             <div className="flex flex-col">
@@ -480,7 +518,7 @@ function ProgramSummaryView({
                 type="date"
                 value={customEndDate}
                 onChange={(e) => onCustomEndChange(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
             <button
@@ -489,37 +527,6 @@ function ProgramSummaryView({
             >
               Clear
             </button>
-          </div>
-        )}
-
-        {availableCategories.length > 0 && (
-          <div className="mt-3 flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Category</span>
-            {availableCategories.map(cat => {
-              const active = categoryFilter.has(cat)
-              return (
-                <button
-                  key={cat}
-                  onClick={() => toggleCategory(cat)}
-                  aria-pressed={active}
-                  className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                    active
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  {cat}
-                </button>
-              )
-            })}
-            {categoryFilter.size > 0 && (
-              <button
-                onClick={() => setCategoryFilter(new Set())}
-                className="text-xs text-blue-600 hover:text-blue-800 ml-1"
-              >
-                Clear
-              </button>
-            )}
           </div>
         )}
       </div>
