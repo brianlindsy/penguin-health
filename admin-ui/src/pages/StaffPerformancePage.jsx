@@ -80,6 +80,7 @@ export function StaffPerformancePage() {
             skippedRules: 0,
             documents: [],
             failedDocuments: [],
+            passedDocumentCount: 0,
             ruleFailures: new Map(), // Track which rules fail most often
           })
         }
@@ -91,7 +92,9 @@ export function StaffPerformancePage() {
         staff.skippedRules += doc.summary?.skipped || 0
         staff.documents.push(doc)
 
-        if (doc.summary?.failed > 0) {
+        const failedCount = doc.summary?.failed || 0
+        const passedCount = doc.summary?.passed || 0
+        if (failedCount > 0) {
           staff.failedDocuments.push(doc)
           // Track rule failures
           doc.rules?.forEach(rule => {
@@ -100,25 +103,40 @@ export function StaffPerformancePage() {
               staff.ruleFailures.set(rule.rule_name, count + 1)
             }
           })
+        } else if (passedCount > 0) {
+          // Note counts as audited + passed only if it has at least one passing
+          // rule and no failures (all-skip notes don't count as audited).
+          staff.passedDocumentCount += 1
         }
       })
     })
 
-    // Convert to array and calculate pass rates
+    // Convert to array and calculate pass rates based on audited notes.
     return Array.from(staffMap.values())
-      .map(staff => ({
-        ...staff,
-        passRate: staff.totalRules > 0
-          ? Math.round((staff.passedRules / staff.totalRules) * 100)
-          : 0,
-        errorCount: staff.failedRules,
-        // Get top recurring failures
-        recurringFailures: Array.from(staff.ruleFailures.entries())
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 5)
-          .map(([name, count]) => ({ name, count })),
-      }))
-      .sort((a, b) => a.passRate - b.passRate) // Sort by pass rate ascending (worst first)
+      .map(staff => {
+        const auditedDocs = staff.passedDocumentCount + staff.failedDocuments.length
+        return {
+          ...staff,
+          auditedDocumentCount: auditedDocs,
+          // null means: no audited notes (all skips / unaudited) — render as "-"
+          passRate: auditedDocs > 0
+            ? Math.round((staff.passedDocumentCount / auditedDocs) * 100)
+            : null,
+          errorCount: staff.failedRules,
+          // Get top recurring failures
+          recurringFailures: Array.from(staff.ruleFailures.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([name, count]) => ({ name, count })),
+        }
+      })
+      // Sort worst first; push unaudited staff (null passRate) to the end.
+      .sort((a, b) => {
+        if (a.passRate == null && b.passRate == null) return 0
+        if (a.passRate == null) return 1
+        if (b.passRate == null) return -1
+        return a.passRate - b.passRate
+      })
   }, [data, periodFilter, customStartDate, customEndDate])
 
   // Filter staff by search
@@ -303,13 +321,15 @@ function FilterBar({
 
 function StaffListItem({ staff, selected, onClick }) {
   const getPassRateColor = (rate) => {
-    if (rate >= 90) return 'bg-green-500'
+    if (rate == null) return 'bg-gray-300'
+    if (rate === 100) return 'bg-green-500'
     if (rate >= 75) return 'bg-yellow-500'
     return 'bg-red-500'
   }
 
   const getPassRateBadgeStyle = (rate) => {
-    if (rate >= 90) return 'bg-green-100 text-green-800'
+    if (rate == null) return 'bg-gray-100 text-gray-600'
+    if (rate === 100) return 'bg-green-100 text-green-800'
     if (rate >= 75) return 'bg-yellow-100 text-yellow-800'
     return 'bg-red-100 text-red-800'
   }
@@ -336,7 +356,7 @@ function StaffListItem({ staff, selected, onClick }) {
           <div className="text-xs text-red-600 uppercase">{staff.program}</div>
         </div>
         <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${getPassRateBadgeStyle(staff.passRate)}`}>
-          {staff.passRate}% Pass
+          {staff.passRate == null ? '-' : `${staff.passRate}%`} Pass
         </span>
       </div>
 
@@ -344,7 +364,7 @@ function StaffListItem({ staff, selected, onClick }) {
       <div className="w-full h-1.5 bg-gray-200 rounded-full mt-2 mb-2">
         <div
           className={`h-1.5 rounded-full ${getPassRateColor(staff.passRate)}`}
-          style={{ width: `${staff.passRate}%` }}
+          style={{ width: `${staff.passRate ?? 0}%` }}
         />
       </div>
 
@@ -388,7 +408,7 @@ function StaffDetailPanel({ staff, filterBar }) {
         </div>
         <div className="bg-white rounded-lg border border-gray-200 p-4 text-center">
           <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Avg. Audit Score</div>
-          <div className="text-3xl font-bold text-gray-900">{avgAuditScore}%</div>
+          <div className="text-3xl font-bold text-gray-900">{avgAuditScore == null ? '-' : `${avgAuditScore}%`}</div>
         </div>
         <div className="bg-white rounded-lg border border-gray-200 p-4 text-center">
           <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Primary Risk</div>
