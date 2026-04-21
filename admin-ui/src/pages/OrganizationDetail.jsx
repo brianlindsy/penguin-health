@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { StatusBadge } from '../components/StatusBadge.jsx'
@@ -277,6 +277,9 @@ function ValidationResultsTab({ orgId }) {
   const [error, setError] = useState('')
   const [triggering, setTriggering] = useState(false)
   const [triggerMsg, setTriggerMsg] = useState('')
+  const [periodFilter, setPeriodFilter] = useState('all')
+  const [customStartDate, setCustomStartDate] = useState('')
+  const [customEndDate, setCustomEndDate] = useState('')
 
   const loadRuns = () => {
     setLoading(true)
@@ -308,6 +311,31 @@ function ValidationResultsTab({ orgId }) {
     }
   }
 
+  // A run's "date that it took place" = its `timestamp` from listValidationRuns.
+  const filteredRuns = useMemo(() => {
+    const dayMs = 24 * 60 * 60 * 1000
+    const now = Date.now()
+    let startCutoff = null
+    let endCutoff = null
+    if (periodFilter === '24h') startCutoff = now - dayMs
+    else if (periodFilter === '7d') startCutoff = now - 7 * dayMs
+    else if (periodFilter === '30d') startCutoff = now - 30 * dayMs
+    else if (periodFilter === '90d') startCutoff = now - 90 * dayMs
+    else if (periodFilter === 'custom') {
+      if (customStartDate) startCutoff = new Date(customStartDate).getTime()
+      // End cutoff is exclusive — include the full end day.
+      if (customEndDate) endCutoff = new Date(customEndDate).getTime() + dayMs
+    }
+    if (startCutoff == null && endCutoff == null) return runs
+    return runs.filter(r => {
+      if (!r.timestamp) return true
+      const t = new Date(r.timestamp).getTime()
+      if (startCutoff != null && t < startCutoff) return false
+      if (endCutoff != null && t >= endCutoff) return false
+      return true
+    })
+  }, [runs, periodFilter, customStartDate, customEndDate])
+
   if (loading) return <p className="text-gray-500">Loading validation runs...</p>
   if (error) return <p className="text-red-600">Error: {error}</p>
 
@@ -315,7 +343,7 @@ function ValidationResultsTab({ orgId }) {
     <div>
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-lg font-medium text-gray-900">
-          Validation Runs ({runs.length})
+          Validation Runs ({filteredRuns.length}{filteredRuns.length !== runs.length ? ` of ${runs.length}` : ''})
         </h2>
         <div className="flex items-center gap-3">
           {triggerMsg && (
@@ -343,8 +371,63 @@ function ValidationResultsTab({ orgId }) {
         </div>
       </div>
 
+      {/* Date filter */}
+      <div className="bg-white rounded-lg border border-gray-200 p-3 mb-4 flex flex-wrap items-end gap-3">
+        <div className="flex flex-col">
+          <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Date</label>
+          <select
+            value={periodFilter}
+            onChange={(e) => setPeriodFilter(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">All time</option>
+            <option value="24h">Last 24 hours</option>
+            <option value="7d">Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+            <option value="90d">Last 90 days</option>
+            <option value="custom">Custom range</option>
+          </select>
+        </div>
+        {periodFilter === 'custom' && (
+          <>
+            <div className="flex flex-col">
+              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">From</label>
+              <input
+                type="date"
+                value={customStartDate}
+                onChange={(e) => setCustomStartDate(e.target.value)}
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div className="flex flex-col">
+              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">To</label>
+              <input
+                type="date"
+                value={customEndDate}
+                onChange={(e) => setCustomEndDate(e.target.value)}
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </>
+        )}
+        {periodFilter !== 'all' && (
+          <button
+            onClick={() => {
+              setPeriodFilter('all')
+              setCustomStartDate('')
+              setCustomEndDate('')
+            }}
+            className="text-sm text-blue-600 hover:text-blue-800 px-2 py-2"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
       {runs.length === 0 ? (
         <p className="text-gray-500">No validation runs found for this organization.</p>
+      ) : filteredRuns.length === 0 ? (
+        <p className="text-gray-500">No validation runs in the selected date range.</p>
       ) : (
         <div className="bg-white shadow rounded-lg overflow-hidden">
           <table className="min-w-full divide-y divide-gray-200">
@@ -360,7 +443,7 @@ function ValidationResultsTab({ orgId }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
-              {runs.map(run => (
+              {filteredRuns.map(run => (
                 <tr key={run.validation_run_id} className="hover:bg-gray-50">
                   <td className="px-4 py-3">
                     <Link

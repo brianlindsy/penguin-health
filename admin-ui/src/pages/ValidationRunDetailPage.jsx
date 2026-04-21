@@ -31,6 +31,9 @@ export function ValidationRunDetailPage() {
   const [statusFilter, setStatusFilter] = useState('all')
   const [programFilter, setProgramFilter] = useState('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
+  const [dateFilter, setDateFilter] = useState('all')
+  const [customStartDate, setCustomStartDate] = useState('')
+  const [customEndDate, setCustomEndDate] = useState('')
 
   useEffect(() => {
     api.getValidationRun(orgId, runId)
@@ -102,6 +105,23 @@ export function ValidationRunDetailPage() {
   const filteredDocs = useMemo(() => {
     if (!data?.documents) return []
 
+    // Resolve date-filter cutoffs once per memo run. A doc's date comes from
+    // field_values.date (service date, e.g. "04/20/2026"); when absent we
+    // fall back to the run-level timestamp so the doc still participates.
+    const dayMs = 24 * 60 * 60 * 1000
+    const now = Date.now()
+    let startCutoff = null
+    let endCutoff = null
+    if (dateFilter === '24h') startCutoff = now - dayMs
+    else if (dateFilter === '7d') startCutoff = now - 7 * dayMs
+    else if (dateFilter === '30d') startCutoff = now - 30 * dayMs
+    else if (dateFilter === '90d') startCutoff = now - 90 * dayMs
+    else if (dateFilter === 'custom') {
+      if (customStartDate) startCutoff = new Date(customStartDate).getTime()
+      if (customEndDate) endCutoff = new Date(customEndDate).getTime() + dayMs // end-inclusive
+    }
+    const runTimestampMs = data?.timestamp ? new Date(data.timestamp).getTime() : null
+
     return data.documents.filter(doc => {
       // Search filter
       if (searchTerm) {
@@ -128,9 +148,23 @@ export function ValidationRunDetailPage() {
         if (!hasCategory) return false
       }
 
+      // Date filter (uses the doc's service date; falls back to the run timestamp).
+      if (startCutoff != null || endCutoff != null) {
+        let t = null
+        const rawDate = doc.field_values?.date
+        if (rawDate) {
+          const parsed = new Date(rawDate).getTime()
+          if (!Number.isNaN(parsed)) t = parsed
+        }
+        if (t == null) t = runTimestampMs
+        if (t == null) return true // no date info — don't exclude
+        if (startCutoff != null && t < startCutoff) return false
+        if (endCutoff != null && t >= endCutoff) return false
+      }
+
       return true
     })
-  }, [data, searchTerm, statusFilter, programFilter, categoryFilter])
+  }, [data, searchTerm, statusFilter, programFilter, categoryFilter, dateFilter, customStartDate, customEndDate])
 
   if (loading) return <OrgWorkspaceLayout><div className="flex items-center justify-center h-64"><p className="text-gray-500">Loading validation run...</p></div></OrgWorkspaceLayout>
   if (error) return <OrgWorkspaceLayout><div className="p-4"><p className="text-red-600">Error: {error}</p></div></OrgWorkspaceLayout>
@@ -206,7 +240,49 @@ export function ValidationRunDetailPage() {
           <option value="all">All Categories</option>
           {categories.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
+
+        <select
+          value={dateFilter}
+          onChange={(e) => setDateFilter(e.target.value)}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="all">All Dates</option>
+          <option value="24h">Last 24 hours</option>
+          <option value="7d">Last 7 days</option>
+          <option value="30d">Last 30 days</option>
+          <option value="90d">Last 90 days</option>
+          <option value="custom">Custom range</option>
+        </select>
       </div>
+
+      {dateFilter === 'custom' && (
+        <div className="flex items-end gap-3 mb-4">
+          <div className="flex flex-col">
+            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">From</label>
+            <input
+              type="date"
+              value={customStartDate}
+              onChange={(e) => setCustomStartDate(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div className="flex flex-col">
+            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">To</label>
+            <input
+              type="date"
+              value={customEndDate}
+              onChange={(e) => setCustomEndDate(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <button
+            onClick={() => { setDateFilter('all'); setCustomStartDate(''); setCustomEndDate('') }}
+            className="text-sm text-blue-600 hover:text-blue-800 px-2 py-2"
+          >
+            Clear
+          </button>
+        </div>
+      )}
 
       {/* Split Panel */}
       <div className="flex-1 flex gap-4 min-h-0">
