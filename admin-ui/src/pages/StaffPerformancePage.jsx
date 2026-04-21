@@ -149,18 +149,19 @@ export function StaffPerformancePage() {
     )
   }, [staffPerformance, searchTerm])
 
-  // Auto-select first staff member, or refresh the selected staff's data when the filter changes
+  // Keep the selected staff's data in sync as filters change; drop the
+  // selection (falling back to the summary view) if they disappear.
   useEffect(() => {
-    if (filteredStaff.length === 0) return
-    if (!selectedStaff) {
-      setSelectedStaff(filteredStaff[0])
+    if (!selectedStaff) return
+    if (filteredStaff.length === 0) {
+      setSelectedStaff(null)
       return
     }
     const match = filteredStaff.find(s => s.name === selectedStaff.name)
     if (match && match !== selectedStaff) {
       setSelectedStaff(match)
     } else if (!match) {
-      setSelectedStaff(filteredStaff[0])
+      setSelectedStaff(null)
     }
   }, [filteredStaff, selectedStaff])
 
@@ -218,11 +219,12 @@ export function StaffPerformancePage() {
         </div>
       </div>
 
-      {/* Right Panel - Staff Detail */}
+      {/* Right Panel - Summary (default) or Staff Detail */}
       <div className="flex-1 flex flex-col">
         {selectedStaff ? (
           <StaffDetailPanel
             staff={selectedStaff}
+            onBack={() => setSelectedStaff(null)}
             filterBar={
               <FilterBar
                 periodFilter={periodFilter}
@@ -241,10 +243,96 @@ export function StaffPerformancePage() {
             }
           />
         ) : (
-          <div className="flex-1 flex items-center justify-center bg-white rounded-lg shadow">
-            <p className="text-gray-500">Select a staff member to view details</p>
-          </div>
+          <ProgramSummaryView
+            staffPerformance={staffPerformance}
+            onSelectStaff={setSelectedStaff}
+          />
         )}
+      </div>
+    </div>
+  )
+}
+
+
+function ProgramSummaryView({ staffPerformance, onSelectStaff }) {
+  // Group staff by program, sort each list by errors desc (tie-break by name),
+  // and sort programs by total errors desc (most problematic first).
+  const programs = useMemo(() => {
+    const map = new Map()
+    staffPerformance.forEach(s => {
+      const key = s.program || 'Unknown'
+      if (!map.has(key)) map.set(key, [])
+      map.get(key).push(s)
+    })
+    const entries = Array.from(map.entries()).map(([program, staff]) => {
+      const sorted = [...staff].sort((a, b) =>
+        (b.errorCount ?? 0) - (a.errorCount ?? 0) || a.name.localeCompare(b.name)
+      )
+      const totalErrors = sorted.reduce((sum, s) => sum + (s.errorCount ?? 0), 0)
+      return { program, staff: sorted, totalErrors }
+    })
+    entries.sort((a, b) => b.totalErrors - a.totalErrors || a.program.localeCompare(b.program))
+    return entries
+  }, [staffPerformance])
+
+  if (staffPerformance.length === 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-white rounded-lg shadow">
+        <p className="text-gray-500">No staff data available.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col">
+      <div className="mb-4">
+        <h1 className="text-2xl font-semibold text-gray-900">Program Summary</h1>
+        <p className="text-sm text-gray-500">
+          Staff ranked by errors within each program. Click a name to open the risk profile.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-5">
+        {programs.map(p => (
+          <ProgramSummaryCard
+            key={p.program}
+            program={p.program}
+            staff={p.staff}
+            totalErrors={p.totalErrors}
+            onSelectStaff={onSelectStaff}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+
+function ProgramSummaryCard({ program, staff, totalErrors, onSelectStaff }) {
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-md hover:shadow-lg transition-shadow p-5 flex flex-col">
+      <div className="mb-3 pb-3 border-b border-gray-100">
+        <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wide truncate" title={program}>
+          {program}
+        </h3>
+        <p className="text-xs text-gray-500 mt-0.5">
+          {staff.length} staff · {totalErrors} {totalErrors === 1 ? 'error' : 'errors'}
+        </p>
+      </div>
+      {/* Fixed height for ~5 rows (each row ≈ 32px) before scrolling kicks in */}
+      <div className="overflow-y-auto max-h-40 -mx-2">
+        {staff.map(s => (
+          <button
+            key={s.name}
+            onClick={() => onSelectStaff(s)}
+            className="w-full flex items-center justify-between px-2 py-1.5 rounded text-sm hover:bg-gray-50 transition-colors"
+          >
+            <span className="text-gray-900 truncate">{s.name}</span>
+            <span className="text-xs text-gray-500 tabular-nums flex-shrink-0 ml-2">
+              {s.errorCount ?? 0}
+            </span>
+          </button>
+        ))}
       </div>
     </div>
   )
@@ -377,7 +465,7 @@ function StaffListItem({ staff, selected, onClick }) {
 }
 
 
-function StaffDetailPanel({ staff, filterBar }) {
+function StaffDetailPanel({ staff, filterBar, onBack }) {
   const activeBlockers = staff.failedDocuments.length
   const avgAuditScore = staff.passRate
   const primaryRisk = staff.recurringFailures[0]?.name || 'None'
@@ -387,6 +475,17 @@ function StaffDetailPanel({ staff, filterBar }) {
       {/* Header */}
       <div className="flex items-start justify-between mb-6">
         <div>
+          {onBack && (
+            <button
+              onClick={onBack}
+              className="text-sm text-blue-600 hover:text-blue-800 mb-2 inline-flex items-center gap-1"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+              Back to program summary
+            </button>
+          )}
           <h1 className="text-2xl font-semibold text-gray-900">{staff.name}</h1>
           <p className="text-sm text-gray-500">
             Detailed Risk Profile - {staff.program} Team
