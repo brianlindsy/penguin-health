@@ -57,6 +57,9 @@ export function ValidationRunDetailPage() {
   const [statusFilter, setStatusFilter] = useState('all') // 'all' | 'needs_action' | 'awaiting_staff' | 'confirmed'
   const [confirmingRuleId, setConfirmingRuleId] = useState(null)
   const [resolvingRuleId, setResolvingRuleId] = useState(null)
+  const [markingIncorrectRuleId, setMarkingIncorrectRuleId] = useState(null)
+  const [incorrectFeedbackText, setIncorrectFeedbackText] = useState('')
+  const [submittingIncorrect, setSubmittingIncorrect] = useState(false)
   const [programFilter, setProgramFilter] = useState('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [dateFilter, setDateFilter] = useState('all')
@@ -555,6 +558,69 @@ export function ValidationRunDetailPage() {
                   setResolvingRuleId(null)
                 }
               }}
+              markingIncorrectRuleId={markingIncorrectRuleId}
+              setMarkingIncorrectRuleId={setMarkingIncorrectRuleId}
+              incorrectFeedbackText={incorrectFeedbackText}
+              setIncorrectFeedbackText={setIncorrectFeedbackText}
+              submittingIncorrect={submittingIncorrect}
+              onMarkIncorrect={async (ruleId, feedbackText) => {
+                setSubmittingIncorrect(true)
+                try {
+                  // Get the rule to pass rule_text for enhance-note
+                  const rule = selectedDoc.rules.find(r => r.rule_id === ruleId)
+
+                  // 1. Submit feedback via enhance-note
+                  await api.enhanceNote(
+                    orgId,
+                    feedbackText,
+                    rule?.rule_text || '',
+                    selectedDoc.document_id,
+                    runId,
+                    ruleId,
+                    rule?.notes || []
+                  )
+
+                  // 2. Mark as incorrect (sets feedback_given=true, status=PASS)
+                  await api.markIncorrect(orgId, runId, selectedDoc.document_id, ruleId)
+
+                  // 3. Update local state to reflect the change
+                  const timestamp = new Date().toISOString()
+                  setData(prev => ({
+                    ...prev,
+                    documents: prev.documents.map(d =>
+                      d.document_id === selectedDoc.document_id
+                        ? {
+                            ...d,
+                            rules: d.rules.map(r =>
+                              r.rule_id === ruleId
+                                ? { ...r, status: 'PASS', feedback_given: true, feedback_given_at: timestamp }
+                                : r
+                            )
+                          }
+                        : d
+                    )
+                  }))
+                  setSelectedDoc(prev => ({
+                    ...prev,
+                    rules: prev.rules.map(r =>
+                      r.rule_id === ruleId
+                        ? { ...r, status: 'PASS', feedback_given: true, feedback_given_at: timestamp }
+                        : r
+                    )
+                  }))
+                  if (selectedRule?.rule_id === ruleId) {
+                    setSelectedRule(prev => ({ ...prev, status: 'PASS', feedback_given: true, feedback_given_at: timestamp }))
+                  }
+
+                  // Reset UI state
+                  setMarkingIncorrectRuleId(null)
+                  setIncorrectFeedbackText('')
+                } catch (err) {
+                  setError(`Failed to submit feedback: ${err.message}`)
+                } finally {
+                  setSubmittingIncorrect(false)
+                }
+              }}
             />
           ) : (
             <div className="flex-1 flex items-center justify-center text-gray-500">
@@ -748,7 +814,7 @@ function DocumentListItem({ doc, selected, onClick }) {
 }
 
 
-function DocumentDetailPanel({ doc, selectedRule, onSelectRule, confirmingRuleId, onConfirmFinding, resolvingRuleId, onMarkResolved }) {
+function DocumentDetailPanel({ doc, selectedRule, onSelectRule, confirmingRuleId, onConfirmFinding, resolvingRuleId, onMarkResolved, markingIncorrectRuleId, setMarkingIncorrectRuleId, incorrectFeedbackText, setIncorrectFeedbackText, submittingIncorrect, onMarkIncorrect }) {
   const failedRules = doc.rules?.filter(r => r.status === 'FAIL') || []
   const passedRules = doc.rules?.filter(r => r.status === 'PASS') || []
   const skippedRules = doc.rules?.filter(r => r.status === 'SKIP') || []
@@ -864,6 +930,12 @@ function DocumentDetailPanel({ doc, selectedRule, onSelectRule, confirmingRuleId
             onConfirmFinding={onConfirmFinding}
             resolvingRuleId={resolvingRuleId}
             onMarkResolved={onMarkResolved}
+            markingIncorrectRuleId={markingIncorrectRuleId}
+            setMarkingIncorrectRuleId={setMarkingIncorrectRuleId}
+            incorrectFeedbackText={incorrectFeedbackText}
+            setIncorrectFeedbackText={setIncorrectFeedbackText}
+            submittingIncorrect={submittingIncorrect}
+            onMarkIncorrect={onMarkIncorrect}
           />
         ) : (
           <p className="text-gray-500">Select a rule to view details</p>
@@ -890,7 +962,7 @@ function RuleTab({ label, count, color }) {
 }
 
 
-function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding, resolvingRuleId, onMarkResolved }) {
+function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding, resolvingRuleId, onMarkResolved, markingIncorrectRuleId, setMarkingIncorrectRuleId, incorrectFeedbackText, setIncorrectFeedbackText, submittingIncorrect, onMarkIncorrect }) {
   // Extract reasoning from message (format: "STATUS - reasoning")
   const extractReasoning = () => {
     const message = rule.message || ''
@@ -914,9 +986,11 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
   const colors = statusColors[rule.status] || statusColors.ERROR
   const isConfirming = confirmingRuleId === rule.rule_id
   const isResolving = resolvingRuleId === rule.rule_id
+  const isMarkingIncorrect = markingIncorrectRuleId === rule.rule_id
   const isFailed = rule.status === 'FAIL'
   const isConfirmed = rule.finding_confirmed
   const isFixed = rule.fixed
+  const hasFeedbackGiven = rule.feedback_given
 
   return (
     <div className="space-y-4">
@@ -943,6 +1017,11 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
         {isFailed && isFixed && (
           <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800">
             RESOLVED
+          </span>
+        )}
+        {hasFeedbackGiven && (
+          <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-purple-100 text-purple-800">
+            FEEDBACK GIVEN
           </span>
         )}
       </div>
@@ -972,18 +1051,61 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
         </div>
       )}
 
-      {/* Confirm Finding Button - only for failed rules that haven't been confirmed or fixed */}
-      {isFailed && !isConfirmed && !isFixed && (
+      {/* Confirm Finding and Mark Incorrect Buttons - only for failed rules that haven't been confirmed or fixed */}
+      {isFailed && !isConfirmed && !isFixed && !isMarkingIncorrect && (
         <div className="pt-2">
-          <button
-            onClick={() => onConfirmFinding(rule.rule_id)}
-            disabled={isConfirming}
-            className="px-4 py-2 bg-yellow-500 text-white text-sm font-medium rounded-md hover:bg-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isConfirming ? 'Confirming...' : 'Confirm Finding'}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => onConfirmFinding(rule.rule_id)}
+              disabled={isConfirming}
+              className="px-4 py-2 bg-yellow-500 text-white text-sm font-medium rounded-md hover:bg-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isConfirming ? 'Confirming...' : 'Confirm Finding'}
+            </button>
+            <button
+              onClick={() => setMarkingIncorrectRuleId(rule.rule_id)}
+              className="px-4 py-2 bg-gray-500 text-white text-sm font-medium rounded-md hover:bg-gray-600"
+            >
+              Mark Incorrect
+            </button>
+          </div>
           <p className="text-xs text-gray-500 mt-2">
-            Confirming this finding will mark it as reviewed and move it to the staff action queue.
+            Confirm if the finding is correct and needs staff action, or mark as incorrect if this is a false positive.
+          </p>
+        </div>
+      )}
+
+      {/* Mark Incorrect Feedback Form */}
+      {isMarkingIncorrect && (
+        <div className="p-4 rounded-lg border border-gray-300 bg-gray-50">
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Why is this finding incorrect?
+          </label>
+          <textarea
+            value={incorrectFeedbackText}
+            onChange={(e) => setIncorrectFeedbackText(e.target.value)}
+            placeholder="Explain why this rule validation is incorrect..."
+            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            rows={3}
+          />
+          <div className="mt-3 flex gap-2">
+            <button
+              onClick={() => onMarkIncorrect(rule.rule_id, incorrectFeedbackText)}
+              disabled={submittingIncorrect || !incorrectFeedbackText.trim()}
+              className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {submittingIncorrect ? 'Submitting...' : 'Submit Feedback'}
+            </button>
+            <button
+              onClick={() => { setMarkingIncorrectRuleId(null); setIncorrectFeedbackText(''); }}
+              disabled={submittingIncorrect}
+              className="px-4 py-2 bg-gray-200 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-300 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="text-xs text-gray-500 mt-2">
+            Your feedback will be used to improve rule accuracy. The finding will be marked as passed.
           </p>
         </div>
       )}
