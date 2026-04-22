@@ -538,6 +538,21 @@ function ProgramSummaryView({
       .slice(0, 8)
   }, [staffPerformance])
 
+  // Feeds the Late Notes chart in the hero row. Includes every program with
+  // at least one note in the window; sorted worst-first.
+  const lateNotesChartEntries = useMemo(() => {
+    const entries = programs.map(p => {
+      const s = lateNotesByProgram.get(p.program)
+      return {
+        program: p.program,
+        late: s?.lateNotes?.length ?? 0,
+        total: s?.totalNotes ?? 0,
+        lateNotes: s?.lateNotes ?? [],
+      }
+    }).filter(e => e.total > 0)
+    return entries.sort((a, b) => b.late - a.late || a.program.localeCompare(b.program))
+  }, [programs, lateNotesByProgram])
+
   return (
     <div className="flex flex-col">
       {/* Hero: title + primary date filter */}
@@ -603,10 +618,22 @@ function ProgramSummaryView({
         />
       </div>
 
-      {/* Top failing rules chart — full width below the KPIs */}
+      {/* Top Failing Rules — full width, plenty of room for long rule names */}
       <div className="mb-5">
         <TopRulesChart rules={topFailingRules} />
       </div>
+
+      {/* Late Notes — chart plus a per-program collapsible breakdown so the
+          user can drill into who is late and by how much. */}
+      {lateNotesChartEntries.length > 0 && (
+        <div className="mb-5">
+          <LateNotesAnalyticsView
+            orgId={orgId}
+            programs={programs}
+            lateNotesByProgram={lateNotesByProgram}
+          />
+        </div>
+      )}
 
       <div className="mb-4">
         <div className="flex items-end justify-between gap-4 flex-wrap">
@@ -614,16 +641,13 @@ function ProgramSummaryView({
             <p className="text-sm text-gray-500">
               {viewMode === 'staff'
                 ? 'Staff ranked by errors within each program. Click a name to open the risk profile.'
-                : viewMode === 'rules'
-                  ? 'Rule failures ranked by frequency within each program.'
-                  : 'Operational analytics across each program.'}
+                : 'Rule failures ranked by frequency within each program.'}
             </p>
           </div>
           <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
             {[
               { value: 'staff', label: 'By Staff' },
               { value: 'rules', label: 'By Rule' },
-              { value: 'analytics', label: 'Late Notes' },
             ].map(opt => (
               <button
                 key={opt.value}
@@ -673,33 +697,25 @@ function ProgramSummaryView({
         )}
       </div>
 
-      {viewMode === 'analytics' && analyticKey === 'late-notes' ? (
-        <LateNotesAnalyticsView
-          orgId={orgId}
-          programs={programs}
-          lateNotesByProgram={lateNotesByProgram}
-        />
-      ) : (
-        /*
-          auto-fit + minmax makes the grid responsive: with few programs the cards
-          stretch to fill the row; with many, they wrap at the min width. Bump
-          the floor (420px) to keep each card visibly "wide".
-        */
-        <div className="grid gap-5 grid-cols-[repeat(auto-fit,minmax(420px,1fr))]">
-          {programs.map(p => (
-            <ProgramSummaryCard
-              key={p.program}
-              program={p.program}
-              staff={p.staff}
-              totalErrors={p.totalErrors}
-              ruleFailures={p.ruleFailures}
-              viewMode={viewMode}
-              onSelectStaff={onSelectStaff}
-              onSelectProgram={onSelectProgram}
-            />
-          ))}
-        </div>
-      )}
+      {/*
+        auto-fit + minmax makes the grid responsive: with few programs the cards
+        stretch to fill the row; with many, they wrap at the min width. Bump
+        the floor (420px) to keep each card visibly "wide".
+      */}
+      <div className="grid gap-5 grid-cols-[repeat(auto-fit,minmax(420px,1fr))]">
+        {programs.map(p => (
+          <ProgramSummaryCard
+            key={p.program}
+            program={p.program}
+            staff={p.staff}
+            totalErrors={p.totalErrors}
+            ruleFailures={p.ruleFailures}
+            viewMode={viewMode}
+            onSelectStaff={onSelectStaff}
+            onSelectProgram={onSelectProgram}
+          />
+        ))}
+      </div>
     </div>
   )
 }
