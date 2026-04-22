@@ -7,6 +7,31 @@ import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
 const getCredibleLink = (documentId) =>
   `https://www.cbh3.crediblebh.com/visit/clientvisit_view.asp?clientvisit_id=${documentId}&provportal=0`
 
+// Given a period filter preset + optional custom dates, compute { start, end }
+// as epoch-ms cutoffs (start inclusive, end exclusive). end is inclusive-of-day
+// for custom ranges. Returns { start: null, end: null } when "all time".
+function resolveDateCutoffs(period, customStart, customEnd) {
+  const dayMs = 24 * 60 * 60 * 1000
+  const now = Date.now()
+  if (period === '24h') return { start: now - dayMs, end: null }
+  if (period === '7d') return { start: now - 7 * dayMs, end: null }
+  if (period === '30d') return { start: now - 30 * dayMs, end: null }
+  if (period === '90d') return { start: now - 90 * dayMs, end: null }
+  if (period === 'custom') {
+    let start = null, end = null
+    if (customStart) {
+      const [y, m, d] = customStart.split('-').map(Number)
+      if (y && m && d) start = new Date(y, m - 1, d).getTime()
+    }
+    if (customEnd) {
+      const [y, m, d] = customEnd.split('-').map(Number)
+      if (y && m && d) end = new Date(y, m - 1, d).getTime() + dayMs
+    }
+    return { start, end }
+  }
+  return { start: null, end: null }
+}
+
 export function StaffPerformancePage() {
   const { orgId } = useParams()
   const [data, setData] = useState(null)
@@ -15,19 +40,26 @@ export function StaffPerformancePage() {
   const [error, setError] = useState('')
   const [selectedStaff, setSelectedStaff] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
+  // Validation report date = when the validation run executed.
   const [periodFilter, setPeriodFilter] = useState('all')
   const [customStartDate, setCustomStartDate] = useState('')
   const [customEndDate, setCustomEndDate] = useState('')
+  // Service date = the clinical service date on each individual note.
+  const [serviceDateFilter, setServiceDateFilter] = useState('all')
+  const [serviceCustomStartDate, setServiceCustomStartDate] = useState('')
+  const [serviceCustomEndDate, setServiceCustomEndDate] = useState('')
   const [sortOrder, setSortOrder] = useState('asc') // 'asc' = worst first, 'desc' = best first
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   useEffect(() => {
     // Load rule definitions + validation runs in parallel. Rule definitions
     // are the authoritative source for rule.category (same as the admin table).
+    // We fetch a wider run history (up to 50) so the date filter can narrow
+    // into older windows like "Last 90 days" without silently dropping runs.
     Promise.all([
       api.listRules(orgId),
       api.listValidationRuns(orgId).then(async (runsData) => {
-        const runList = runsData.runs.slice(0, 10)
+        const runList = (runsData.runs || []).slice(0, 50)
         return Promise.all(
           runList.map(async run => ({
             ...(await api.getValidationRun(orgId, run.validation_run_id)),
@@ -54,32 +86,36 @@ export function StaffPerformancePage() {
     return map
   }, [ruleDefinitions])
 
-  // Runs narrowed by the active date filter. Shared across the staff roll-up
-  // and the Analytics view in ProgramSummaryView.
+  // Runs narrowed by the validation-report-date filter (run.timestamp).
   const filteredRuns = useMemo(() => {
     if (!data) return []
-    const dayMs = 24 * 60 * 60 * 1000
-    const now = Date.now()
-    let startCutoff = null
-    let endCutoff = null
-    if (periodFilter === '24h') startCutoff = now - dayMs
-    else if (periodFilter === '7d') startCutoff = now - 7 * dayMs
-    else if (periodFilter === '30d') startCutoff = now - 30 * dayMs
-    else if (periodFilter === '90d') startCutoff = now - 90 * dayMs
-    else if (periodFilter === 'custom') {
-      if (customStartDate) startCutoff = new Date(customStartDate).getTime()
-      // endCutoff is exclusive — include the full end day
-      if (customEndDate) endCutoff = new Date(customEndDate).getTime() + dayMs
-    }
-    if (startCutoff == null && endCutoff == null) return data
+    const { start, end } = resolveDateCutoffs(periodFilter, customStartDate, customEndDate)
+    if (start == null && end == null) return data
     return data.filter(run => {
-      if (!run.timestamp) return true
+      if (!run.timestamp) return false
       const t = new Date(run.timestamp).getTime()
-      if (startCutoff != null && t < startCutoff) return false
-      if (endCutoff != null && t >= endCutoff) return false
+      if (Number.isNaN(t)) return false
+      if (start != null && t < start) return false
+      if (end != null && t >= end) return false
       return true
     })
   }, [data, periodFilter, customStartDate, customEndDate])
+
+  // Predicate applied to each note — separate from the run-level filter so a
+  // user can combine "validated in the last 7 days" with "service date in Q1".
+  const passesServiceDate = useMemo(() => {
+    const { start, end } = resolveDateCutoffs(serviceDateFilter, serviceCustomStartDate, serviceCustomEndDate)
+    if (start == null && end == null) return () => true
+    return (doc) => {
+      const raw = doc?.field_values?.date
+      if (!raw) return false
+      const t = new Date(raw).getTime()
+      if (Number.isNaN(t)) return false
+      if (start != null && t < start) return false
+      if (end != null && t >= end) return false
+      return true
+    }
+  }, [serviceDateFilter, serviceCustomStartDate, serviceCustomEndDate])
 
   // Aggregate staff performance from all validation runs
   const staffPerformance = useMemo(() => {
@@ -89,6 +125,8 @@ export function StaffPerformancePage() {
 
     filteredRuns.forEach(run => {
       run.documents?.forEach(doc => {
+        if (!passesServiceDate(doc)) return
+
         // Enrich document with validation_run_id for navigation
         const enrichedDoc = {
           ...doc,
@@ -165,7 +203,7 @@ export function StaffPerformancePage() {
         if (b.passRate == null) return -1
         return a.passRate - b.passRate
       })
-  }, [data, filteredRuns])
+  }, [data, filteredRuns, passesServiceDate])
 
   // Filter staff by search and apply the user-selected sort order. Null pass
   // rates (unaudited) always sink to the bottom regardless of direction.
@@ -329,6 +367,7 @@ export function StaffPerformancePage() {
             orgId={orgId}
             staffPerformance={staffPerformance}
             filteredRuns={filteredRuns}
+            passesServiceDate={passesServiceDate}
             ruleDefinitions={ruleDefinitions}
             ruleCategoryById={ruleCategoryById}
             periodFilter={periodFilter}
@@ -337,6 +376,12 @@ export function StaffPerformancePage() {
             onCustomStartChange={setCustomStartDate}
             customEndDate={customEndDate}
             onCustomEndChange={setCustomEndDate}
+            serviceDateFilter={serviceDateFilter}
+            onServiceDateChange={setServiceDateFilter}
+            serviceCustomStartDate={serviceCustomStartDate}
+            onServiceCustomStartChange={setServiceCustomStartDate}
+            serviceCustomEndDate={serviceCustomEndDate}
+            onServiceCustomEndChange={setServiceCustomEndDate}
             onSelectStaff={setSelectedStaff}
             onSelectProgram={(program) => setSearchTerm(program)}
           />
@@ -375,6 +420,7 @@ function ProgramSummaryView({
   orgId,
   staffPerformance,
   filteredRuns,
+  passesServiceDate,
   ruleDefinitions,
   ruleCategoryById,
   periodFilter,
@@ -383,6 +429,12 @@ function ProgramSummaryView({
   onCustomStartChange,
   customEndDate,
   onCustomEndChange,
+  serviceDateFilter,
+  onServiceDateChange,
+  serviceCustomStartDate,
+  onServiceCustomStartChange,
+  serviceCustomEndDate,
+  onServiceCustomEndChange,
   onSelectStaff,
   onSelectProgram,
 }) {
@@ -479,6 +531,7 @@ function ProgramSummaryView({
       const runTs = run.timestamp ? new Date(run.timestamp) : null
       if (!runTs || Number.isNaN(runTs.getTime())) return
       run.documents?.forEach(doc => {
+        if (!passesServiceDate(doc)) return
         const program = doc.field_values?.program || 'Unknown'
         const rawDate = doc.field_values?.date
         if (!rawDate) return
@@ -506,7 +559,7 @@ function ProgramSummaryView({
     // Sort each program's late notes by how late they are, descending.
     map.forEach(b => { b.lateNotes.sort((a, b) => b.businessHours - a.businessHours) })
     return map
-  }, [filteredRuns])
+  }, [filteredRuns, passesServiceDate])
 
   if (staffPerformance.length === 0) {
     return (
@@ -611,7 +664,7 @@ function ProgramSummaryView({
 
   return (
     <div className="flex flex-col">
-      {/* Hero: title + primary date filter */}
+      {/* Hero: title + two independent date filters */}
       <div className="mb-5 flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Program Summary</h1>
@@ -619,40 +672,40 @@ function ProgramSummaryView({
             A system-level view of staff performance, rule failures, and documentation timeliness.
           </p>
         </div>
-        <DateFilterChip
-          periodFilter={periodFilter}
-          onPeriodChange={onPeriodChange}
-        />
+        <div className="flex flex-col gap-2 items-end">
+          <DateFilterChip
+            label="Validation date"
+            periodFilter={periodFilter}
+            onPeriodChange={onPeriodChange}
+          />
+          <DateFilterChip
+            label="Service date"
+            periodFilter={serviceDateFilter}
+            onPeriodChange={onServiceDateChange}
+          />
+        </div>
       </div>
 
-      {/* Custom range inputs appear here when the user picks "Custom range" */}
+      {/* Custom range inputs appear here when either filter is set to Custom. */}
       {periodFilter === 'custom' && (
-        <div className="flex items-end gap-3 mb-5 flex-wrap">
-          <div className="flex flex-col">
-            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">From</label>
-            <input
-              type="date"
-              value={customStartDate}
-              onChange={(e) => onCustomStartChange(e.target.value)}
-              className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          <div className="flex flex-col">
-            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">To</label>
-            <input
-              type="date"
-              value={customEndDate}
-              onChange={(e) => onCustomEndChange(e.target.value)}
-              className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          <button
-            onClick={() => { onPeriodChange('all'); onCustomStartChange(''); onCustomEndChange('') }}
-            className="text-sm text-blue-600 hover:text-blue-800 px-2 py-2"
-          >
-            Clear
-          </button>
-        </div>
+        <CustomDateRange
+          label="Validation date range"
+          start={customStartDate}
+          onStartChange={onCustomStartChange}
+          end={customEndDate}
+          onEndChange={onCustomEndChange}
+          onClear={() => { onPeriodChange('all'); onCustomStartChange(''); onCustomEndChange('') }}
+        />
+      )}
+      {serviceDateFilter === 'custom' && (
+        <CustomDateRange
+          label="Service date range"
+          start={serviceCustomStartDate}
+          onStartChange={onServiceCustomStartChange}
+          end={serviceCustomEndDate}
+          onEndChange={onServiceCustomEndChange}
+          onClear={() => { onServiceDateChange('all'); onServiceCustomStartChange(''); onServiceCustomEndChange('') }}
+        />
       )}
 
       {/* KPI stat cards — horizontal row */}
@@ -844,18 +897,28 @@ function ProgramSummaryCard({
 
 // Analytics overview: polished bar chart across programs + a stack of
 // collapsible program boxes showing each program's late notes (linked).
-// Primary date filter for the whole page — lives in the hero row. Compact
-// pill with a calendar icon and an inline borderless select.
-function DateFilterChip({ periodFilter, onPeriodChange }) {
+// Date filter pill used in the hero row. Optional label prefix makes it
+// clear which dimension is being filtered when more than one chip is shown.
+function DateFilterChip({ label, periodFilter, onPeriodChange }) {
+  const active = periodFilter !== 'all'
   return (
-    <div className="inline-flex items-center gap-2 bg-white border border-gray-200 rounded-full pl-3 pr-1.5 py-1 shadow-sm">
-      <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <div className={`inline-flex items-center gap-2 rounded-full pl-3 pr-1.5 py-1 shadow-sm border transition-colors ${
+      active ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-200'
+    }`}>
+      <svg className={`w-4 h-4 ${active ? 'text-blue-500' : 'text-gray-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
       </svg>
+      {label && (
+        <span className={`text-[11px] font-semibold uppercase tracking-wider ${active ? 'text-blue-700' : 'text-gray-500'}`}>
+          {label}
+        </span>
+      )}
       <select
         value={periodFilter}
         onChange={(e) => onPeriodChange(e.target.value)}
-        className="text-sm font-medium text-gray-700 bg-transparent border-0 focus:outline-none focus:ring-0 pr-1 py-0.5 cursor-pointer"
+        className={`text-sm font-medium bg-transparent border-0 focus:outline-none focus:ring-0 pr-1 py-0.5 cursor-pointer ${
+          active ? 'text-blue-700' : 'text-gray-700'
+        }`}
       >
         <option value="all">All time</option>
         <option value="24h">Last 24 hours</option>
@@ -864,6 +927,40 @@ function DateFilterChip({ periodFilter, onPeriodChange }) {
         <option value="90d">Last 90 days</option>
         <option value="custom">Custom range</option>
       </select>
+    </div>
+  )
+}
+
+function CustomDateRange({ label, start, onStartChange, end, onEndChange, onClear }) {
+  return (
+    <div className="flex items-end gap-3 mb-4 flex-wrap">
+      <span className="text-xs font-medium text-gray-500 uppercase tracking-wide self-center">
+        {label}
+      </span>
+      <div className="flex flex-col">
+        <label className="text-[10px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">From</label>
+        <input
+          type="date"
+          value={start}
+          onChange={(e) => onStartChange(e.target.value)}
+          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      </div>
+      <div className="flex flex-col">
+        <label className="text-[10px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">To</label>
+        <input
+          type="date"
+          value={end}
+          onChange={(e) => onEndChange(e.target.value)}
+          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      </div>
+      <button
+        onClick={onClear}
+        className="text-sm text-blue-600 hover:text-blue-800 px-2 py-2"
+      >
+        Clear
+      </button>
     </div>
   )
 }

@@ -65,12 +65,18 @@ export function ValidationRunDetailPage() {
   const [submittingIncorrect, setSubmittingIncorrect] = useState(false)
   const [programFilter, setProgramFilter] = useState('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
+  // "Validation report date" — filters by the run.timestamp. Because every
+  // doc on this page belongs to the same run, this ends up all-or-nothing.
   const [dateFilter, setDateFilter] = useState('all')
+  const [customStartDate, setCustomStartDate] = useState('')
+  const [customEndDate, setCustomEndDate] = useState('')
+  // "Service date" — filters per-doc by field_values.date.
+  const [serviceDateFilter, setServiceDateFilter] = useState('all')
+  const [serviceCustomStartDate, setServiceCustomStartDate] = useState('')
+  const [serviceCustomEndDate, setServiceCustomEndDate] = useState('')
   // The detail endpoint doesn't echo a run timestamp, so grab it from the
   // runs-list endpoint (same source the Validation Results tab uses).
   const [runTimestamp, setRunTimestamp] = useState(null)
-  const [customStartDate, setCustomStartDate] = useState('')
-  const [customEndDate, setCustomEndDate] = useState('')
 
   useEffect(() => {
     const docIdFromUrl = initialDocIdRef.current
@@ -214,13 +220,19 @@ export function ValidationRunDetailPage() {
   const filteredDocs = useMemo(() => {
     if (!data?.documents) return []
 
-    // Resolve date-filter cutoffs once per memo run. The filter operates on
-    // the validation run's own timestamp (when the run was executed), not on
-    // each note's service date. Because all docs on this page belong to the
-    // same run, the filter ends up being all-or-nothing — either the run is
-    // inside the window and every doc passes, or none do.
+    // Two independent date dimensions:
+    //   - Validation report date → filters on run.timestamp (all-or-nothing for
+    //     this single-run view).
+    //   - Service date → filters per-doc by field_values.date.
     const dayMs = 24 * 60 * 60 * 1000
     const now = Date.now()
+    const parseLocal = (str) => {
+      if (!str) return null
+      const [y, m, d] = str.split('-').map(Number)
+      if (!y || !m || !d) return null
+      return new Date(y, m - 1, d).getTime()
+    }
+
     let startCutoff = null
     let endCutoff = null
     if (dateFilter === '24h') startCutoff = now - dayMs
@@ -228,9 +240,21 @@ export function ValidationRunDetailPage() {
     else if (dateFilter === '30d') startCutoff = now - 30 * dayMs
     else if (dateFilter === '90d') startCutoff = now - 90 * dayMs
     else if (dateFilter === 'custom') {
-      if (customStartDate) startCutoff = new Date(customStartDate).getTime()
-      if (customEndDate) endCutoff = new Date(customEndDate).getTime() + dayMs // end-inclusive
+      if (customStartDate) startCutoff = parseLocal(customStartDate)
+      if (customEndDate) { const e = parseLocal(customEndDate); if (e != null) endCutoff = e + dayMs }
     }
+
+    let svcStart = null
+    let svcEnd = null
+    if (serviceDateFilter === '24h') svcStart = now - dayMs
+    else if (serviceDateFilter === '7d') svcStart = now - 7 * dayMs
+    else if (serviceDateFilter === '30d') svcStart = now - 30 * dayMs
+    else if (serviceDateFilter === '90d') svcStart = now - 90 * dayMs
+    else if (serviceDateFilter === 'custom') {
+      if (serviceCustomStartDate) svcStart = parseLocal(serviceCustomStartDate)
+      if (serviceCustomEndDate) { const e = parseLocal(serviceCustomEndDate); if (e != null) svcEnd = e + dayMs }
+    }
+    const serviceFilterActive = svcStart != null || svcEnd != null
     // Prefer the timestamp we fetched from the list endpoint (same source
     // that renders the Date column on the Validation Results tab). Fall back
     // to any timestamp on the detail payload, then to parsing the run id.
@@ -260,6 +284,16 @@ export function ValidationRunDetailPage() {
     if (!runPassesDateFilter) return []
 
     return data.documents.filter(doc => {
+      // Service date filter (per-doc)
+      if (serviceFilterActive) {
+        const raw = doc.field_values?.date
+        if (!raw) return false
+        const t = new Date(raw).getTime()
+        if (Number.isNaN(t)) return false
+        if (svcStart != null && t < svcStart) return false
+        if (svcEnd != null && t >= svcEnd) return false
+      }
+
       // Search filter
       if (searchTerm) {
         const search = searchTerm.toLowerCase()
@@ -317,7 +351,7 @@ export function ValidationRunDetailPage() {
 
       return true
     })
-  }, [data, runId, runTimestamp, searchTerm, statusFilter, ruleFilter, programFilter, categoryFilter, dateFilter, customStartDate, customEndDate])
+  }, [data, runId, runTimestamp, searchTerm, statusFilter, ruleFilter, programFilter, categoryFilter, dateFilter, customStartDate, customEndDate, serviceDateFilter, serviceCustomStartDate, serviceCustomEndDate])
 
   // When status filter changes, select the first document in the filtered list
   useEffect(() => {
@@ -435,6 +469,7 @@ export function ValidationRunDetailPage() {
           iconPath="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
           value={dateFilter}
           onChange={setDateFilter}
+          label="Report"
         >
           <option value="all">All dates</option>
           <option value="24h">Last 24 hours</option>
@@ -443,34 +478,45 @@ export function ValidationRunDetailPage() {
           <option value="90d">Last 90 days</option>
           <option value="custom">Custom range</option>
         </FilterChip>
+
+        <FilterChip
+          active={serviceDateFilter !== 'all'}
+          iconPath="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+          value={serviceDateFilter}
+          onChange={setServiceDateFilter}
+          label="Service"
+        >
+          <option value="all">All service dates</option>
+          <option value="24h">Last 24 hours</option>
+          <option value="7d">Last 7 days</option>
+          <option value="30d">Last 30 days</option>
+          <option value="90d">Last 90 days</option>
+          <option value="custom">Custom range</option>
+        </FilterChip>
       </div>
 
-      {dateFilter === 'custom' && (
-        <div className="flex items-end gap-3 mb-4 flex-wrap">
-          <div className="flex flex-col">
-            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">From</label>
-            <input
-              type="date"
-              value={customStartDate}
-              onChange={(e) => setCustomStartDate(e.target.value)}
-              className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+      {(dateFilter === 'custom' || serviceDateFilter === 'custom') && (
+        <div className="flex flex-col gap-2 mb-4">
+          {dateFilter === 'custom' && (
+            <CustomDateRange
+              label="Report date range"
+              start={customStartDate}
+              onStartChange={setCustomStartDate}
+              end={customEndDate}
+              onEndChange={setCustomEndDate}
+              onClear={() => { setDateFilter('all'); setCustomStartDate(''); setCustomEndDate('') }}
             />
-          </div>
-          <div className="flex flex-col">
-            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">To</label>
-            <input
-              type="date"
-              value={customEndDate}
-              onChange={(e) => setCustomEndDate(e.target.value)}
-              className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          )}
+          {serviceDateFilter === 'custom' && (
+            <CustomDateRange
+              label="Service date range"
+              start={serviceCustomStartDate}
+              onStartChange={setServiceCustomStartDate}
+              end={serviceCustomEndDate}
+              onEndChange={setServiceCustomEndDate}
+              onClear={() => { setServiceDateFilter('all'); setServiceCustomStartDate(''); setServiceCustomEndDate('') }}
             />
-          </div>
-          <button
-            onClick={() => { setDateFilter('all'); setCustomStartDate(''); setCustomEndDate('') }}
-            className="text-sm text-blue-600 hover:text-blue-800 px-2 py-2"
-          >
-            Clear
-          </button>
+          )}
         </div>
       )}
 
@@ -682,7 +728,7 @@ export function ValidationRunDetailPage() {
 // Pill-style filter dropdown: icon + borderless inline select inside a
 // rounded chip. When a non-default value is picked the chip tints blue
 // so it's clear something's filtered at a glance.
-function FilterChip({ active, iconPath, value, onChange, children, maxSelectWidth = 'max-w-[160px]' }) {
+function FilterChip({ active, iconPath, value, onChange, children, maxSelectWidth = 'max-w-[160px]', label }) {
   return (
     <div
       className={`inline-flex items-center gap-1.5 rounded-full pl-3 pr-1 py-0.5 border shadow-sm transition-colors ${
@@ -697,6 +743,11 @@ function FilterChip({ active, iconPath, value, onChange, children, maxSelectWidt
       >
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={iconPath} />
       </svg>
+      {label && (
+        <span className={`text-[10px] font-semibold uppercase tracking-wider ${active ? 'text-blue-700' : 'text-gray-500'}`}>
+          {label}
+        </span>
+      )}
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -706,6 +757,40 @@ function FilterChip({ active, iconPath, value, onChange, children, maxSelectWidt
       >
         {children}
       </select>
+    </div>
+  )
+}
+
+function CustomDateRange({ label, start, onStartChange, end, onEndChange, onClear }) {
+  return (
+    <div className="flex items-end gap-3 flex-wrap">
+      <span className="text-xs font-medium text-gray-500 uppercase tracking-wide self-center">
+        {label}
+      </span>
+      <div className="flex flex-col">
+        <label className="text-[10px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">From</label>
+        <input
+          type="date"
+          value={start}
+          onChange={(e) => onStartChange(e.target.value)}
+          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      </div>
+      <div className="flex flex-col">
+        <label className="text-[10px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">To</label>
+        <input
+          type="date"
+          value={end}
+          onChange={(e) => onEndChange(e.target.value)}
+          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      </div>
+      <button
+        onClick={onClear}
+        className="text-sm text-blue-600 hover:text-blue-800 px-2 py-2"
+      >
+        Clear
+      </button>
     </div>
   )
 }
