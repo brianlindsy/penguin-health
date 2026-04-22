@@ -735,13 +735,20 @@ function LateNotesAnalyticsView({ orgId, programs, lateNotesByProgram }) {
   )
 }
 
-// Polished horizontal bar chart: taller bars with gradient, soft track,
-// labels aligned in a consistent grid so rows line up crisply.
+// Vertical bar chart: gridded plot area with y-axis tick labels on the
+// left, column bars scaled to a "nice" y-max, and program name + count
+// labels under each column. Intentionally reads as a proper chart rather
+// than an infographic.
 function LateNotesChart({ entries }) {
   const maxLate = Math.max(...entries.map(e => e.late), 1)
+  const yMax = niceCeiling(maxLate)
+  const ticks = [0, yMax * 0.25, yMax * 0.5, yMax * 0.75, yMax].map(t => Math.round(t))
+
   const totalLate = entries.reduce((sum, e) => sum + e.late, 0)
   const totalNotes = entries.reduce((sum, e) => sum + e.total, 0)
   const overallPct = totalNotes > 0 ? Math.round((totalLate / totalNotes) * 100) : 0
+
+  const CHART_HEIGHT = 240 // px — fixed plot height so the chart reads consistently
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
@@ -763,49 +770,122 @@ function LateNotesChart({ entries }) {
         </div>
       </div>
 
-      <div className="space-y-3">
-        {entries.map(e => {
-          const barPct = (e.late / maxLate) * 100
-          const latePct = e.total > 0 ? Math.round((e.late / e.total) * 100) : 0
-          const gradient = latePct >= 25 ? 'from-red-500 to-red-400'
-            : latePct >= 10 ? 'from-amber-500 to-amber-400'
-            : 'from-emerald-500 to-emerald-400'
-          return (
-            <div
-              key={e.program}
-              className="grid grid-cols-[9rem,1fr,5rem] items-center gap-4"
-            >
-              <div className="text-xs font-semibold text-gray-700 uppercase tracking-wide truncate" title={e.program}>
+      {/* Chart body: y-axis on the left + plot area on the right */}
+      <div className="flex">
+        {/* Y-axis labels */}
+        <div
+          className="flex flex-col justify-between pr-2 text-[10px] text-gray-400 tabular-nums"
+          style={{ height: CHART_HEIGHT }}
+        >
+          {[...ticks].reverse().map((t, i) => (
+            <span key={i} className="leading-none text-right">{t}</span>
+          ))}
+        </div>
+
+        {/* Plot area */}
+        <div className="flex-1">
+          <div
+            className="relative border-l border-b border-gray-200"
+            style={{ height: CHART_HEIGHT }}
+          >
+            {/* Horizontal gridlines */}
+            {ticks.map((t, i) => {
+              const bottom = yMax > 0 ? (t / yMax) * 100 : 0
+              return (
+                <div
+                  key={i}
+                  className="absolute left-0 right-0 border-t border-dashed border-gray-100"
+                  style={{ bottom: `${bottom}%` }}
+                />
+              )
+            })}
+
+            {/* Bars */}
+            <div className="absolute inset-0 flex items-end justify-around gap-3 px-3">
+              {entries.map(e => {
+                const latePct = e.total > 0 ? Math.round((e.late / e.total) * 100) : 0
+                const heightPct = yMax > 0 ? (e.late / yMax) * 100 : 0
+                const barColor = latePct >= 25 ? 'bg-red-500'
+                  : latePct >= 10 ? 'bg-amber-500'
+                  : 'bg-emerald-500'
+                const barHover = latePct >= 25 ? 'hover:bg-red-600'
+                  : latePct >= 10 ? 'hover:bg-amber-600'
+                  : 'hover:bg-emerald-600'
+                return (
+                  <div
+                    key={e.program}
+                    className="flex-1 min-w-0 h-full flex flex-col items-center justify-end"
+                    title={`${e.program}: ${e.late} late of ${e.total} (${latePct}%)`}
+                  >
+                    {/* Count label above bar */}
+                    {e.late > 0 && (
+                      <span
+                        className="text-xs font-semibold text-gray-700 tabular-nums mb-1"
+                        style={{ lineHeight: 1 }}
+                      >
+                        {e.late}
+                      </span>
+                    )}
+                    {/* Bar */}
+                    <div
+                      className={`w-full max-w-[72px] rounded-t-md ${barColor} ${barHover} transition-all duration-500 ease-out`}
+                      style={{
+                        height: `${Math.max(heightPct, e.late > 0 ? 1 : 0)}%`,
+                        minHeight: e.late > 0 ? 2 : 0,
+                      }}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* X-axis labels */}
+          <div className="flex justify-around gap-3 px-3 mt-2">
+            {entries.map(e => (
+              <div
+                key={e.program}
+                className="flex-1 min-w-0 text-center text-[11px] text-gray-600 truncate"
+                title={e.program}
+              >
                 {e.program}
               </div>
-              <div className="relative h-8 bg-gray-100 rounded-lg overflow-hidden">
-                <div
-                  className={`h-full rounded-lg bg-gradient-to-r ${gradient} shadow-sm transition-[width] duration-500 ease-out`}
-                  style={{ width: `${Math.max(barPct, e.late > 0 ? 2 : 0)}%` }}
-                />
-                {e.late > 0 && barPct > 14 ? (
-                  <span className="absolute inset-y-0 left-3 flex items-center text-xs font-semibold text-white tabular-nums drop-shadow">
-                    {e.late} late
-                  </span>
-                ) : (
-                  <span
-                    className="absolute inset-y-0 flex items-center text-xs font-semibold text-gray-700 tabular-nums"
-                    style={{ left: `calc(${Math.max(barPct, e.late > 0 ? 2 : 0)}% + 8px)` }}
-                  >
-                    {e.late > 0 ? `${e.late} late` : 'None'}
-                  </span>
-                )}
-              </div>
-              <div className="text-xs text-right text-gray-600 tabular-nums whitespace-nowrap">
-                <span className="font-semibold text-gray-900">{latePct}%</span>
-                <div className="text-[10px] text-gray-400">of {e.total}</div>
-              </div>
-            </div>
-          )
-        })}
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="flex items-center justify-end gap-4 mt-4 text-[11px] text-gray-500">
+        <LegendSwatch className="bg-emerald-500" label="< 10% late" />
+        <LegendSwatch className="bg-amber-500" label="10–25% late" />
+        <LegendSwatch className="bg-red-500" label="≥ 25% late" />
       </div>
     </div>
   )
+}
+
+function LegendSwatch({ className, label }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className={`w-2.5 h-2.5 rounded-sm ${className}`} />
+      {label}
+    </span>
+  )
+}
+
+// Round a number up to a "nice" axis value so the y-axis reads cleanly
+// (whole-number ticks at 1 / 2 / 5 × 10^n rather than 7, 13, 34...).
+function niceCeiling(n) {
+  if (n <= 0) return 5
+  const magnitude = Math.pow(10, Math.floor(Math.log10(n)))
+  const normalized = n / magnitude
+  let nice
+  if (normalized <= 1) nice = 1
+  else if (normalized <= 2) nice = 2
+  else if (normalized <= 5) nice = 5
+  else nice = 10
+  return Math.max(nice * magnitude, 4) // ensure at least 4 so ticks render as distinct integers
 }
 
 // One program's expandable summary card: header shows the headline counts;
