@@ -377,7 +377,7 @@ function ContributingNotesList({ docs, orgId }) {
               <span className="text-gray-900 font-semibold tabular-nums">{formatCurrency(rate)}</span>
               {runId && (
                 <Link
-                  to={`/organizations/${orgId}/validation-runs/${runId}`}
+                  to={`/organizations/${orgId}/validation-runs/${runId}?doc=${doc.document_id}`}
                   className="text-blue-600 hover:text-blue-800 hover:underline"
                   onClick={(e) => e.stopPropagation()}
                 >
