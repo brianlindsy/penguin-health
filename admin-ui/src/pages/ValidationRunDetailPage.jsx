@@ -142,10 +142,15 @@ export function ValidationRunDetailPage() {
       if (statusFilter === 'needs_action' && !(doc.summary?.failed > 0)) return false
       if (statusFilter === 'confirmed' && !(doc.summary?.failed === 0)) return false
 
-      // Rule filter (document has at least one rule matching the selected rule name/id)
+      // Rule filter: keep docs where the selected rule actually FAILED. This
+      // composes naturally with the "Needs Action" status filter — the user
+      // can click Needs Action, pick a rule, and get the docs that failed
+      // that specific rule.
       if (ruleFilter !== 'all') {
-        const hasRule = doc.rules?.some(r => (r.rule_name || r.rule_id) === ruleFilter)
-        if (!hasRule) return false
+        const hasFailedRule = doc.rules?.some(r =>
+          (r.rule_name || r.rule_id) === ruleFilter && r.status === 'FAIL'
+        )
+        if (!hasFailedRule) return false
       }
 
       // Program filter
@@ -309,8 +314,15 @@ export function ValidationRunDetailPage() {
                 selected={selectedDoc?.document_id === doc.document_id}
                 onClick={() => {
                   setSelectedDoc(doc)
+                  // If the user is drilling into a specific rule, surface that
+                  // rule's failure in the right panel; else show the first fail.
+                  const ruleMatch = ruleFilter !== 'all'
+                    ? doc.rules?.find(r =>
+                        (r.rule_name || r.rule_id) === ruleFilter && r.status === 'FAIL'
+                      )
+                    : null
                   const firstFailedRule = doc.rules?.find(r => r.status === 'FAIL')
-                  setSelectedRule(firstFailedRule || doc.rules?.[0] || null)
+                  setSelectedRule(ruleMatch || firstFailedRule || doc.rules?.[0] || null)
                 }}
               />
             ))}
