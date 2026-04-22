@@ -648,7 +648,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "262f81f2ab57ef1ed08c865d9e6a8af1758ddba09f8feb7dad4c2a843eab8b6d.zip"
+     "S3Key": "cb3fef96ad7eff097eae2fa0b9377ae22de215e884d2720db9a630f3c38c6b91.zip"
     },
     "Environment": {
      "Variables": {
@@ -688,7 +688,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminApiFunction/Resource",
-    "aws:asset:path": "asset.262f81f2ab57ef1ed08c865d9e6a8af1758ddba09f8feb7dad4c2a843eab8b6d",
+    "aws:asset:path": "asset.cb3fef96ad7eff097eae2fa0b9377ae22de215e884d2720db9a630f3c38c6b91",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -1677,6 +1677,65 @@
    },
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/PUT--api--organizations--{orgId}--validation-runs--{runId}--documents--{docId}--confirm-finding/Resource"
+   }
+  },
+  "AdminUiAdminHttpApiPUTapiorganizationsorgIdvalidationrunsrunIddocumentsdocIdmarkresolvedAdminApiIntegrationPermissionF5808B65": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AdminUiAdminApiFunctionF9667708",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:",
+       {
+        "Ref": "AWS::AccountId"
+       },
+       ":",
+       {
+        "Ref": "AdminUiAdminHttpApi90C20B12"
+       },
+       "/*/*/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-resolved"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/PUT--api--organizations--{orgId}--validation-runs--{runId}--documents--{docId}--mark-resolved/AdminApiIntegration-Permission"
+   }
+  },
+  "AdminUiAdminHttpApiPUTapiorganizationsorgIdvalidationrunsrunIddocumentsdocIdmarkresolvedBD431D56": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "AdminUiAdminHttpApi90C20B12"
+    },
+    "AuthorizationType": "JWT",
+    "AuthorizerId": {
+     "Ref": "AdminUiAdminHttpApiCognitoAuthorizerCC473533"
+    },
+    "RouteKey": "PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-resolved",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "AdminUiAdminHttpApiGETapiorganizationsAdminApiIntegrationD15C6010"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/PUT--api--organizations--{orgId}--validation-runs--{runId}--documents--{docId}--mark-resolved/Resource"
    }
   },
   "AdminUiFrontendBucket2357732C": {
