@@ -1,7 +1,10 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
+
+const getCredibleLink = (documentId) =>
+  `https://www.cbh3.crediblebh.com/visit/clientvisit_view.asp?clientvisit_id=${documentId}&provportal=0`
 
 // Revenue Analysis — breaks "revenue at risk" (the rate on any failed note)
 // down by program, CPT code, diagnosis code, and staff. Pulls recent
@@ -59,12 +62,21 @@ export function RevenueAnalysisPage() {
       return true
     }
 
+    // Each map tracks { amount, docs: [{ doc, runId, rate }] } per key so we
+    // can surface the contributing notes when the user clicks an entry.
     const byProgram = new Map()
     const byCpt = new Map()
     const byDx = new Map()
     const byStaff = new Map()
     let totalRevenue = 0
     let blockedClaims = 0
+
+    const addTo = (map, key, entry) => {
+      if (!map.has(key)) map.set(key, { amount: 0, docs: [] })
+      const bucket = map.get(key)
+      bucket.amount += entry.rate
+      bucket.docs.push(entry)
+    }
 
     runs.filter(inWindow).forEach(run => {
       run.documents?.forEach(doc => {
@@ -80,16 +92,23 @@ export function RevenueAnalysisPage() {
         const dx = doc.field_values?.diagnosis_code || 'Unknown'
         const staff = doc.field_values?.employee_name || 'Unknown'
 
-        byProgram.set(program, (byProgram.get(program) || 0) + rate)
-        byCpt.set(cpt, (byCpt.get(cpt) || 0) + rate)
-        byDx.set(dx, (byDx.get(dx) || 0) + rate)
-        byStaff.set(staff, (byStaff.get(staff) || 0) + rate)
+        const entry = { doc, runId: run.validation_run_id, rate }
+        addTo(byProgram, program, entry)
+        addTo(byCpt, cpt, entry)
+        addTo(byDx, dx, entry)
+        addTo(byStaff, staff, entry)
       })
     })
 
     const toSortedEntries = (map) =>
       Array.from(map.entries())
-        .map(([name, amount]) => ({ name, amount }))
+        .map(([name, { amount, docs }]) => ({
+          name,
+          amount,
+          // Most expensive note first so clicking a row surfaces the biggest
+          // drivers at the top of the expanded list.
+          docs: [...docs].sort((a, b) => b.rate - a.rate),
+        }))
         .sort((a, b) => b.amount - a.amount)
 
     return {
@@ -204,23 +223,27 @@ export function RevenueAnalysisPage() {
                   title="Top programs"
                   entries={analysis.byProgram}
                   totalRevenue={analysis.totalRevenue}
+                  orgId={orgId}
                 />
                 <BreakdownCard
                   title="Top CPT codes"
                   entries={analysis.byCpt}
                   totalRevenue={analysis.totalRevenue}
+                  orgId={orgId}
                   valueMono
                 />
                 <BreakdownCard
                   title="Top diagnosis codes"
                   entries={analysis.byDx}
                   totalRevenue={analysis.totalRevenue}
+                  orgId={orgId}
                   valueMono
                 />
                 <BreakdownCard
                   title="Top staff"
                   entries={analysis.byStaff}
                   totalRevenue={analysis.totalRevenue}
+                  orgId={orgId}
                 />
               </div>
             )}
@@ -241,12 +264,14 @@ function HeadlineStat({ label, value, tone }) {
   )
 }
 
-function BreakdownCard({ title, entries, totalRevenue, valueMono = false }) {
+function BreakdownCard({ title, entries, totalRevenue, valueMono = false, orgId }) {
   const TOP_N = 8
   const top = entries.slice(0, TOP_N)
   const rest = entries.slice(TOP_N)
   const restAmount = rest.reduce((sum, e) => sum + e.amount, 0)
   const hasRest = rest.length > 0
+  // Only one row expands at a time per card.
+  const [expandedName, setExpandedName] = useState(null)
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
@@ -259,20 +284,43 @@ function BreakdownCard({ title, entries, totalRevenue, valueMono = false }) {
       <div className="space-y-3">
         {top.map(entry => {
           const pct = totalRevenue > 0 ? (entry.amount / totalRevenue) * 100 : 0
+          const isOpen = expandedName === entry.name
+          const toggle = () => setExpandedName(isOpen ? null : entry.name)
           return (
             <div key={entry.name}>
-              <div className="flex items-baseline justify-between gap-2 mb-1">
-                <span className={`text-sm text-gray-700 truncate ${valueMono ? 'font-mono' : ''}`} title={entry.name}>
-                  {entry.name}
-                </span>
-                <span className="text-sm font-semibold text-gray-900 tabular-nums whitespace-nowrap">
-                  {formatCurrency(entry.amount)}
-                  <span className="text-xs font-normal text-gray-400 ml-2">{Math.round(pct)}%</span>
-                </span>
-              </div>
-              <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                <div className="bg-red-500 h-full rounded-full" style={{ width: `${pct}%` }} />
-              </div>
+              <button
+                onClick={toggle}
+                className={`w-full text-left rounded-md -mx-2 px-2 py-1 transition-colors ${
+                  isOpen ? 'bg-gray-50' : 'hover:bg-gray-50'
+                }`}
+                aria-expanded={isOpen}
+              >
+                <div className="flex items-baseline justify-between gap-2 mb-1">
+                  <span className={`text-sm text-gray-700 truncate flex items-center gap-1 ${valueMono ? 'font-mono' : ''}`} title={entry.name}>
+                    <svg
+                      className={`w-3 h-3 text-gray-400 transition-transform flex-shrink-0 ${isOpen ? 'rotate-90' : ''}`}
+                      fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                    {entry.name}
+                  </span>
+                  <span className="text-sm font-semibold text-gray-900 tabular-nums whitespace-nowrap">
+                    {formatCurrency(entry.amount)}
+                    <span className="text-xs font-normal text-gray-400 ml-2">{Math.round(pct)}%</span>
+                  </span>
+                </div>
+                <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                  <div className="bg-red-500 h-full rounded-full" style={{ width: `${pct}%` }} />
+                </div>
+              </button>
+
+              {isOpen && (
+                <ContributingNotesList
+                  docs={entry.docs}
+                  orgId={orgId}
+                />
+              )}
             </div>
           )
         })}
@@ -283,6 +331,71 @@ function BreakdownCard({ title, entries, totalRevenue, valueMono = false }) {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+function ContributingNotesList({ docs, orgId }) {
+  const MAX_ROWS = 10
+  const [showAll, setShowAll] = useState(false)
+  const visible = showAll ? docs : docs.slice(0, MAX_ROWS)
+
+  if (docs.length === 0) {
+    return (
+      <p className="mt-2 ml-4 text-xs text-gray-400 italic">No notes available.</p>
+    )
+  }
+
+  return (
+    <div className="mt-2 ml-4 pl-4 border-l-2 border-gray-100 space-y-1">
+      {visible.map(({ doc, runId, rate }, idx) => {
+        const employee = doc.field_values?.employee_name
+        const program = doc.field_values?.program
+        const cpt = doc.field_values?.cpt_code
+        const date = doc.field_values?.date
+        return (
+          <div
+            key={`${doc.document_id}-${idx}`}
+            className="flex items-center justify-between gap-3 py-1.5 text-xs"
+          >
+            <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
+              <a
+                href={getCredibleLink(doc.document_id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-800 hover:underline font-mono flex-shrink-0"
+                onClick={(e) => e.stopPropagation()}
+              >
+                #{doc.document_id}
+              </a>
+              {employee && <span className="text-gray-700 truncate">{employee}</span>}
+              {program && <span className="text-gray-400">· {program}</span>}
+              {cpt && <span className="text-gray-400">· CPT {cpt}</span>}
+              {date && <span className="text-gray-400">· {date}</span>}
+            </div>
+            <div className="flex items-center gap-3 flex-shrink-0">
+              <span className="text-gray-900 font-semibold tabular-nums">{formatCurrency(rate)}</span>
+              {runId && (
+                <Link
+                  to={`/organizations/${orgId}/validation-runs/${runId}`}
+                  className="text-blue-600 hover:text-blue-800 hover:underline"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  View run
+                </Link>
+              )}
+            </div>
+          </div>
+        )
+      })}
+      {docs.length > MAX_ROWS && (
+        <button
+          onClick={() => setShowAll(!showAll)}
+          className="text-xs text-blue-600 hover:text-blue-800 pt-1"
+        >
+          {showAll ? 'Show less' : `Show ${docs.length - MAX_ROWS} more`}
+        </button>
+      )}
     </div>
   )
 }
