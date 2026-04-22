@@ -142,15 +142,21 @@ export function ValidationRunDetailPage() {
       if (statusFilter === 'needs_action' && !(doc.summary?.failed > 0)) return false
       if (statusFilter === 'confirmed' && !(doc.summary?.failed === 0)) return false
 
-      // Rule filter: keep docs where the selected rule actually FAILED. This
-      // composes naturally with the "Needs Action" status filter — the user
-      // can click Needs Action, pick a rule, and get the docs that failed
-      // that specific rule.
+      // Rule filter: the rule result we look for on each doc depends on the
+      // active status filter:
+      //   Needs Action → rule must have FAILED
+      //   Confirmed    → rule must have PASSED (skips don't count here)
+      //   All statuses → rule just has to exist on the doc (any status)
       if (ruleFilter !== 'all') {
-        const hasFailedRule = doc.rules?.some(r =>
-          (r.rule_name || r.rule_id) === ruleFilter && r.status === 'FAIL'
-        )
-        if (!hasFailedRule) return false
+        const targetStatus =
+          statusFilter === 'needs_action' ? 'FAIL'
+          : statusFilter === 'confirmed' ? 'PASS'
+          : null
+        const hasMatchingRule = doc.rules?.some(r => {
+          if ((r.rule_name || r.rule_id) !== ruleFilter) return false
+          return targetStatus ? r.status === targetStatus : true
+        })
+        if (!hasMatchingRule) return false
       }
 
       // Program filter
@@ -314,12 +320,18 @@ export function ValidationRunDetailPage() {
                 selected={selectedDoc?.document_id === doc.document_id}
                 onClick={() => {
                   setSelectedDoc(doc)
-                  // If the user is drilling into a specific rule, surface that
-                  // rule's failure in the right panel; else show the first fail.
+                  // Rule filter is active → surface the matching rule on the
+                  // doc (respecting the status context if one is set). If no
+                  // rule filter, fall back to the first failing rule.
+                  const targetStatus =
+                    statusFilter === 'needs_action' ? 'FAIL'
+                    : statusFilter === 'confirmed' ? 'PASS'
+                    : null
                   const ruleMatch = ruleFilter !== 'all'
-                    ? doc.rules?.find(r =>
-                        (r.rule_name || r.rule_id) === ruleFilter && r.status === 'FAIL'
-                      )
+                    ? doc.rules?.find(r => {
+                        if ((r.rule_name || r.rule_id) !== ruleFilter) return false
+                        return targetStatus ? r.status === targetStatus : true
+                      })
                     : null
                   const firstFailedRule = doc.rules?.find(r => r.status === 'FAIL')
                   setSelectedRule(ruleMatch || firstFailedRule || doc.rules?.[0] || null)
