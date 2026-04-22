@@ -10,6 +10,8 @@ import { RuleEditor } from './pages/RuleEditor.jsx'
 import { RuleCreator } from './pages/RuleCreator.jsx'
 import { ValidationRunDetailPage } from './pages/ValidationRunDetailPage.jsx'
 import { StaffPerformancePage } from './pages/StaffPerformancePage.jsx'
+import { AuditRulesPage } from './pages/AuditRulesPage.jsx'
+import { AuditRuleDetailPage } from './pages/AuditRuleDetailPage.jsx'
 import { setTokenProvider, setOnUnauthorized } from './api/client.js'
 
 // Redirect /organizations/:orgId/validation-runs to org detail with validation tab
@@ -45,6 +47,8 @@ function App() {
         <Route path="/organizations/:orgId/validation-runs" element={<ValidationRunsRedirect />} />
         <Route path="/organizations/:orgId/validation-runs/:runId" element={<ValidationRunDetailPage />} />
         <Route path="/organizations/:orgId/staff-performance" element={<StaffPerformancePage />} />
+        <Route path="/organizations/:orgId/audit-rules" element={<AuditRulesPage />} />
+        <Route path="/organizations/:orgId/audit-rules/:ruleId" element={<AuditRuleDetailPage />} />
       </Route>
     </Routes>
   )

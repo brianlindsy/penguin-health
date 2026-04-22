@@ -65,9 +65,11 @@ export function OrgWorkspaceLayout({ children }) {
         {
           key: 'audit-rules',
           label: 'Audit Rules',
-          to: `/organizations/${orgId}?tab=rules`,
+          to: `/organizations/${orgId}/audit-rules`,
           icon: ShieldIcon,
-          active: pathname === `/organizations/${orgId}` && tab === 'rules',
+          active:
+            pathname.startsWith(`/organizations/${orgId}/audit-rules`) ||
+            (pathname === `/organizations/${orgId}` && tab === 'rules'),
         },
         {
           key: 'validation-results',
