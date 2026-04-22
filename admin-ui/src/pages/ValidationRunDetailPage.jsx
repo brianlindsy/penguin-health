@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
 
@@ -47,6 +47,8 @@ function parseRunIdTimestamp(runId) {
 
 export function ValidationRunDetailPage() {
   const { orgId, runId } = useParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const docIdFromUrl = searchParams.get('doc')
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -73,7 +75,22 @@ export function ValidationRunDetailPage() {
     api.getValidationRun(orgId, runId)
       .then(result => {
         setData(result)
-        // Auto-select first document with failures
+
+        // Priority 1: Select document from URL query param if present
+        if (docIdFromUrl) {
+          const targetDoc = result.documents?.find(d => d.document_id === docIdFromUrl)
+          if (targetDoc) {
+            setSelectedDoc(targetDoc)
+            const firstFailedRule = targetDoc.rules?.find(r => r.status === 'FAIL')
+            setSelectedRule(firstFailedRule || targetDoc.rules?.[0] || null)
+            // Clear query param to keep URL clean
+            setSearchParams({}, { replace: true })
+            return
+          }
+          // Document not found - fall through to default behavior
+        }
+
+        // Priority 2: Auto-select first document with failures (default behavior)
         const firstFailed = result.documents?.find(d => d.summary?.failed > 0)
         if (firstFailed) {
           setSelectedDoc(firstFailed)
@@ -88,7 +105,7 @@ export function ValidationRunDetailPage() {
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
-  }, [orgId, runId])
+  }, [orgId, runId, docIdFromUrl, setSearchParams])
 
   // Fetch the run's own timestamp from the list endpoint — the detail payload
   // doesn't include one. Failures are silent; the filter falls back to the

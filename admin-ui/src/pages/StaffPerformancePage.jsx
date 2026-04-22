@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
 
@@ -88,8 +88,14 @@ export function StaffPerformancePage() {
 
     filteredRuns.forEach(run => {
       run.documents?.forEach(doc => {
-        const employeeName = doc.field_values?.employee_name || 'Unknown'
-        const program = doc.field_values?.program || 'Unknown'
+        // Enrich document with validation_run_id for navigation
+        const enrichedDoc = {
+          ...doc,
+          validation_run_id: run.validation_run_id,
+        }
+
+        const employeeName = enrichedDoc.field_values?.employee_name || 'Unknown'
+        const program = enrichedDoc.field_values?.program || 'Unknown'
 
         if (!staffMap.has(employeeName)) {
           staffMap.set(employeeName, {
@@ -107,18 +113,18 @@ export function StaffPerformancePage() {
         }
 
         const staff = staffMap.get(employeeName)
-        staff.totalRules += doc.summary?.total_rules || 0
-        staff.passedRules += doc.summary?.passed || 0
-        staff.failedRules += doc.summary?.failed || 0
-        staff.skippedRules += doc.summary?.skipped || 0
-        staff.documents.push(doc)
+        staff.totalRules += enrichedDoc.summary?.total_rules || 0
+        staff.passedRules += enrichedDoc.summary?.passed || 0
+        staff.failedRules += enrichedDoc.summary?.failed || 0
+        staff.skippedRules += enrichedDoc.summary?.skipped || 0
+        staff.documents.push(enrichedDoc)
 
-        const failedCount = doc.summary?.failed || 0
-        const passedCount = doc.summary?.passed || 0
+        const failedCount = enrichedDoc.summary?.failed || 0
+        const passedCount = enrichedDoc.summary?.passed || 0
         if (failedCount > 0) {
-          staff.failedDocuments.push(doc)
+          staff.failedDocuments.push(enrichedDoc)
           // Track rule failures
-          doc.rules?.forEach(rule => {
+          enrichedDoc.rules?.forEach(rule => {
             if (rule.status === 'FAIL') {
               const count = staff.ruleFailures.get(rule.rule_name) || 0
               staff.ruleFailures.set(rule.rule_name, count + 1)
@@ -270,6 +276,7 @@ export function StaffPerformancePage() {
         {selectedStaff ? (
           <StaffDetailPanel
             staff={selectedStaff}
+            orgId={orgId}
             onBack={() => setSelectedStaff(null)}
             filterBar={
               <FilterBar
@@ -1121,7 +1128,7 @@ function LateNoteRow({ orgId, entry }) {
         </span>
         {entry.runId && (
           <Link
-            to={`/organizations/${orgId}/validation-runs/${entry.runId}`}
+            to={`/organizations/${orgId}/validation-runs/${entry.runId}?doc=${entry.doc.document_id}`}
             className="text-blue-600 hover:text-blue-800 hover:underline"
             onClick={(e) => e.stopPropagation()}
           >
@@ -1261,7 +1268,8 @@ function StaffListItem({ staff, selected, onClick }) {
 }
 
 
-function StaffDetailPanel({ staff, filterBar, onBack }) {
+function StaffDetailPanel({ staff, orgId, filterBar, onBack }) {
+  const navigate = useNavigate()
   const activeBlockers = staff.failedDocuments.length
   const avgAuditScore = staff.passRate
   const primaryRisk = staff.recurringFailures[0]?.name || 'None'
@@ -1270,6 +1278,13 @@ function StaffDetailPanel({ staff, filterBar, onBack }) {
   // notes that actually failed this rule, and each card surfaces that rule's
   // reasoning (rather than just the first fail).
   const [selectedRuleName, setSelectedRuleName] = useState(null)
+
+  // Navigate to the validation run detail page with the specific document selected
+  const handleDocumentClick = (doc) => {
+    if (doc.validation_run_id && doc.document_id) {
+      navigate(`/organizations/${orgId}/validation-runs/${doc.validation_run_id}?doc=${doc.document_id}`)
+    }
+  }
 
   // Reset the drill-down whenever we switch staff.
   useEffect(() => {
@@ -1422,7 +1437,11 @@ function StaffDetailPanel({ staff, filterBar, onBack }) {
             const reasoning = failedRule?.message?.replace(/^(FAIL|PASS|SKIP)\s*[-:]\s*/i, '') || 'No details available'
 
             return (
-              <div key={idx} className="p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer">
+              <div
+                key={idx}
+                className="p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+                onClick={() => handleDocumentClick(doc)}
+              >
                 <div className="flex items-start justify-between">
                   <div className="flex items-start gap-3">
                     <div className="w-8 h-8 bg-gray-200 rounded-lg flex items-center justify-center mt-0.5">
