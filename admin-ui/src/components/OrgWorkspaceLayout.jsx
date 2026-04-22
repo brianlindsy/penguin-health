@@ -74,12 +74,13 @@ export function OrgWorkspaceLayout({ children }) {
         {
           key: 'validation-results',
           label: 'Validation Results',
-          to: `/organizations/${orgId}?tab=validation`,
+          to: `/organizations/${orgId}/validation-results`,
           icon: DocumentIcon,
           // Avoid double-highlighting when we're already on the latest run —
           // that case lights up "Today's Validation" instead.
           active:
             !onLatestRun && (
+              pathname === `/organizations/${orgId}/validation-results` ||
               pathname.startsWith(`/organizations/${orgId}/validation-runs`) ||
               (pathname === `/organizations/${orgId}` && tab === 'validation')
             ),
