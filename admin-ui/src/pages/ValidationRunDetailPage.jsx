@@ -20,6 +20,31 @@ const FIELD_LABELS = {
 const getCredibleLink = (documentId) =>
   `https://www.cbh3.crediblebh.com/visit/clientvisit_view.asp?clientvisit_id=${documentId}&provportal=0`
 
+// Rule-status priority for display ordering: FAIL first (most urgent), then
+// PASS (confirmed), then SKIP/unknown. Returns a stable sorted copy of the
+// rules array without mutating the source.
+const STATUS_ORDER = { FAIL: 0, PASS: 1, SKIP: 2 }
+function sortRulesByStatus(rules) {
+  if (!rules) return []
+  return [...rules].sort((a, b) => {
+    const av = STATUS_ORDER[a?.status] ?? 3
+    const bv = STATUS_ORDER[b?.status] ?? 3
+    return av - bv
+  })
+}
+
+// Run IDs are emitted as YYYYMMDD-HHMMSS (e.g. "20260421-153039"), so we
+// can recover the run execution time even when the detail API doesn't echo
+// a `timestamp` field. Returns null if the id doesn't match the expected shape.
+function parseRunIdTimestamp(runId) {
+  if (!runId) return null
+  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/.exec(runId)
+  if (!m) return null
+  const [, y, mo, d, h, mi, s] = m
+  const t = new Date(+y, +mo - 1, +d, +h, +mi, +s).getTime()
+  return Number.isNaN(t) ? null : t
+}
+
 export function ValidationRunDetailPage() {
   const { orgId, runId } = useParams()
   const [data, setData] = useState(null)
@@ -33,6 +58,9 @@ export function ValidationRunDetailPage() {
   const [programFilter, setProgramFilter] = useState('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [dateFilter, setDateFilter] = useState('all')
+  // The detail endpoint doesn't echo a run timestamp, so grab it from the
+  // runs-list endpoint (same source the Validation Results tab uses).
+  const [runTimestamp, setRunTimestamp] = useState(null)
   const [customStartDate, setCustomStartDate] = useState('')
   const [customEndDate, setCustomEndDate] = useState('')
 
@@ -55,6 +83,22 @@ export function ValidationRunDetailPage() {
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
+  }, [orgId, runId])
+
+  // Fetch the run's own timestamp from the list endpoint — the detail payload
+  // doesn't include one. Failures are silent; the filter falls back to the
+  // parsed run-ID timestamp (which the list rows use identical).
+  useEffect(() => {
+    let cancelled = false
+    api.listValidationRuns(orgId)
+      .then(resp => {
+        if (cancelled) return
+        const list = (Array.isArray(resp) ? resp : resp?.runs) || []
+        const match = list.find(r => r.validation_run_id === runId)
+        if (match?.timestamp) setRunTimestamp(match.timestamp)
+      })
+      .catch(() => { /* fall back to run-id parsing */ })
+    return () => { cancelled = true }
   }, [orgId, runId])
 
   // Compute summary stats
@@ -111,9 +155,11 @@ export function ValidationRunDetailPage() {
   const filteredDocs = useMemo(() => {
     if (!data?.documents) return []
 
-    // Resolve date-filter cutoffs once per memo run. A doc's date comes from
-    // field_values.date (service date, e.g. "04/20/2026"); when absent we
-    // fall back to the run-level timestamp so the doc still participates.
+    // Resolve date-filter cutoffs once per memo run. The filter operates on
+    // the validation run's own timestamp (when the run was executed), not on
+    // each note's service date. Because all docs on this page belong to the
+    // same run, the filter ends up being all-or-nothing — either the run is
+    // inside the window and every doc passes, or none do.
     const dayMs = 24 * 60 * 60 * 1000
     const now = Date.now()
     let startCutoff = null
@@ -126,7 +172,33 @@ export function ValidationRunDetailPage() {
       if (customStartDate) startCutoff = new Date(customStartDate).getTime()
       if (customEndDate) endCutoff = new Date(customEndDate).getTime() + dayMs // end-inclusive
     }
-    const runTimestampMs = data?.timestamp ? new Date(data.timestamp).getTime() : null
+    // Prefer the timestamp we fetched from the list endpoint (same source
+    // that renders the Date column on the Validation Results tab). Fall back
+    // to any timestamp on the detail payload, then to parsing the run id.
+    let runTimestampMs = null
+    const candidates = [runTimestamp, data?.timestamp]
+    for (const c of candidates) {
+      if (!c) continue
+      const parsed = new Date(c).getTime()
+      if (!Number.isNaN(parsed)) { runTimestampMs = parsed; break }
+    }
+    if (runTimestampMs == null) runTimestampMs = parseRunIdTimestamp(runId)
+
+    const dateFilterActive = startCutoff != null || endCutoff != null
+    // Fail closed when a window is set but we can't determine the run time —
+    // better to show nothing than to silently ignore the user's filter.
+    const runPassesDateFilter = !dateFilterActive
+      ? true
+      : runTimestampMs == null
+        ? false
+        : (
+            (startCutoff == null || runTimestampMs >= startCutoff) &&
+            (endCutoff == null || runTimestampMs < endCutoff)
+          )
+
+    // Short-circuit: if the run itself falls outside the date window, no
+    // docs from this run are shown.
+    if (!runPassesDateFilter) return []
 
     return data.documents.filter(doc => {
       // Search filter
@@ -145,16 +217,18 @@ export function ValidationRunDetailPage() {
       // Rule filter: the rule result we look for on each doc depends on the
       // active status filter:
       //   Needs Action → rule must have FAILED
-      //   Confirmed    → rule must have PASSED (skips don't count here)
+      //   Confirmed    → rule must NOT have FAILED (PASS or SKIP both count,
+      //                  matching the Confirmed definition of "no fail").
+      //                  This way every rule in the dropdown is reachable:
+      //                  rules that never pass but only skip still surface
+      //                  their docs here.
       //   All statuses → rule just has to exist on the doc (any status)
       if (ruleFilter !== 'all') {
-        const targetStatus =
-          statusFilter === 'needs_action' ? 'FAIL'
-          : statusFilter === 'confirmed' ? 'PASS'
-          : null
         const hasMatchingRule = doc.rules?.some(r => {
           if ((r.rule_name || r.rule_id) !== ruleFilter) return false
-          return targetStatus ? r.status === targetStatus : true
+          if (statusFilter === 'needs_action') return r.status === 'FAIL'
+          if (statusFilter === 'confirmed') return r.status !== 'FAIL'
+          return true
         })
         if (!hasMatchingRule) return false
       }
@@ -168,23 +242,11 @@ export function ValidationRunDetailPage() {
         if (!hasCategory) return false
       }
 
-      // Date filter (uses the doc's service date; falls back to the run timestamp).
-      if (startCutoff != null || endCutoff != null) {
-        let t = null
-        const rawDate = doc.field_values?.date
-        if (rawDate) {
-          const parsed = new Date(rawDate).getTime()
-          if (!Number.isNaN(parsed)) t = parsed
-        }
-        if (t == null) t = runTimestampMs
-        if (t == null) return true // no date info — don't exclude
-        if (startCutoff != null && t < startCutoff) return false
-        if (endCutoff != null && t >= endCutoff) return false
-      }
+      // Date filter is applied at the run level above, not per doc.
 
       return true
     })
-  }, [data, searchTerm, statusFilter, ruleFilter, programFilter, categoryFilter, dateFilter, customStartDate, customEndDate])
+  }, [data, runId, runTimestamp, searchTerm, statusFilter, ruleFilter, programFilter, categoryFilter, dateFilter, customStartDate, customEndDate])
 
   if (loading) return <OrgWorkspaceLayout><div className="flex items-center justify-center h-64"><p className="text-gray-500">Loading validation run...</p></div></OrgWorkspaceLayout>
   if (error) return <OrgWorkspaceLayout><div className="p-4"><p className="text-red-600">Error: {error}</p></div></OrgWorkspaceLayout>
@@ -321,16 +383,14 @@ export function ValidationRunDetailPage() {
                 onClick={() => {
                   setSelectedDoc(doc)
                   // Rule filter is active → surface the matching rule on the
-                  // doc (respecting the status context if one is set). If no
+                  // doc (same status context rules as the list filter). If no
                   // rule filter, fall back to the first failing rule.
-                  const targetStatus =
-                    statusFilter === 'needs_action' ? 'FAIL'
-                    : statusFilter === 'confirmed' ? 'PASS'
-                    : null
                   const ruleMatch = ruleFilter !== 'all'
                     ? doc.rules?.find(r => {
                         if ((r.rule_name || r.rule_id) !== ruleFilter) return false
-                        return targetStatus ? r.status === targetStatus : true
+                        if (statusFilter === 'needs_action') return r.status === 'FAIL'
+                        if (statusFilter === 'confirmed') return r.status !== 'FAIL'
+                        return true
                       })
                     : null
                   const firstFailedRule = doc.rules?.find(r => r.status === 'FAIL')
@@ -505,9 +565,9 @@ function DocumentListItem({ doc, selected, onClick }) {
         )}
       </div>
 
-      {/* Rule status indicators */}
+      {/* Rule status indicators — sorted FAIL → PASS → SKIP */}
       <div className="flex gap-1 mt-2">
-        {doc.rules?.slice(0, 8).map((rule, idx) => (
+        {sortRulesByStatus(doc.rules).slice(0, 8).map((rule, idx) => (
           <div
             key={idx}
             className={`w-2 h-2 rounded-full ${
@@ -588,10 +648,10 @@ function DocumentDetailPanel({ doc, selectedRule, onSelectRule }) {
         />
       </div>
 
-      {/* Rule Selector */}
+      {/* Rule Selector — sorted FAIL → PASS → SKIP */}
       <div className="px-4 py-2 border-b border-gray-200 bg-gray-50 overflow-x-auto">
         <div className="flex gap-2">
-          {doc.rules?.map((rule, idx) => (
+          {sortRulesByStatus(doc.rules).map((rule, idx) => (
             <button
               key={idx}
               onClick={() => onSelectRule(rule)}
