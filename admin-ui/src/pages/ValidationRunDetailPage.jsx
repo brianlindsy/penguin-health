@@ -962,7 +962,7 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
       </div>
 
       {/* Recommended Next Steps */}
-      {isFailed && !isConfirmed && (
+      {isFailed && !isConfirmed && !isFixed && (
         <div className="p-4 rounded-lg border border-blue-200 bg-blue-50">
           <h5 className="text-sm font-medium text-blue-800 mb-2">Recommended Next Step</h5>
           <p className="text-sm text-blue-700">
@@ -972,8 +972,8 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
         </div>
       )}
 
-      {/* Confirm Finding Button - only for failed rules that haven't been confirmed */}
-      {isFailed && !isConfirmed && (
+      {/* Confirm Finding Button - only for failed rules that haven't been confirmed or fixed */}
+      {isFailed && !isConfirmed && !isFixed && (
         <div className="pt-2">
           <button
             onClick={() => onConfirmFinding(rule.rule_id)}
