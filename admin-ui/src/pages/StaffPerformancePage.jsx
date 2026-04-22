@@ -311,28 +311,27 @@ export function StaffPerformancePage() {
 }
 
 
-// Business-hours math. "48 business hours" = 48 hours excluding weekends,
-// treating each weekday as 24 available hours. Iterates day by day so it's
-// fast enough even over long ranges.
+// Business-hours math. We count whole business days between two dates
+// (normalizing both to start-of-day) and multiply by 24. That way the
+// threshold aligns with how humans talk about it: a note dated 4/20 picked
+// up by a run on 4/22 is "2 business days later" = 48 hours, which is NOT
+// strictly greater than 48 — so the note isn't late. A 4/20 service date
+// with a 4/23 run is 3 business days = 72 hours = late.
 function businessHoursBetween(start, end) {
-  const a = start instanceof Date ? start : new Date(start)
-  const b = end instanceof Date ? end : new Date(end)
+  const a = start instanceof Date ? new Date(start) : new Date(start)
+  const b = end instanceof Date ? new Date(end) : new Date(end)
   if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return null
+  a.setHours(0, 0, 0, 0)
+  b.setHours(0, 0, 0, 0)
   if (b <= a) return 0
-  const msPerHour = 60 * 60 * 1000
-  let total = 0
+  let days = 0
   const cur = new Date(a)
   while (cur < b) {
-    const dayEnd = new Date(cur)
-    dayEnd.setHours(24, 0, 0, 0)
-    const effectiveEnd = dayEnd > b ? b : dayEnd
+    cur.setDate(cur.getDate() + 1)
     const day = cur.getDay()
-    if (day !== 0 && day !== 6) {
-      total += (effectiveEnd - cur) / msPerHour
-    }
-    cur.setTime(dayEnd.getTime())
+    if (day !== 0 && day !== 6) days += 1
   }
-  return total
+  return days * 24
 }
 
 function ProgramSummaryView({
@@ -605,6 +604,12 @@ function ProgramSummaryView({
         )}
       </div>
 
+      {/* Analytics overview chart — appears above the per-program cards so
+          the user can spot which programs have the most late notes at a glance. */}
+      {viewMode === 'analytics' && analyticKey === 'late-notes' && (
+        <LateNotesChart programs={programs} lateNotesByProgram={lateNotesByProgram} />
+      )}
+
       {/*
         auto-fit + minmax makes the grid responsive: with few programs the cards
         stretch to fill the row; with many, they wrap at the min width. Bump
@@ -732,6 +737,88 @@ function AnalyticsBody({ analyticKey, onAnalyticChange, lateNotesSummary }) {
     </div>
   )
 }
+
+// Horizontal-bar chart summarizing late-notes counts across programs. The
+// longest program sets the scale so the relative differences are obvious,
+// while a small percentage label on the right gives the absolute rate.
+function LateNotesChart({ programs, lateNotesByProgram }) {
+  const entries = programs.map(p => {
+    const s = lateNotesByProgram.get(p.program)
+    const total = s?.totalNotes ?? 0
+    const late = s?.lateNotes?.length ?? 0
+    return { program: p.program, late, total }
+  }).filter(e => e.total > 0)
+
+  const sorted = [...entries].sort((a, b) => b.late - a.late || a.program.localeCompare(b.program))
+  const maxLate = Math.max(...sorted.map(e => e.late), 1)
+
+  const totalLate = sorted.reduce((sum, e) => sum + e.late, 0)
+  const totalNotes = sorted.reduce((sum, e) => sum + e.total, 0)
+  const overallPct = totalNotes > 0 ? Math.round((totalLate / totalNotes) * 100) : 0
+
+  if (sorted.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-5">
+      <div className="flex items-baseline justify-between mb-1">
+        <h2 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">
+          Late notes by program
+        </h2>
+        <span className="text-xs text-gray-500">
+          Submitted &gt; 48 business hrs after service date
+        </span>
+      </div>
+      <p className="text-xs text-gray-500 mb-4">
+        <span className="font-semibold text-gray-900">{totalLate}</span> late of{' '}
+        <span className="font-semibold text-gray-900">{totalNotes}</span> notes
+        <span className="text-gray-400"> ({overallPct}% overall)</span>
+      </p>
+
+      <div className="space-y-2.5">
+        {sorted.map(e => {
+          const barPct = (e.late / maxLate) * 100
+          const latePct = e.total > 0 ? Math.round((e.late / e.total) * 100) : 0
+          const tone = latePct >= 25 ? 'bg-red-500'
+            : latePct >= 10 ? 'bg-yellow-500'
+            : 'bg-green-500'
+          return (
+            <div key={e.program} className="grid grid-cols-[10rem,1fr,auto] items-center gap-3">
+              <div className="text-xs font-medium text-gray-700 truncate" title={e.program}>
+                {e.program}
+              </div>
+              <div className="relative h-5 bg-gray-100 rounded">
+                <div
+                  className={`${tone} h-full rounded transition-all`}
+                  style={{ width: `${barPct}%` }}
+                />
+                {/* Count label sits inside bar when big enough, outside otherwise */}
+                {barPct > 20 ? (
+                  <span className="absolute inset-y-0 left-2 flex items-center text-[11px] font-semibold text-white tabular-nums">
+                    {e.late}
+                  </span>
+                ) : (
+                  <span
+                    className="absolute inset-y-0 flex items-center text-[11px] font-semibold text-gray-700 tabular-nums"
+                    style={{ left: `calc(${barPct}% + 6px)` }}
+                  >
+                    {e.late}
+                  </span>
+                )}
+              </div>
+              <div className="text-xs text-gray-500 tabular-nums whitespace-nowrap">
+                of {e.total}
+                <span className="text-gray-400 ml-2">{latePct}%</span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 
 function LateNotesAnalytic({ summary }) {
   const total = summary?.totalNotes ?? 0
