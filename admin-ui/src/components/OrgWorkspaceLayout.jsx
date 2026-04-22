@@ -44,24 +44,24 @@ export function OrgWorkspaceLayout({ children }) {
 
   const sections = [
     {
-      label: 'Overview',
-      items: [
-        {
-          key: 'dashboard',
-          label: 'Dashboard',
-          to: `/organizations/${orgId}`,
-          icon: GridIcon,
-          active:
-            pathname === `/organizations/${orgId}` &&
-            tab !== 'rules' &&
-            tab !== 'validation' &&
-            tab !== 'field-mappings',
-        },
-      ],
-    },
-    {
       label: 'Data Management',
       items: [
+        {
+          key: 'todays-validation',
+          label: "Today's Validation",
+          to: latestRunPath,
+          icon: BoltIcon,
+          active: onLatestRun,
+          disabled: !latestRunPath,
+          disabledTitle: 'No validation runs yet',
+        },
+        {
+          key: 'staff-performance',
+          label: 'Staff Performance',
+          to: `/organizations/${orgId}/staff-performance`,
+          icon: UsersIcon,
+          active: pathname === `/organizations/${orgId}/staff-performance`,
+        },
         {
           key: 'audit-rules',
           label: 'Audit Rules',
@@ -83,22 +83,6 @@ export function OrgWorkspaceLayout({ children }) {
               pathname.startsWith(`/organizations/${orgId}/validation-runs`) ||
               (pathname === `/organizations/${orgId}` && tab === 'validation')
             ),
-        },
-        {
-          key: 'staff-performance',
-          label: 'Staff Performance',
-          to: `/organizations/${orgId}/staff-performance`,
-          icon: UsersIcon,
-          active: pathname === `/organizations/${orgId}/staff-performance`,
-        },
-        {
-          key: 'todays-validation',
-          label: "Today's Validation",
-          to: latestRunPath,
-          icon: BoltIcon,
-          active: onLatestRun,
-          disabled: !latestRunPath,
-          disabledTitle: 'No validation runs yet',
         },
       ],
     },
@@ -167,14 +151,6 @@ function NavItem({ item }) {
       <Icon className={`w-4 h-4 flex-shrink-0 ${active ? 'text-blue-700' : 'text-gray-500'}`} />
       <span className="truncate">{item.label}</span>
     </Link>
-  )
-}
-
-function GridIcon({ className }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-    </svg>
   )
 }
 
