@@ -78,11 +78,17 @@ export function ValidationRunDetailPage() {
 
         // Priority 1: Select document from URL query param if present
         if (docIdFromUrl) {
-          const targetDoc = result.documents?.find(d => d.document_id === docIdFromUrl)
+          const targetDoc = result.documents?.find(d => String(d.document_id) === String(docIdFromUrl))
           if (targetDoc) {
             setSelectedDoc(targetDoc)
             const firstFailedRule = targetDoc.rules?.find(r => r.status === 'FAIL')
             setSelectedRule(firstFailedRule || targetDoc.rules?.[0] || null)
+            // Reset filters to ensure the document is visible
+            setStatusFilter('all')
+            setSearchTerm('')
+            setProgramFilter('all')
+            setCategoryFilter('all')
+            setRuleFilter('all')
             // Clear query param to keep URL clean
             setSearchParams({}, { replace: true })
             return
