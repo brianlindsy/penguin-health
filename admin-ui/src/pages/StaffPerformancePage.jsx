@@ -489,12 +489,93 @@ function ProgramSummaryView({
     })
   }
 
+  // High-level KPIs shown at the top of the page. Sums/averages are taken
+  // across the already-filtered staffPerformance so they respect the period
+  // and category filters.
+  const overview = useMemo(() => {
+    const staffCount = staffPerformance.length
+    let totalErrors = 0
+    let auditedDocs = 0
+    let passedDocs = 0
+    let failedDocs = 0
+    staffPerformance.forEach(s => {
+      totalErrors += s.errorCount || 0
+      auditedDocs += s.auditedDocumentCount || 0
+      passedDocs += s.passedDocumentCount || 0
+      failedDocs += s.failedDocuments?.length || 0
+    })
+    const avgPassRate = auditedDocs > 0 ? Math.round((passedDocs / auditedDocs) * 100) : null
+
+    let totalLateNotes = 0
+    let totalNotes = 0
+    lateNotesByProgram.forEach(b => {
+      totalLateNotes += b.lateNotes?.length || 0
+      totalNotes += b.totalNotes || 0
+    })
+
+    return { staffCount, totalErrors, failedDocs, avgPassRate, totalLateNotes, totalNotes }
+  }, [staffPerformance, lateNotesByProgram])
+
+  // Top failing rules across everyone currently in scope — feeds the overview chart.
+  const topFailingRules = useMemo(() => {
+    const map = new Map()
+    staffPerformance.forEach(s => {
+      s.ruleFailures?.forEach((count, name) => {
+        if (!name) return
+        map.set(name, (map.get(name) || 0) + count)
+      })
+    })
+    return Array.from(map.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+      .slice(0, 8)
+  }, [staffPerformance])
+
   return (
     <div className="flex flex-col">
+      {/* Hero: title + KPI stats + top-rules chart */}
+      <div className="mb-5">
+        <h1 className="text-2xl font-semibold text-gray-900">Program Summary</h1>
+        <p className="text-sm text-gray-500 mt-1">
+          A system-level view of staff performance, rule failures, and documentation timeliness.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[auto,1fr] gap-4 mb-5">
+        {/* KPI stat cards — stacked 2×2 on the left */}
+        <div className="grid grid-cols-2 gap-3 xl:w-[320px]">
+          <KpiCard
+            label="Staff audited"
+            value={overview.staffCount}
+          />
+          <KpiCard
+            label="Total errors"
+            value={overview.totalErrors}
+            tone="red"
+          />
+          <KpiCard
+            label="Avg pass rate"
+            value={overview.avgPassRate == null ? '—' : `${overview.avgPassRate}%`}
+            tone={overview.avgPassRate == null ? null
+              : overview.avgPassRate === 100 ? 'green'
+              : overview.avgPassRate >= 75 ? 'amber'
+              : 'red'}
+          />
+          <KpiCard
+            label="Late notes"
+            value={overview.totalLateNotes}
+            subtext={overview.totalNotes > 0 ? `of ${overview.totalNotes}` : null}
+            tone={overview.totalLateNotes === 0 ? null : 'amber'}
+          />
+        </div>
+
+        {/* Top failing rules chart */}
+        <TopRulesChart rules={topFailingRules} />
+      </div>
+
       <div className="mb-4">
         <div className="flex items-end justify-between gap-4 flex-wrap">
           <div>
-            <h1 className="text-2xl font-semibold text-gray-900">Program Summary</h1>
             <p className="text-sm text-gray-500">
               {viewMode === 'staff'
                 ? 'Staff ranked by errors within each program. Click a name to open the risk profile.'
@@ -701,6 +782,73 @@ function ProgramSummaryCard({
 
 // Analytics overview: polished bar chart across programs + a stack of
 // collapsible program boxes showing each program's late notes (linked).
+// Compact top-of-page KPI. Tone tints the value color to match the metric
+// (errors red, perfect-pass green, warnings amber).
+function KpiCard({ label, value, subtext, tone }) {
+  const valueTone = tone === 'red' ? 'text-red-600'
+    : tone === 'green' ? 'text-emerald-600'
+    : tone === 'amber' ? 'text-amber-600'
+    : 'text-gray-900'
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-4 py-3">
+      <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{label}</div>
+      <div className={`text-2xl font-bold ${valueTone} mt-1 tabular-nums leading-tight`}>
+        {value}
+      </div>
+      {subtext && <div className="text-[10px] text-gray-400 mt-0.5">{subtext}</div>}
+    </div>
+  )
+}
+
+// Horizontal bar chart for the "what's failing most" overview up top. Simple
+// and scannable, so the user can spot the worst offenders without switching
+// views.
+function TopRulesChart({ rules }) {
+  const max = Math.max(...rules.map(r => r.count), 1)
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+      <div className="flex items-baseline justify-between mb-3 gap-4 flex-wrap">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-900">Top failing rules</h2>
+          <p className="text-[11px] text-gray-500 mt-0.5">
+            Ranked by failure count across staff in the selected window.
+          </p>
+        </div>
+        <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Failures</span>
+      </div>
+      {rules.length === 0 ? (
+        <p className="text-sm text-gray-400 italic py-4">No rule failures in the selected window.</p>
+      ) : (
+        <div className="space-y-2">
+          {rules.map(rule => {
+            const pct = (rule.count / max) * 100
+            return (
+              <div
+                key={rule.name}
+                className="grid grid-cols-[minmax(0,14rem),1fr,2.5rem] items-center gap-3"
+              >
+                <div className="text-xs text-gray-700 truncate" title={rule.name}>
+                  {rule.name}
+                </div>
+                <div className="relative h-4 bg-gray-100 rounded">
+                  <div
+                    className="h-full rounded bg-red-500 transition-[width] duration-500 ease-out"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                <div className="text-xs font-semibold text-gray-900 tabular-nums text-right">
+                  {rule.count}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 function LateNotesAnalyticsView({ orgId, programs, lateNotesByProgram }) {
   const entries = programs.map(p => {
     const s = lateNotesByProgram.get(p.program)
