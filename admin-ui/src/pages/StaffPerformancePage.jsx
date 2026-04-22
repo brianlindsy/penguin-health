@@ -525,15 +525,42 @@ function ProgramSummaryView({
 
   // Top failing rules across everyone currently in scope — feeds the overview chart.
   const topFailingRules = useMemo(() => {
-    const map = new Map()
+    // For each rule, track total failures + per-staff and per-program
+    // breakdowns so the chart row can drill down into who/where it's
+    // happening on click.
+    const ruleMap = new Map()
     staffPerformance.forEach(s => {
+      const program = s.program || 'Unknown'
       s.ruleFailures?.forEach((count, name) => {
         if (!name) return
-        map.set(name, (map.get(name) || 0) + count)
+        if (!ruleMap.has(name)) {
+          ruleMap.set(name, {
+            name,
+            count: 0,
+            staffBreakdown: new Map(), // staff.name -> { staff, count }
+            programBreakdown: new Map(), // program -> count
+          })
+        }
+        const entry = ruleMap.get(name)
+        entry.count += count
+        const prev = entry.staffBreakdown.get(s.name)
+        entry.staffBreakdown.set(s.name, {
+          staff: s,
+          count: (prev?.count || 0) + count,
+        })
+        entry.programBreakdown.set(program, (entry.programBreakdown.get(program) || 0) + count)
       })
     })
-    return Array.from(map.entries())
-      .map(([name, count]) => ({ name, count }))
+    return Array.from(ruleMap.values())
+      .map(entry => ({
+        name: entry.name,
+        count: entry.count,
+        staffBreakdown: Array.from(entry.staffBreakdown.values())
+          .sort((a, b) => b.count - a.count || a.staff.name.localeCompare(b.staff.name)),
+        programBreakdown: Array.from(entry.programBreakdown.entries())
+          .map(([name, count]) => ({ name, count }))
+          .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
+      }))
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
       .slice(0, 8)
   }, [staffPerformance])
@@ -620,7 +647,11 @@ function ProgramSummaryView({
 
       {/* Top Failing Rules — full width, plenty of room for long rule names */}
       <div className="mb-5">
-        <TopRulesChart rules={topFailingRules} />
+        <TopRulesChart
+          rules={topFailingRules}
+          onSelectStaff={onSelectStaff}
+          onSelectProgram={onSelectProgram}
+        />
       </div>
 
       {/* Late Notes — chart plus a per-program collapsible breakdown so the
@@ -826,18 +857,19 @@ function KpiCard({ label, value, subtext, tone }) {
   )
 }
 
-// Horizontal bar chart for the "what's failing most" overview up top. Simple
-// and scannable, so the user can spot the worst offenders without switching
-// views.
-function TopRulesChart({ rules }) {
+// Horizontal bar chart for "what's failing most". Each row is clickable to
+// drill down into which staff and programs are driving that rule's failures.
+function TopRulesChart({ rules, onSelectStaff, onSelectProgram }) {
+  const [expanded, setExpanded] = useState(null)
   const max = Math.max(...rules.map(r => r.count), 1)
+
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
       <div className="flex items-baseline justify-between mb-3 gap-4 flex-wrap">
         <div>
           <h2 className="text-sm font-semibold text-gray-900">Top failing rules</h2>
           <p className="text-[11px] text-gray-500 mt-0.5">
-            Ranked by failure count across staff in the selected window.
+            Ranked by failure count across staff in the selected window. Click a rule for the staff and program breakdown.
           </p>
         </div>
         <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Failures</span>
@@ -845,31 +877,123 @@ function TopRulesChart({ rules }) {
       {rules.length === 0 ? (
         <p className="text-sm text-gray-400 italic py-4">No rule failures in the selected window.</p>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-1">
           {rules.map(rule => {
             const pct = (rule.count / max) * 100
+            const isOpen = expanded === rule.name
             return (
-              <div
-                key={rule.name}
-                className="grid grid-cols-[minmax(0,14rem),1fr,2.5rem] items-center gap-3"
-              >
-                <div className="text-xs text-gray-700 truncate" title={rule.name}>
-                  {rule.name}
-                </div>
-                <div className="relative h-4 bg-gray-100 rounded">
-                  <div
-                    className="h-full rounded bg-red-500 transition-[width] duration-500 ease-out"
-                    style={{ width: `${pct}%` }}
+              <div key={rule.name}>
+                <button
+                  onClick={() => setExpanded(isOpen ? null : rule.name)}
+                  aria-expanded={isOpen}
+                  className={`w-full grid grid-cols-[1rem,minmax(0,14rem),1fr,2.5rem] items-center gap-3 py-1.5 px-1 rounded-md text-left transition-colors ${
+                    isOpen ? 'bg-gray-50' : 'hover:bg-gray-50'
+                  }`}
+                  title="Click to see staff and program breakdown"
+                >
+                  <svg
+                    className={`w-3 h-3 text-gray-400 transition-transform flex-shrink-0 ${isOpen ? 'rotate-90' : ''}`}
+                    fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                  <div className="text-xs text-gray-700 truncate" title={rule.name}>
+                    {rule.name}
+                  </div>
+                  <div className="relative h-4 bg-gray-100 rounded">
+                    <div
+                      className="h-full rounded bg-red-500 transition-[width] duration-500 ease-out"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <div className="text-xs font-semibold text-gray-900 tabular-nums text-right">
+                    {rule.count}
+                  </div>
+                </button>
+
+                {isOpen && (
+                  <RuleBreakdown
+                    rule={rule}
+                    onSelectStaff={onSelectStaff}
+                    onSelectProgram={onSelectProgram}
                   />
-                </div>
-                <div className="text-xs font-semibold text-gray-900 tabular-nums text-right">
-                  {rule.count}
-                </div>
+                )}
               </div>
             )
           })}
         </div>
       )}
+    </div>
+  )
+}
+
+function RuleBreakdown({ rule, onSelectStaff, onSelectProgram }) {
+  const staffMax = Math.max(...rule.staffBreakdown.map(s => s.count), 1)
+  const programMax = Math.max(...rule.programBreakdown.map(p => p.count), 1)
+
+  return (
+    <div className="ml-4 pl-4 border-l-2 border-gray-100 my-2 grid grid-cols-1 md:grid-cols-2 gap-5 py-2">
+      {/* Staff breakdown */}
+      <div>
+        <div className="flex items-baseline justify-between mb-2">
+          <h4 className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Staff</h4>
+          <span className="text-[10px] text-gray-400">{rule.staffBreakdown.length}</span>
+        </div>
+        <div className="space-y-1.5">
+          {rule.staffBreakdown.map(entry => {
+            const pct = (entry.count / staffMax) * 100
+            return (
+              <button
+                key={entry.staff.name}
+                onClick={() => onSelectStaff?.(entry.staff)}
+                className="w-full grid grid-cols-[1fr,3rem,2rem] items-center gap-2 text-left py-1 rounded hover:bg-white"
+                title={`Open ${entry.staff.name}'s risk profile`}
+              >
+                <span className="text-xs text-blue-600 hover:text-blue-800 truncate">
+                  {entry.staff.name}
+                </span>
+                <div className="relative h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                  <div className="bg-red-400 h-full rounded-full" style={{ width: `${pct}%` }} />
+                </div>
+                <span className="text-xs font-semibold text-gray-700 tabular-nums text-right">
+                  {entry.count}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Program breakdown */}
+      <div>
+        <div className="flex items-baseline justify-between mb-2">
+          <h4 className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Programs</h4>
+          <span className="text-[10px] text-gray-400">{rule.programBreakdown.length}</span>
+        </div>
+        <div className="space-y-1.5">
+          {rule.programBreakdown.map(entry => {
+            const pct = (entry.count / programMax) * 100
+            return (
+              <button
+                key={entry.name}
+                onClick={() => onSelectProgram?.(entry.name)}
+                className="w-full grid grid-cols-[1fr,3rem,2rem] items-center gap-2 text-left py-1 rounded hover:bg-white"
+                title={`Filter the staff list by ${entry.name}`}
+              >
+                <span className="text-xs text-blue-600 hover:text-blue-800 truncate">
+                  {entry.name}
+                </span>
+                <div className="relative h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                  <div className="bg-red-400 h-full rounded-full" style={{ width: `${pct}%` }} />
+                </div>
+                <span className="text-xs font-semibold text-gray-700 tabular-nums text-right">
+                  {entry.count}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      </div>
     </div>
   )
 }
