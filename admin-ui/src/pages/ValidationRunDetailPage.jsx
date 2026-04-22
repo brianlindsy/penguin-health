@@ -345,71 +345,88 @@ export function ValidationRunDetailPage() {
         />
       </div>
 
-      {/* Search and Filters */}
-      <div className="flex items-center gap-3 mb-4">
-        <div className="flex-1 relative">
+      {/* Search and Filters — compact pill style matching the other dashboard pages */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        {/* Search pill */}
+        <div className="flex-1 min-w-[260px] relative">
           <input
             type="text"
             placeholder="Search by ID, employee, or program..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            className="w-full pl-9 pr-8 py-1.5 bg-white border border-gray-200 rounded-full text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
-          <svg className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="absolute left-3 top-2 h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
+          {searchTerm && (
+            <button
+              onClick={() => setSearchTerm('')}
+              className="absolute right-2 top-1.5 text-gray-400 hover:text-gray-600 p-0.5"
+              aria-label="Clear search"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
         </div>
 
-        <select
+        <FilterChip
+          active={ruleFilter !== 'all'}
+          iconPath="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
           value={ruleFilter}
-          onChange={(e) => setRuleFilter(e.target.value)}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 max-w-[240px] truncate"
+          onChange={setRuleFilter}
+          maxSelectWidth="max-w-[180px]"
         >
-          <option value="all">All Rules</option>
+          <option value="all">All rules</option>
           {rules.map(r => <option key={r} value={r}>{r}</option>)}
-        </select>
+        </FilterChip>
 
-        <select
+        <FilterChip
+          active={programFilter !== 'all'}
+          iconPath="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"
           value={programFilter}
-          onChange={(e) => setProgramFilter(e.target.value)}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          onChange={setProgramFilter}
         >
-          <option value="all">All Programs</option>
+          <option value="all">All programs</option>
           {programs.map(p => <option key={p} value={p}>{p}</option>)}
-        </select>
+        </FilterChip>
 
-        <select
+        <FilterChip
+          active={categoryFilter !== 'all'}
+          iconPath="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
           value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          onChange={setCategoryFilter}
         >
-          <option value="all">All Categories</option>
+          <option value="all">All categories</option>
           {categories.map(c => <option key={c} value={c}>{c}</option>)}
-        </select>
+        </FilterChip>
 
-        <select
+        <FilterChip
+          active={dateFilter !== 'all'}
+          iconPath="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
           value={dateFilter}
-          onChange={(e) => setDateFilter(e.target.value)}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          onChange={setDateFilter}
         >
-          <option value="all">All Dates</option>
+          <option value="all">All dates</option>
           <option value="24h">Last 24 hours</option>
           <option value="7d">Last 7 days</option>
           <option value="30d">Last 30 days</option>
           <option value="90d">Last 90 days</option>
           <option value="custom">Custom range</option>
-        </select>
+        </FilterChip>
       </div>
 
       {dateFilter === 'custom' && (
-        <div className="flex items-end gap-3 mb-4">
+        <div className="flex items-end gap-3 mb-4 flex-wrap">
           <div className="flex flex-col">
             <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">From</label>
             <input
               type="date"
               value={customStartDate}
               onChange={(e) => setCustomStartDate(e.target.value)}
-              className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
           <div className="flex flex-col">
@@ -418,7 +435,7 @@ export function ValidationRunDetailPage() {
               type="date"
               value={customEndDate}
               onChange={(e) => setCustomEndDate(e.target.value)}
-              className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
           <button
@@ -631,6 +648,38 @@ export function ValidationRunDetailPage() {
       </div>
     </div>
     </OrgWorkspaceLayout>
+  )
+}
+
+
+// Pill-style filter dropdown: icon + borderless inline select inside a
+// rounded chip. When a non-default value is picked the chip tints blue
+// so it's clear something's filtered at a glance.
+function FilterChip({ active, iconPath, value, onChange, children, maxSelectWidth = 'max-w-[160px]' }) {
+  return (
+    <div
+      className={`inline-flex items-center gap-1.5 rounded-full pl-3 pr-1 py-0.5 border shadow-sm transition-colors ${
+        active
+          ? 'bg-blue-50 border-blue-200'
+          : 'bg-white border-gray-200 hover:border-gray-300'
+      }`}
+    >
+      <svg
+        className={`w-3.5 h-3.5 ${active ? 'text-blue-500' : 'text-gray-400'}`}
+        fill="none" stroke="currentColor" viewBox="0 0 24 24"
+      >
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={iconPath} />
+      </svg>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`text-xs font-medium bg-transparent border-0 focus:outline-none focus:ring-0 pr-1 py-1 cursor-pointer truncate ${maxSelectWidth} ${
+          active ? 'text-blue-700' : 'text-gray-700'
+        }`}
+      >
+        {children}
+      </select>
+    </div>
   )
 }
 
