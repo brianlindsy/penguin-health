@@ -533,35 +533,71 @@ function ProgramSummaryView({
 
   return (
     <div className="flex flex-col">
-      {/* Hero: title + KPI stats + top-rules chart */}
-      <div className="mb-5">
-        <h1 className="text-2xl font-semibold text-gray-900">Program Summary</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          A system-level view of staff performance, rule failures, and documentation timeliness.
-        </p>
+      {/* Hero: title + primary date filter */}
+      <div className="mb-5 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">Program Summary</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            A system-level view of staff performance, rule failures, and documentation timeliness.
+          </p>
+        </div>
+        <DateFilterChip
+          periodFilter={periodFilter}
+          onPeriodChange={onPeriodChange}
+        />
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[auto,1fr] gap-4 mb-5">
-        {/* KPI stat cards — stacked on the left */}
-        <div className="grid grid-cols-1 gap-3 xl:w-[260px]">
-          <KpiCard
-            label="Staff audited"
-            value={overview.staffCount}
-          />
-          <KpiCard
-            label="Total errors"
-            value={overview.totalErrors}
-            tone="red"
-          />
-          <KpiCard
-            label="Late notes"
-            value={overview.totalLateNotes}
-            subtext={overview.totalNotes > 0 ? `of ${overview.totalNotes}` : null}
-            tone={overview.totalLateNotes === 0 ? null : 'amber'}
-          />
+      {/* Custom range inputs appear here when the user picks "Custom range" */}
+      {periodFilter === 'custom' && (
+        <div className="flex items-end gap-3 mb-5 flex-wrap">
+          <div className="flex flex-col">
+            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">From</label>
+            <input
+              type="date"
+              value={customStartDate}
+              onChange={(e) => onCustomStartChange(e.target.value)}
+              className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div className="flex flex-col">
+            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">To</label>
+            <input
+              type="date"
+              value={customEndDate}
+              onChange={(e) => onCustomEndChange(e.target.value)}
+              className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <button
+            onClick={() => { onPeriodChange('all'); onCustomStartChange(''); onCustomEndChange('') }}
+            className="text-sm text-blue-600 hover:text-blue-800 px-2 py-2"
+          >
+            Clear
+          </button>
         </div>
+      )}
 
-        {/* Top failing rules chart */}
+      {/* KPI stat cards — horizontal row */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+        <KpiCard
+          label="Staff audited"
+          value={overview.staffCount}
+        />
+        <KpiCard
+          label="Total errors"
+          value={overview.totalErrors}
+          tone="red"
+        />
+        <KpiCard
+          label="Late notes"
+          value={overview.totalLateNotes}
+          subtext={overview.totalNotes > 0 ? `of ${overview.totalNotes}` : null}
+          tone={overview.totalLateNotes === 0 ? null : 'amber'}
+        />
+      </div>
+
+      {/* Top failing rules chart — full width below the KPIs */}
+      <div className="mb-5">
         <TopRulesChart rules={topFailingRules} />
       </div>
 
@@ -580,7 +616,7 @@ function ProgramSummaryView({
             {[
               { value: 'staff', label: 'By Staff' },
               { value: 'rules', label: 'By Rule' },
-              { value: 'analytics', label: 'Analytics' },
+              { value: 'analytics', label: 'Late Notes' },
             ].map(opt => (
               <button
                 key={opt.value}
@@ -597,84 +633,35 @@ function ProgramSummaryView({
           </div>
         </div>
 
-        {/* Filters row: category pills on the left, compact date chip on the right */}
-        <div className="mt-3 flex items-center gap-3 flex-wrap">
-          {availableCategories.length > 0 && (
-            <>
-              <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Category</span>
-              {availableCategories.map(cat => {
-                const active = categoryFilter.has(cat)
-                return (
-                  <button
-                    key={cat}
-                    onClick={() => toggleCategory(cat)}
-                    aria-pressed={active}
-                    className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                      active
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                    }`}
-                  >
-                    {cat}
-                  </button>
-                )
-              })}
-              {categoryFilter.size > 0 && (
+        {/* Category filter row — date filter now lives at the top of the page. */}
+        {availableCategories.length > 0 && (
+          <div className="mt-3 flex items-center gap-3 flex-wrap">
+            <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Category</span>
+            {availableCategories.map(cat => {
+              const active = categoryFilter.has(cat)
+              return (
                 <button
-                  onClick={() => setCategoryFilter(new Set())}
-                  className="text-xs text-blue-600 hover:text-blue-800"
+                  key={cat}
+                  onClick={() => toggleCategory(cat)}
+                  aria-pressed={active}
+                  className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                    active
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
                 >
-                  Clear
+                  {cat}
                 </button>
-              )}
-            </>
-          )}
-
-          <div className="ml-auto inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded-full pl-2 pr-1 py-0.5 shadow-sm">
-            <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
-            <select
-              value={periodFilter}
-              onChange={(e) => onPeriodChange(e.target.value)}
-              className="text-xs font-medium text-gray-700 bg-transparent border-0 focus:outline-none focus:ring-0 pr-1 py-0.5 cursor-pointer"
-            >
-              <option value="all">All time</option>
-              <option value="24h">Last 24 hours</option>
-              <option value="7d">Last 7 days</option>
-              <option value="30d">Last 30 days</option>
-              <option value="90d">Last 90 days</option>
-              <option value="custom">Custom range</option>
-            </select>
-          </div>
-        </div>
-
-        {periodFilter === 'custom' && (
-          <div className="mt-3 flex items-end gap-3 flex-wrap">
-            <div className="flex flex-col">
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">From</label>
-              <input
-                type="date"
-                value={customStartDate}
-                onChange={(e) => onCustomStartChange(e.target.value)}
-                className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div className="flex flex-col">
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">To</label>
-              <input
-                type="date"
-                value={customEndDate}
-                onChange={(e) => onCustomEndChange(e.target.value)}
-                className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <button
-              onClick={() => { onPeriodChange('all'); onCustomStartChange(''); onCustomEndChange('') }}
-              className="text-sm text-blue-600 hover:text-blue-800 px-2 py-2"
-            >
-              Clear
-            </button>
+              )
+            })}
+            {categoryFilter.size > 0 && (
+              <button
+                onClick={() => setCategoryFilter(new Set())}
+                className="text-xs text-blue-600 hover:text-blue-800"
+              >
+                Clear
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -774,6 +761,30 @@ function ProgramSummaryCard({
 
 // Analytics overview: polished bar chart across programs + a stack of
 // collapsible program boxes showing each program's late notes (linked).
+// Primary date filter for the whole page — lives in the hero row. Compact
+// pill with a calendar icon and an inline borderless select.
+function DateFilterChip({ periodFilter, onPeriodChange }) {
+  return (
+    <div className="inline-flex items-center gap-2 bg-white border border-gray-200 rounded-full pl-3 pr-1.5 py-1 shadow-sm">
+      <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+      </svg>
+      <select
+        value={periodFilter}
+        onChange={(e) => onPeriodChange(e.target.value)}
+        className="text-sm font-medium text-gray-700 bg-transparent border-0 focus:outline-none focus:ring-0 pr-1 py-0.5 cursor-pointer"
+      >
+        <option value="all">All time</option>
+        <option value="24h">Last 24 hours</option>
+        <option value="7d">Last 7 days</option>
+        <option value="30d">Last 30 days</option>
+        <option value="90d">Last 90 days</option>
+        <option value="custom">Custom range</option>
+      </select>
+    </div>
+  )
+}
+
 // Compact top-of-page KPI. Tone tints the value color to match the metric
 // (errors red, perfect-pass green, warnings amber).
 function KpiCard({ label, value, subtext, tone }) {
