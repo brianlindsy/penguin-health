@@ -1040,6 +1040,7 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
   const isConfirmed = rule.finding_confirmed
   const isFixed = rule.fixed
   const hasFeedbackGiven = rule.feedback_given
+  const isLlmRule = rule.rule_type !== 'deterministic'  // Default is 'llm' when not set
 
   return (
     <div className="space-y-4">
@@ -1111,15 +1112,19 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
             >
               {isConfirming ? 'Confirming...' : 'Confirm Finding'}
             </button>
-            <button
-              onClick={() => setMarkingIncorrectRuleId(rule.rule_id)}
-              className="px-4 py-2 bg-gray-500 text-white text-sm font-medium rounded-md hover:bg-gray-600"
-            >
-              Mark Incorrect
-            </button>
+            {isLlmRule && (
+              <button
+                onClick={() => setMarkingIncorrectRuleId(rule.rule_id)}
+                className="px-4 py-2 bg-gray-500 text-white text-sm font-medium rounded-md hover:bg-gray-600"
+              >
+                Mark Incorrect
+              </button>
+            )}
           </div>
           <p className="text-xs text-gray-500 mt-2">
-            Confirm if the finding is correct and needs staff action, or mark as incorrect if this is a false positive.
+            {isLlmRule
+              ? 'Confirm if the finding is correct and needs staff action, or mark as incorrect if this is a false positive.'
+              : 'Confirm if the finding is correct and needs staff action.'}
           </p>
         </div>
       )}

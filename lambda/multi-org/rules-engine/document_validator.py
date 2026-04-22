@@ -40,7 +40,8 @@ def evaluate_rule(rule_config, fields, data=None):
     result = {
         'rule_id': rule_config.get('rule_id'),
         'rule_name': rule_config.get('name'),
-        'category': rule_config.get('category')
+        'category': rule_config.get('category'),
+        'rule_type': rule_type,
     }
 
     try:
