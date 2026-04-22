@@ -114,4 +114,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ rule_id: ruleId }),
     }),
+
+  markIncorrect: (orgId, runId, docId, ruleId) =>
+    request(`/api/organizations/${orgId}/validation-runs/${runId}/documents/${docId}/mark-incorrect`, {
+      method: 'PUT',
+      body: JSON.stringify({ rule_id: ruleId }),
+    }),
 }

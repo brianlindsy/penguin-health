@@ -172,6 +172,7 @@ class AdminUi(Construct):
             ("GET",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}"),
             ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/confirm-finding"),
             ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-resolved"),
+            ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-incorrect"),
         ]
 
         for method, path in routes:
