@@ -269,6 +269,20 @@ export function ValidationRunDetailPage() {
     })
   }, [data, runId, runTimestamp, searchTerm, statusFilter, ruleFilter, programFilter, categoryFilter, dateFilter, customStartDate, customEndDate])
 
+  // When status filter changes, select the first document in the filtered list
+  useEffect(() => {
+    if (filteredDocs.length > 0) {
+      const firstDoc = filteredDocs[0]
+      setSelectedDoc(firstDoc)
+      // Select the first failed rule if exists, otherwise first rule
+      const firstFailedRule = firstDoc.rules?.find(r => r.status === 'FAIL')
+      setSelectedRule(firstFailedRule || firstDoc.rules?.[0] || null)
+    } else {
+      setSelectedDoc(null)
+      setSelectedRule(null)
+    }
+  }, [statusFilter])
+
   if (loading) return <OrgWorkspaceLayout><div className="flex items-center justify-center h-64"><p className="text-gray-500">Loading validation run...</p></div></OrgWorkspaceLayout>
   if (error) return <OrgWorkspaceLayout><div className="p-4"><p className="text-red-600">Error: {error}</p></div></OrgWorkspaceLayout>
   if (!data) return <OrgWorkspaceLayout><div className="p-4"><p className="text-gray-500">Validation run not found</p></div></OrgWorkspaceLayout>
