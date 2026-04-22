@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
@@ -48,7 +48,8 @@ function parseRunIdTimestamp(runId) {
 export function ValidationRunDetailPage() {
   const { orgId, runId } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
-  const docIdFromUrl = searchParams.get('doc')
+  // Capture initial doc ID from URL on first render only
+  const initialDocIdRef = useRef(searchParams.get('doc'))
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -72,6 +73,7 @@ export function ValidationRunDetailPage() {
   const [customEndDate, setCustomEndDate] = useState('')
 
   useEffect(() => {
+    const docIdFromUrl = initialDocIdRef.current
     api.getValidationRun(orgId, runId)
       .then(result => {
         setData(result)
@@ -91,6 +93,8 @@ export function ValidationRunDetailPage() {
             setRuleFilter('all')
             // Clear query param to keep URL clean
             setSearchParams({}, { replace: true })
+            // Clear the ref so navigation within the page works normally
+            initialDocIdRef.current = null
             return
           }
           // Document not found - fall through to default behavior
@@ -111,7 +115,7 @@ export function ValidationRunDetailPage() {
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
-  }, [orgId, runId, docIdFromUrl, setSearchParams])
+  }, [orgId, runId, setSearchParams])
 
   // Fetch the run's own timestamp from the list endpoint — the detail payload
   // doesn't include one. Failures are silent; the filter falls back to the
