@@ -108,4 +108,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ rule_id: ruleId }),
     }),
+
+  markResolved: (orgId, runId, docId, ruleId) =>
+    request(`/api/organizations/${orgId}/validation-runs/${runId}/documents/${docId}/mark-resolved`, {
+      method: 'PUT',
+      body: JSON.stringify({ rule_id: ruleId }),
+    }),
 }
