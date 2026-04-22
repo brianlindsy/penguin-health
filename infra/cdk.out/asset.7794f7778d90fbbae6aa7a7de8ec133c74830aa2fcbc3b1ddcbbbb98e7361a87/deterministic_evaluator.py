@@ -490,10 +490,9 @@ def evaluate_condition(condition, fields):
     Evaluate a single condition against the extracted fields.
 
     Args:
-        condition: Condition dict with field, operator, compare_to, value, description
+        condition: Condition dict with field, operator, compare_to, value
             - field: Field name or list of field names (fallback order)
             - compare_to: Field name or list of field names (fallback order)
-            - description: Human-readable description of what this condition checks
         fields: Dict of extracted field values
 
     Returns:
@@ -503,7 +502,6 @@ def evaluate_condition(condition, fields):
     operator = condition.get('operator')
     compare_to = condition.get('compare_to')
     value = condition.get('value')
-    description = condition.get('description')
 
     # Get field value (supports fallback list)
     field_value, field_name = get_field_value(fields, field_spec)
@@ -535,24 +533,18 @@ def evaluate_condition(condition, fields):
         try:
             result = op_func(field_date, compare_date, value)
             if result:
-                msg = description if description else f"'{field_name}' ({field_value}) {operator}"
-                if not description:
-                    if compare_to:
-                        msg += f" '{compare_field_name}' ({compare_value})"
-                    if value is not None:
-                        msg += f" (value: {value})"
+                msg = f"'{field_name}' ({field_value}) {operator}"
+                if compare_to:
+                    msg += f" '{compare_field_name}' ({compare_value})"
+                if value is not None:
+                    msg += f" (value: {value})"
                 return True, msg, False
             else:
-                if description:
-                    msg = f"{description}: '{field_name}'={field_value}"
-                    if compare_to:
-                        msg += f", '{compare_field_name}'={compare_value}"
-                else:
-                    msg = f"'{field_name}' ({field_value}) failed {operator}"
-                    if compare_to:
-                        msg += f" '{compare_field_name}' ({compare_value})"
-                    if value is not None:
-                        msg += f" (value: {value})"
+                msg = f"'{field_name}' ({field_value}) failed {operator}"
+                if compare_to:
+                    msg += f" '{compare_field_name}' ({compare_value})"
+                if value is not None:
+                    msg += f" (value: {value})"
                 return False, msg, False
         except Exception as e:
             return False, f"Error evaluating {operator}: {str(e)}", True
@@ -562,22 +554,18 @@ def evaluate_condition(condition, fields):
         try:
             result = op_func(field_value, compare_value, value)
             if result:
-                msg = description if description else f"'{field_name}' ({field_value}) {operator}"
-                if not description:
-                    if compare_to:
-                        msg += f" '{compare_field_name}' ({compare_value})"
-                    elif value is not None:
-                        msg += f" '{value}'"
+                msg = f"'{field_name}' ({field_value}) {operator}"
+                if compare_to:
+                    msg += f" '{compare_field_name}' ({compare_value})"
+                elif value is not None:
+                    msg += f" '{value}'"
                 return True, msg, False
             else:
-                if description:
-                    msg = f"{description}: '{field_name}'={field_value}"
-                else:
-                    msg = f"'{field_name}' ({field_value}) failed {operator}"
-                    if compare_to:
-                        msg += f" '{compare_field_name}' ({compare_value})"
-                    elif value is not None:
-                        msg += f" '{value}'"
+                msg = f"'{field_name}' ({field_value}) failed {operator}"
+                if compare_to:
+                    msg += f" '{compare_field_name}' ({compare_value})"
+                elif value is not None:
+                    msg += f" '{value}'"
                 return False, msg, False
         except Exception as e:
             return False, f"Error evaluating {operator}: {str(e)}", True
@@ -597,24 +585,18 @@ def evaluate_condition(condition, fields):
         try:
             result = op_func(field_num, compare_num, value)
             if result:
-                msg = description if description else f"'{field_name}' ({field_num}) {operator}"
-                if not description:
-                    if compare_to:
-                        msg += f" '{compare_field_name}' ({compare_num})"
-                    elif value is not None:
-                        msg += f" {value}"
+                msg = f"'{field_name}' ({field_num}) {operator}"
+                if compare_to:
+                    msg += f" '{compare_field_name}' ({compare_num})"
+                elif value is not None:
+                    msg += f" {value}"
                 return True, msg, False
             else:
-                if description:
-                    msg = f"{description}: '{field_name}'={field_num}"
-                    if compare_to:
-                        msg += f", '{compare_field_name}'={compare_num}"
-                else:
-                    msg = f"'{field_name}' ({field_num}) failed {operator}"
-                    if compare_to:
-                        msg += f" '{compare_field_name}' ({compare_num})"
-                    elif value is not None:
-                        msg += f" {value}"
+                msg = f"'{field_name}' ({field_num}) failed {operator}"
+                if compare_to:
+                    msg += f" '{compare_field_name}' ({compare_num})"
+                elif value is not None:
+                    msg += f" {value}"
                 return False, msg, False
         except Exception as e:
             return False, f"Error evaluating {operator}: {str(e)}", True
@@ -633,13 +615,10 @@ def evaluate_condition(condition, fields):
         try:
             result = op_func(field_time, None, value)
             if result:
-                msg = description if description else f"'{field_name}' ({field_value}) {operator} {value}"
+                msg = f"'{field_name}' ({field_value}) {operator} {value}"
                 return True, msg, False
             else:
-                if description:
-                    msg = f"{description}: '{field_name}'={field_value}"
-                else:
-                    msg = f"'{field_name}' ({field_value}) failed {operator} {value}"
+                msg = f"'{field_name}' ({field_value}) failed {operator} {value}"
                 return False, msg, False
         except Exception as e:
             return False, f"Error evaluating {operator}: {str(e)}", True
@@ -659,19 +638,14 @@ def evaluate_condition(condition, fields):
         try:
             result = op_func(field_dt, compare_dt, value)
             if result:
-                msg = description if description else f"'{field_name}' ({field_value}) {operator}"
-                if not description and compare_to:
+                msg = f"'{field_name}' ({field_value}) {operator}"
+                if compare_to:
                     msg += f" '{compare_field_name}' ({compare_value})"
                 return True, msg, False
             else:
-                if description:
-                    msg = f"{description}: '{field_name}'={field_value}"
-                    if compare_to:
-                        msg += f", '{compare_field_name}'={compare_value}"
-                else:
-                    msg = f"'{field_name}' ({field_value}) failed {operator}"
-                    if compare_to:
-                        msg += f" '{compare_field_name}' ({compare_value})"
+                msg = f"'{field_name}' ({field_value}) failed {operator}"
+                if compare_to:
+                    msg += f" '{compare_field_name}' ({compare_value})"
                 return False, msg, False
         except Exception as e:
             return False, f"Error evaluating {operator}: {str(e)}", True
@@ -856,10 +830,6 @@ def evaluate_deterministic_rule(rule_config, fields, data=None):
         if not conditionals:
             return 'SKIP', 'No conditionals defined for conditional rule'
 
-        # Track the primary field value for better failure messages
-        primary_field_value = None
-        primary_field_name = None
-
         for conditional in conditionals:
             if_conditions = conditional.get('if', [])
             then_clause = conditional.get('then')
@@ -872,14 +842,6 @@ def evaluate_deterministic_rule(rule_config, fields, data=None):
             if_messages = []
             if_skip = False
             for cond in if_conditions:
-                # Capture the primary field being checked (first condition's field)
-                if primary_field_name is None:
-                    field_spec = cond.get('field')
-                    field_val, field_nm = get_field_value(csv_columns, field_spec)
-                    if field_val is not None:
-                        primary_field_value = field_val
-                        primary_field_name = field_nm
-
                 passed, message, skip = evaluate_condition(cond, csv_columns)
                 if_results.append(passed)
                 if_messages.append(message)
@@ -928,14 +890,6 @@ def evaluate_deterministic_rule(rule_config, fields, data=None):
                     return 'FAIL', f"FAIL - Conditional IF matched but THEN failed: IF ({'; '.join(if_messages)}) THEN FAILED ({'; '.join(failed)})"
 
         # No conditionals matched - rule fails (value not in any acceptable category)
-        # Use custom fail_message if provided, otherwise build a descriptive message
-        fail_message = rule_config.get('fail_message')
-        if fail_message:
-            if primary_field_value:
-                return 'FAIL', f"FAIL - {fail_message}: '{primary_field_name}'={primary_field_value}"
-            return 'FAIL', f"FAIL - {fail_message}"
-        elif primary_field_value:
-            return 'FAIL', f"FAIL - Value not acceptable: '{primary_field_name}'={primary_field_value}"
         return 'FAIL', 'FAIL - No conditional IF clauses matched (value not acceptable)'
 
     # Standard condition evaluation for 'all' and 'any' logic
