@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
 
@@ -290,6 +290,7 @@ export function StaffPerformancePage() {
           />
         ) : (
           <ProgramSummaryView
+            orgId={orgId}
             staffPerformance={staffPerformance}
             filteredRuns={filteredRuns}
             ruleDefinitions={ruleDefinitions}
@@ -335,6 +336,7 @@ function businessHoursBetween(start, end) {
 }
 
 function ProgramSummaryView({
+  orgId,
   staffPerformance,
   filteredRuns,
   ruleDefinitions,
@@ -604,34 +606,33 @@ function ProgramSummaryView({
         )}
       </div>
 
-      {/* Analytics overview chart — appears above the per-program cards so
-          the user can spot which programs have the most late notes at a glance. */}
-      {viewMode === 'analytics' && analyticKey === 'late-notes' && (
-        <LateNotesChart programs={programs} lateNotesByProgram={lateNotesByProgram} />
+      {viewMode === 'analytics' && analyticKey === 'late-notes' ? (
+        <LateNotesAnalyticsView
+          orgId={orgId}
+          programs={programs}
+          lateNotesByProgram={lateNotesByProgram}
+        />
+      ) : (
+        /*
+          auto-fit + minmax makes the grid responsive: with few programs the cards
+          stretch to fill the row; with many, they wrap at the min width. Bump
+          the floor (420px) to keep each card visibly "wide".
+        */
+        <div className="grid gap-5 grid-cols-[repeat(auto-fit,minmax(420px,1fr))]">
+          {programs.map(p => (
+            <ProgramSummaryCard
+              key={p.program}
+              program={p.program}
+              staff={p.staff}
+              totalErrors={p.totalErrors}
+              ruleFailures={p.ruleFailures}
+              viewMode={viewMode}
+              onSelectStaff={onSelectStaff}
+              onSelectProgram={onSelectProgram}
+            />
+          ))}
+        </div>
       )}
-
-      {/*
-        auto-fit + minmax makes the grid responsive: with few programs the cards
-        stretch to fill the row; with many, they wrap at the min width. Bump
-        the floor (420px) to keep each card visibly "wide".
-      */}
-      <div className="grid gap-5 grid-cols-[repeat(auto-fit,minmax(420px,1fr))]">
-        {programs.map(p => (
-          <ProgramSummaryCard
-            key={p.program}
-            program={p.program}
-            staff={p.staff}
-            totalErrors={p.totalErrors}
-            ruleFailures={p.ruleFailures}
-            viewMode={viewMode}
-            analyticKey={analyticKey}
-            onAnalyticChange={setAnalyticKey}
-            lateNotesSummary={lateNotesByProgram.get(p.program)}
-            onSelectStaff={onSelectStaff}
-            onSelectProgram={onSelectProgram}
-          />
-        ))}
-      </div>
     </div>
   )
 }
@@ -643,13 +644,9 @@ function ProgramSummaryCard({
   totalErrors,
   ruleFailures,
   viewMode,
-  analyticKey,
-  onAnalyticChange,
-  lateNotesSummary,
   onSelectStaff,
   onSelectProgram,
 }) {
-  const isAnalytics = viewMode === 'analytics'
   return (
     <div className="bg-gray-50 rounded-xl border border-gray-200 shadow-md hover:shadow-lg transition-shadow p-6 flex flex-col">
       <div className="mb-3 pb-3 border-b border-gray-200">
@@ -661,155 +658,147 @@ function ProgramSummaryCard({
           {program}
         </button>
         <p className="text-sm text-gray-600 mt-1">
-          {isAnalytics
-            ? `${lateNotesSummary?.totalNotes ?? 0} notes in this program`
-            : `${staff.length} staff · ${totalErrors} ${totalErrors === 1 ? 'error' : 'errors'}`}
+          {staff.length} staff · {totalErrors} {totalErrors === 1 ? 'error' : 'errors'}
         </p>
       </div>
 
-      {isAnalytics ? (
-        <AnalyticsBody
-          analyticKey={analyticKey}
-          onAnalyticChange={onAnalyticChange}
-          lateNotesSummary={lateNotesSummary}
-        />
-      ) : (
-        /* Fixed height for ~5 rows (each row ≈ 32px) before scrolling kicks in */
-        <div className="overflow-y-auto max-h-40 -mx-2">
-          {viewMode === 'rules' ? (
-            ruleFailures.length === 0 ? (
-              <p className="px-2 py-1.5 text-sm text-gray-400">No rule failures.</p>
-            ) : (
-              ruleFailures.map(rule => (
-                <div
-                  key={rule.name}
-                  className="w-full flex items-center justify-between px-2 py-1.5 text-sm"
-                >
-                  <span className="text-gray-900 truncate" title={rule.name}>{rule.name}</span>
-                  <span className="text-base font-semibold text-gray-700 tabular-nums flex-shrink-0 ml-2">
-                    {rule.count}
-                  </span>
-                </div>
-              ))
-            )
+      {/* Fixed height for ~5 rows (each row ≈ 32px) before scrolling kicks in */}
+      <div className="overflow-y-auto max-h-40 -mx-2">
+        {viewMode === 'rules' ? (
+          ruleFailures.length === 0 ? (
+            <p className="px-2 py-1.5 text-sm text-gray-400">No rule failures.</p>
           ) : (
-            staff.map(s => (
-              <button
-                key={s.name}
-                onClick={() => onSelectStaff(s)}
-                className="w-full flex items-center justify-between px-2 py-1.5 rounded text-sm hover:bg-white transition-colors"
+            ruleFailures.map(rule => (
+              <div
+                key={rule.name}
+                className="w-full flex items-center justify-between px-2 py-1.5 text-sm"
               >
-                <span className="text-gray-900 truncate">{s.name}</span>
+                <span className="text-gray-900 truncate" title={rule.name}>{rule.name}</span>
                 <span className="text-base font-semibold text-gray-700 tabular-nums flex-shrink-0 ml-2">
-                  {s.errorCount ?? 0}
+                  {rule.count}
                 </span>
-              </button>
+              </div>
             ))
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// Analytics body renders one of the available analytic lenses. For now only
-// "late-notes" exists; the selector is already wired for future additions.
-function AnalyticsBody({ analyticKey, onAnalyticChange, lateNotesSummary }) {
-  const options = [
-    { value: 'late-notes', label: 'Late notes' },
-  ]
-  return (
-    <div>
-      <div className="flex items-center gap-2 mb-3">
-        <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Metric</span>
-        <select
-          value={analyticKey}
-          onChange={(e) => onAnalyticChange(e.target.value)}
-          className="text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded-full px-2.5 py-0.5 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
-        >
-          {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
+          )
+        ) : (
+          staff.map(s => (
+            <button
+              key={s.name}
+              onClick={() => onSelectStaff(s)}
+              className="w-full flex items-center justify-between px-2 py-1.5 rounded text-sm hover:bg-white transition-colors"
+            >
+              <span className="text-gray-900 truncate">{s.name}</span>
+              <span className="text-base font-semibold text-gray-700 tabular-nums flex-shrink-0 ml-2">
+                {s.errorCount ?? 0}
+              </span>
+            </button>
+          ))
+        )}
       </div>
-
-      {analyticKey === 'late-notes' && (
-        <LateNotesAnalytic summary={lateNotesSummary} />
-      )}
     </div>
   )
 }
 
-// Horizontal-bar chart summarizing late-notes counts across programs. The
-// longest program sets the scale so the relative differences are obvious,
-// while a small percentage label on the right gives the absolute rate.
-function LateNotesChart({ programs, lateNotesByProgram }) {
+// Analytics overview: polished bar chart across programs + a stack of
+// collapsible program boxes showing each program's late notes (linked).
+function LateNotesAnalyticsView({ orgId, programs, lateNotesByProgram }) {
   const entries = programs.map(p => {
     const s = lateNotesByProgram.get(p.program)
-    const total = s?.totalNotes ?? 0
-    const late = s?.lateNotes?.length ?? 0
-    return { program: p.program, late, total }
+    return {
+      program: p.program,
+      late: s?.lateNotes?.length ?? 0,
+      total: s?.totalNotes ?? 0,
+      lateNotes: s?.lateNotes ?? [],
+    }
   }).filter(e => e.total > 0)
 
   const sorted = [...entries].sort((a, b) => b.late - a.late || a.program.localeCompare(b.program))
-  const maxLate = Math.max(...sorted.map(e => e.late), 1)
-
-  const totalLate = sorted.reduce((sum, e) => sum + e.late, 0)
-  const totalNotes = sorted.reduce((sum, e) => sum + e.total, 0)
-  const overallPct = totalNotes > 0 ? Math.round((totalLate / totalNotes) * 100) : 0
 
   if (sorted.length === 0) {
-    return null
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 text-center text-gray-500">
+        No notes in the selected window.
+      </div>
+    )
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-5">
-      <div className="flex items-baseline justify-between mb-1">
-        <h2 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">
-          Late notes by program
-        </h2>
-        <span className="text-xs text-gray-500">
-          Submitted &gt; 48 business hrs after service date
-        </span>
-      </div>
-      <p className="text-xs text-gray-500 mb-4">
-        <span className="font-semibold text-gray-900">{totalLate}</span> late of{' '}
-        <span className="font-semibold text-gray-900">{totalNotes}</span> notes
-        <span className="text-gray-400"> ({overallPct}% overall)</span>
-      </p>
+    <div className="space-y-5">
+      <LateNotesChart entries={sorted} />
 
-      <div className="space-y-2.5">
-        {sorted.map(e => {
+      <div className="space-y-2">
+        {sorted.map(e => (
+          <LateNotesProgramBox key={e.program} orgId={orgId} entry={e} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// Polished horizontal bar chart: taller bars with gradient, soft track,
+// labels aligned in a consistent grid so rows line up crisply.
+function LateNotesChart({ entries }) {
+  const maxLate = Math.max(...entries.map(e => e.late), 1)
+  const totalLate = entries.reduce((sum, e) => sum + e.late, 0)
+  const totalNotes = entries.reduce((sum, e) => sum + e.total, 0)
+  const overallPct = totalNotes > 0 ? Math.round((totalLate / totalNotes) * 100) : 0
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+      <div className="flex items-start justify-between gap-4 flex-wrap mb-5">
+        <div>
+          <h2 className="text-base font-semibold text-gray-900">Late notes by program</h2>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Notes submitted &gt; 48 business hours after the service date.
+          </p>
+        </div>
+        <div className="text-right">
+          <div className="text-3xl font-bold text-gray-900 tabular-nums leading-none">
+            {totalLate}
+            <span className="text-base font-normal text-gray-400 ml-1">/ {totalNotes}</span>
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            {overallPct}% overall late
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {entries.map(e => {
           const barPct = (e.late / maxLate) * 100
           const latePct = e.total > 0 ? Math.round((e.late / e.total) * 100) : 0
-          const tone = latePct >= 25 ? 'bg-red-500'
-            : latePct >= 10 ? 'bg-yellow-500'
-            : 'bg-green-500'
+          const gradient = latePct >= 25 ? 'from-red-500 to-red-400'
+            : latePct >= 10 ? 'from-amber-500 to-amber-400'
+            : 'from-emerald-500 to-emerald-400'
           return (
-            <div key={e.program} className="grid grid-cols-[10rem,1fr,auto] items-center gap-3">
-              <div className="text-xs font-medium text-gray-700 truncate" title={e.program}>
+            <div
+              key={e.program}
+              className="grid grid-cols-[9rem,1fr,5rem] items-center gap-4"
+            >
+              <div className="text-xs font-semibold text-gray-700 uppercase tracking-wide truncate" title={e.program}>
                 {e.program}
               </div>
-              <div className="relative h-5 bg-gray-100 rounded">
+              <div className="relative h-8 bg-gray-100 rounded-lg overflow-hidden">
                 <div
-                  className={`${tone} h-full rounded transition-all`}
-                  style={{ width: `${barPct}%` }}
+                  className={`h-full rounded-lg bg-gradient-to-r ${gradient} shadow-sm transition-[width] duration-500 ease-out`}
+                  style={{ width: `${Math.max(barPct, e.late > 0 ? 2 : 0)}%` }}
                 />
-                {/* Count label sits inside bar when big enough, outside otherwise */}
-                {barPct > 20 ? (
-                  <span className="absolute inset-y-0 left-2 flex items-center text-[11px] font-semibold text-white tabular-nums">
-                    {e.late}
+                {e.late > 0 && barPct > 14 ? (
+                  <span className="absolute inset-y-0 left-3 flex items-center text-xs font-semibold text-white tabular-nums drop-shadow">
+                    {e.late} late
                   </span>
                 ) : (
                   <span
-                    className="absolute inset-y-0 flex items-center text-[11px] font-semibold text-gray-700 tabular-nums"
-                    style={{ left: `calc(${barPct}% + 6px)` }}
+                    className="absolute inset-y-0 flex items-center text-xs font-semibold text-gray-700 tabular-nums"
+                    style={{ left: `calc(${Math.max(barPct, e.late > 0 ? 2 : 0)}% + 8px)` }}
                   >
-                    {e.late}
+                    {e.late > 0 ? `${e.late} late` : 'None'}
                   </span>
                 )}
               </div>
-              <div className="text-xs text-gray-500 tabular-nums whitespace-nowrap">
-                of {e.total}
-                <span className="text-gray-400 ml-2">{latePct}%</span>
+              <div className="text-xs text-right text-gray-600 tabular-nums whitespace-nowrap">
+                <span className="font-semibold text-gray-900">{latePct}%</span>
+                <div className="text-[10px] text-gray-400">of {e.total}</div>
               </div>
             </div>
           )
@@ -819,60 +808,97 @@ function LateNotesChart({ programs, lateNotesByProgram }) {
   )
 }
 
-
-function LateNotesAnalytic({ summary }) {
-  const total = summary?.totalNotes ?? 0
-  const late = summary?.lateNotes?.length ?? 0
+// One program's expandable summary card: header shows the headline counts;
+// clicking toggles a list of the late notes, each linking out to the note
+// in Credible and to the validation run.
+function LateNotesProgramBox({ orgId, entry }) {
+  const [open, setOpen] = useState(false)
+  const { program, late, total, lateNotes } = entry
   const pct = total > 0 ? Math.round((late / total) * 100) : 0
-
-  if (total === 0) {
-    return (
-      <p className="text-sm text-gray-400 italic">No notes in this window.</p>
-    )
-  }
-
-  const toneBar = pct >= 25 ? 'bg-red-500' : pct >= 10 ? 'bg-yellow-500' : 'bg-green-500'
+  const tone = pct >= 25 ? 'bg-red-500' : pct >= 10 ? 'bg-amber-500' : 'bg-emerald-500'
+  const pctTextTone = pct >= 25 ? 'text-red-700' : pct >= 10 ? 'text-amber-700' : 'text-emerald-700'
+  const canExpand = late > 0
 
   return (
-    <div>
-      {/* Headline */}
-      <div className="flex items-baseline justify-between mb-1">
-        <div className="flex items-baseline gap-1.5">
-          <span className="text-xl font-bold text-gray-900 tabular-nums">{late}</span>
-          <span className="text-xs text-gray-500">of {total} submitted late (&gt;48 business hrs)</span>
-        </div>
-        <span className="text-sm font-semibold tabular-nums text-gray-700">{pct}%</span>
-      </div>
-      <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden mb-3">
-        <div className={`${toneBar} h-full rounded-full`} style={{ width: `${pct}%` }} />
-      </div>
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <button
+        onClick={() => canExpand && setOpen(!open)}
+        className={`w-full flex items-center gap-4 px-5 py-4 text-left transition-colors ${
+          canExpand ? 'hover:bg-gray-50' : 'cursor-default'
+        }`}
+        aria-expanded={open}
+        disabled={!canExpand}
+      >
+        <svg
+          className={`w-4 h-4 flex-shrink-0 transition-transform ${open ? 'rotate-90' : ''} ${
+            canExpand ? 'text-gray-400' : 'text-transparent'
+          }`}
+          fill="none" stroke="currentColor" viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
 
-      {/* Late notes list */}
-      {late === 0 ? (
-        <p className="text-sm text-gray-400 italic">All notes submitted within 48 business hours.</p>
-      ) : (
-        <div className="overflow-y-auto max-h-40 -mx-2">
-          {summary.lateNotes.map((entry, idx) => {
-            const employee = entry.doc.field_values?.employee_name || 'Unknown'
-            const date = entry.doc.field_values?.date || '—'
-            return (
-              <div
-                key={`${entry.doc.document_id}-${idx}`}
-                className="flex items-center justify-between px-2 py-1 text-xs"
-              >
-                <div className="min-w-0 flex items-baseline gap-1.5">
-                  <span className="text-gray-900 truncate">{employee}</span>
-                  <span className="text-gray-400">· {date}</span>
-                </div>
-                <span className="text-gray-700 tabular-nums flex-shrink-0 ml-2">
-                  {entry.daysLate}d late
-                </span>
-              </div>
-            )
-          })}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-2">
+            <span className="text-sm font-semibold text-gray-900 truncate">{program}</span>
+            <span className={`text-xs font-semibold ${pctTextTone}`}>{pct}%</span>
+          </div>
+          <div className="mt-1.5 relative h-1.5 bg-gray-100 rounded-full overflow-hidden max-w-md">
+            <div className={`${tone} h-full rounded-full`} style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+
+        <div className="text-right flex-shrink-0">
+          <div className="text-sm tabular-nums">
+            <span className="font-bold text-gray-900">{late}</span>
+            <span className="text-gray-400"> / {total}</span>
+          </div>
+          <div className="text-[10px] uppercase tracking-wide text-gray-400">late / total</div>
+        </div>
+      </button>
+
+      {open && canExpand && (
+        <div className="border-t border-gray-100 px-5 py-3 bg-gray-50">
+          <ul className="divide-y divide-gray-100">
+            {lateNotes.map((entry, idx) => (
+              <LateNoteRow key={`${entry.doc.document_id}-${idx}`} orgId={orgId} entry={entry} />
+            ))}
+          </ul>
         </div>
       )}
     </div>
+  )
+}
+
+function LateNoteRow({ orgId, entry }) {
+  const employee = entry.doc.field_values?.employee_name || 'Unknown'
+  const date = entry.doc.field_values?.date || '—'
+  const program = entry.doc.field_values?.program
+  return (
+    <li className="py-2 flex items-center justify-between gap-3 text-xs">
+      <div className="min-w-0 flex items-center gap-2 flex-wrap">
+        <span className="font-mono text-gray-500 flex-shrink-0">
+          #{entry.doc.document_id}
+        </span>
+        <span className="text-gray-900 font-medium truncate">{employee}</span>
+        {program && <span className="text-gray-400">· {program}</span>}
+        <span className="text-gray-400">· service {date}</span>
+      </div>
+      <div className="flex items-center gap-3 flex-shrink-0">
+        <span className="text-gray-700 tabular-nums font-semibold">
+          {entry.daysLate}d late
+        </span>
+        {entry.runId && (
+          <Link
+            to={`/organizations/${orgId}/validation-runs/${entry.runId}`}
+            className="text-blue-600 hover:text-blue-800 hover:underline"
+            onClick={(e) => e.stopPropagation()}
+          >
+            View run
+          </Link>
+        )}
+      </div>
+    </li>
   )
 }
 
