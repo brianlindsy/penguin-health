@@ -648,7 +648,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "f87334e010d97ef2703eaca37143b69523cda33550c835977e7869fe31bfe8ac.zip"
+     "S3Key": "5cf248dce8635bb4bceed269484bbf864bb5ba01897bb84a915d581a52a91fc6.zip"
     },
     "Environment": {
      "Variables": {
@@ -688,7 +688,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminApiFunction/Resource",
-    "aws:asset:path": "asset.f87334e010d97ef2703eaca37143b69523cda33550c835977e7869fe31bfe8ac",
+    "aws:asset:path": "asset.5cf248dce8635bb4bceed269484bbf864bb5ba01897bb84a915d581a52a91fc6",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -2494,7 +2494,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "7a0d6d7d6cf45775a8166ffc08514407f10498aa7939ccc6428ae073c516ea5a.zip"
+     "S3Key": "cdc747ed39bdab61f67f53ca0b4ab6ce9131a50bb83bc546dac22c1f3f9848cf.zip"
     },
     "FunctionName": "penguin-health-rules-engine-rag",
     "Handler": "rules_engine_rag.lambda_handler",
@@ -2524,7 +2524,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/RulesEngineRagFn/Resource",
-    "aws:asset:path": "asset.7a0d6d7d6cf45775a8166ffc08514407f10498aa7939ccc6428ae073c516ea5a",
+    "aws:asset:path": "asset.cdc747ed39bdab61f67f53ca0b4ab6ce9131a50bb83bc546dac22c1f3f9848cf",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -2677,7 +2677,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "a1e537d26cd6ae4756b6c6ffcb113cf64432b8d6c061c20a117eff570c6afa0a.zip"
+     "S3Key": "b9679be775b9bced1c4256ba12f6db3abdf2218328374c33c655bf28956a138c.zip"
     },
     "FunctionName": "penguin-health-csv-splitter-multi-org",
     "Handler": "csv_splitter_multi_org.lambda_handler",
@@ -2707,7 +2707,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/CsvSplitterFn/Resource",
-    "aws:asset:path": "asset.a1e537d26cd6ae4756b6c6ffcb113cf64432b8d6c061c20a117eff570c6afa0a",
+    "aws:asset:path": "asset.b9679be775b9bced1c4256ba12f6db3abdf2218328374c33c655bf28956a138c",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -2716,7 +2716,7 @@
    "Type": "AWS::Events::Rule",
    "Properties": {
     "Name": "penguin-health-catholic-charities-validation-schedule",
-    "ScheduleExpression": "cron(0 3 * * ? *)",
+    "ScheduleExpression": "cron(0 10 * * ? *)",
     "State": "ENABLED",
     "Tags": [
      {
