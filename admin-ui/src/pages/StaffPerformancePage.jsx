@@ -542,8 +542,8 @@ function ProgramSummaryView({
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[auto,1fr] gap-4 mb-5">
-        {/* KPI stat cards — stacked 2×2 on the left */}
-        <div className="grid grid-cols-2 gap-3 xl:w-[320px]">
+        {/* KPI stat cards — stacked on the left */}
+        <div className="grid grid-cols-1 gap-3 xl:w-[260px]">
           <KpiCard
             label="Staff audited"
             value={overview.staffCount}
@@ -552,14 +552,6 @@ function ProgramSummaryView({
             label="Total errors"
             value={overview.totalErrors}
             tone="red"
-          />
-          <KpiCard
-            label="Avg pass rate"
-            value={overview.avgPassRate == null ? '—' : `${overview.avgPassRate}%`}
-            tone={overview.avgPassRate == null ? null
-              : overview.avgPassRate === 100 ? 'green'
-              : overview.avgPassRate >= 75 ? 'amber'
-              : 'red'}
           />
           <KpiCard
             label="Late notes"
