@@ -1278,7 +1278,28 @@ def enhance_note(event, path_params, body, **kwargs):
             retries=1
         )
         print(f"Response JSON: {response_json}")
-        return response(200, {'enhanced_note': response_json.get('new_clarification_note')})
+
+        enhanced_note = response_json.get('new_clarification_note')
+
+        # If a new note was generated and rule_id is provided, save it to the rule
+        if enhanced_note and rule_id:
+            try:
+                # Append the new note to the rule's notes array
+                table.update_item(
+                    Key={'pk': f'ORG#{org_id}', 'sk': f'RULE#{rule_id}'},
+                    UpdateExpression='SET notes = list_append(if_not_exists(notes, :empty_list), :new_note), updated_at = :ts',
+                    ExpressionAttributeValues={
+                        ':new_note': [enhanced_note],
+                        ':empty_list': [],
+                        ':ts': datetime.utcnow().isoformat() + 'Z',
+                    },
+                )
+                print(f"Saved enhanced note to rule {rule_id}")
+            except Exception as save_err:
+                print(f"Error saving note to rule {rule_id}: {save_err}")
+                # Don't fail the request if saving fails, just log it
+
+        return response(200, {'enhanced_note': enhanced_note})
     except Exception as e:
         print(f"Error in enhance_note invoking Claude model: {e}")
         return response(500, {'error': str(e)})
