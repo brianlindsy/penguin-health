@@ -103,8 +103,9 @@ export const api = {
   getValidationResult: (orgId, runId, docId) =>
     request(`/api/organizations/${orgId}/validation-runs/${runId}/documents/${docId}`),
 
-  confirmFinding: (orgId, runId, docId) =>
+  confirmFinding: (orgId, runId, docId, ruleId) =>
     request(`/api/organizations/${orgId}/validation-runs/${runId}/documents/${docId}/confirm-finding`, {
       method: 'PUT',
+      body: JSON.stringify({ rule_id: ruleId }),
     }),
 }

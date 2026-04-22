@@ -523,9 +523,6 @@ def get_validation_run(event, path_params, **kwargs):
             'summary': convert_decimals(item.get('summary', {})),
             'rules': convert_decimals(item.get('rules', [])),
             'field_values': convert_decimals(item.get('field_values', {})),
-            'finding_confirmed': item.get('finding_confirmed', False),
-            'finding_confirmed_at': item.get('finding_confirmed_at'),
-            'finding_confirmed_by': item.get('finding_confirmed_by'),
         })
 
     return response(200, {
@@ -578,14 +575,19 @@ def get_validation_result(event, path_params, **kwargs):
 
 def confirm_finding(event, path_params, body, **kwargs):
     """
-    Confirm a finding for a document validation.
+    Confirm a finding for a specific rule on a document validation.
 
-    Sets finding_confirmed=true on the document validation record.
-    This moves the document from "Needs Action" to "Awaiting Staff Action" in the UI.
+    Expects body with rule_id to identify which rule's finding is being confirmed.
+    Updates the specific rule within the document's rules array to set finding_confirmed=true.
     """
     org_id = path_params.get('orgId')
     run_id = path_params.get('runId')
     doc_id = path_params.get('docId')
+
+    if not body or 'rule_id' not in body:
+        return response(400, {'error': 'Request body must include rule_id'})
+
+    rule_id = body['rule_id']
 
     claims, error = authorize_request(event, org_id=org_id)
     if error:
@@ -613,24 +615,41 @@ def confirm_finding(event, path_params, body, **kwargs):
     if not pk or not sk:
         return response(500, {'error': 'Item missing primary key attributes'})
 
-    # Update the item to set finding_confirmed=true
+    # Find the rule index in the rules array
+    rules = item.get('rules', [])
+    rule_index = None
+    for idx, rule in enumerate(rules):
+        if rule.get('rule_id') == rule_id:
+            rule_index = idx
+            break
+
+    if rule_index is None:
+        return response(404, {'error': f'Rule {rule_id} not found on document {doc_id}'})
+
+    # Update the specific rule in the rules array to set finding_confirmed=true
     try:
+        timestamp = datetime.utcnow().isoformat() + 'Z'
+        user = claims.get('email') or 'unknown'
+
         validation_results_table.update_item(
             Key={'pk': pk, 'sk': sk},
-            UpdateExpression='SET finding_confirmed = :val, finding_confirmed_at = :ts, finding_confirmed_by = :user',
+            UpdateExpression=f'SET rules[{rule_index}].finding_confirmed = :val, rules[{rule_index}].finding_confirmed_at = :ts, rules[{rule_index}].finding_confirmed_by = :user',
             ExpressionAttributeValues={
                 ':val': True,
-                ':ts': datetime.utcnow().isoformat() + 'Z',
-                ':user': claims.get('email') or 'unknown',
+                ':ts': timestamp,
+                ':user': user,
             },
         )
-        print(f"Confirmed finding for document {doc_id} in run {run_id}")
+        print(f"Confirmed finding for rule {rule_id} on document {doc_id} in run {run_id}")
 
         return response(200, {
             'message': 'Finding confirmed successfully',
             'document_id': doc_id,
             'validation_run_id': run_id,
+            'rule_id': rule_id,
             'finding_confirmed': True,
+            'finding_confirmed_at': timestamp,
+            'finding_confirmed_by': user,
         })
 
     except Exception as e:

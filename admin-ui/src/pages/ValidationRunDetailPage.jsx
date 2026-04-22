@@ -55,7 +55,7 @@ export function ValidationRunDetailPage() {
   const [searchTerm, setSearchTerm] = useState('')
   const [ruleFilter, setRuleFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all') // 'all' | 'needs_action' | 'awaiting_staff' | 'confirmed'
-  const [confirmingDoc, setConfirmingDoc] = useState(null)
+  const [confirmingRuleId, setConfirmingRuleId] = useState(null)
   const [programFilter, setProgramFilter] = useState('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [dateFilter, setDateFilter] = useState('all')
@@ -102,6 +102,13 @@ export function ValidationRunDetailPage() {
     return () => { cancelled = true }
   }, [orgId, runId])
 
+  // Helper function to check if all failed rules in a document have been confirmed
+  const allFailedRulesConfirmed = (doc) => {
+    const failedRules = doc.rules?.filter(r => r.status === 'FAIL') || []
+    if (failedRules.length === 0) return false // No failures means not applicable
+    return failedRules.every(r => r.finding_confirmed)
+  }
+
   // Compute summary stats
   const stats = useMemo(() => {
     if (!data?.documents) return { needsAction: 0, awaitingStaff: 0, confirmed: 0, revenueAtRisk: 0 }
@@ -113,11 +120,11 @@ export function ValidationRunDetailPage() {
 
     data.documents.forEach(doc => {
       if (doc.summary?.failed > 0) {
-        if (doc.finding_confirmed) {
-          // Finding confirmed - awaiting staff action
+        if (allFailedRulesConfirmed(doc)) {
+          // All failed rules confirmed - awaiting staff action
           awaitingStaff++
         } else {
-          // Has failures, not yet confirmed
+          // Has failures, not all confirmed yet
           needsAction++
         }
         // Sum up rate for documents with failures (both needs action and awaiting staff)
@@ -219,12 +226,12 @@ export function ValidationRunDetailPage() {
 
       // Status filter (from the Needs Action / Awaiting Staff / Confirmed summary cards at top)
       if (statusFilter === 'needs_action') {
-        // Needs action: has failures AND not yet confirmed
-        if (!(doc.summary?.failed > 0 && !doc.finding_confirmed)) return false
+        // Needs action: has failures AND not all failed rules confirmed yet
+        if (!(doc.summary?.failed > 0 && !allFailedRulesConfirmed(doc))) return false
       }
       if (statusFilter === 'awaiting_staff') {
-        // Awaiting staff: has failures AND finding confirmed
-        if (!(doc.summary?.failed > 0 && doc.finding_confirmed)) return false
+        // Awaiting staff: has failures AND all failed rules confirmed
+        if (!(doc.summary?.failed > 0 && allFailedRulesConfirmed(doc))) return false
       }
       if (statusFilter === 'confirmed' && !(doc.summary?.failed === 0)) return false
 
@@ -432,28 +439,45 @@ export function ValidationRunDetailPage() {
               doc={selectedDoc}
               selectedRule={selectedRule}
               onSelectRule={setSelectedRule}
-              confirmingDoc={confirmingDoc}
-              onConfirmFinding={async (docId) => {
-                setConfirmingDoc(docId)
+              confirmingRuleId={confirmingRuleId}
+              onConfirmFinding={async (ruleId) => {
+                setConfirmingRuleId(ruleId)
                 try {
-                  await api.confirmFinding(orgId, runId, docId)
-                  // Update the local state to reflect the confirmation
+                  await api.confirmFinding(orgId, runId, selectedDoc.document_id, ruleId)
+                  // Update the local state to reflect the rule confirmation
+                  const timestamp = new Date().toISOString()
                   setData(prev => ({
                     ...prev,
                     documents: prev.documents.map(d =>
-                      d.document_id === docId
-                        ? { ...d, finding_confirmed: true }
+                      d.document_id === selectedDoc.document_id
+                        ? {
+                            ...d,
+                            rules: d.rules.map(r =>
+                              r.rule_id === ruleId
+                                ? { ...r, finding_confirmed: true, finding_confirmed_at: timestamp }
+                                : r
+                            )
+                          }
                         : d
                     )
                   }))
-                  // Update selected doc if it's the one we just confirmed
-                  if (selectedDoc?.document_id === docId) {
-                    setSelectedDoc(prev => ({ ...prev, finding_confirmed: true }))
+                  // Update selected doc's rules
+                  setSelectedDoc(prev => ({
+                    ...prev,
+                    rules: prev.rules.map(r =>
+                      r.rule_id === ruleId
+                        ? { ...r, finding_confirmed: true, finding_confirmed_at: timestamp }
+                        : r
+                    )
+                  }))
+                  // Update selected rule if it's the one we just confirmed
+                  if (selectedRule?.rule_id === ruleId) {
+                    setSelectedRule(prev => ({ ...prev, finding_confirmed: true, finding_confirmed_at: timestamp }))
                   }
                 } catch (err) {
                   setError(`Failed to confirm finding: ${err.message}`)
                 } finally {
-                  setConfirmingDoc(null)
+                  setConfirmingRuleId(null)
                 }
               }}
             />
@@ -508,8 +532,11 @@ function SummaryCard({ label, value, subtext, color, active, onClick }) {
 
 
 function DocumentListItem({ doc, selected, onClick }) {
-  const failCount = doc.summary?.failed || 0
+  const failedRules = doc.rules?.filter(r => r.status === 'FAIL') || []
+  const failCount = failedRules.length
   const hasFailures = failCount > 0
+  const confirmedCount = failedRules.filter(r => r.finding_confirmed).length
+  const allConfirmed = hasFailures && confirmedCount === failCount
   const fv = doc.field_values || {}
 
   return (
@@ -537,14 +564,14 @@ function DocumentListItem({ doc, selected, onClick }) {
           </a>
         )}
         <div className="flex items-center gap-1">
-          {hasFailures && doc.finding_confirmed && (
+          {hasFailures && allConfirmed && (
             <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">
               Awaiting Staff
             </span>
           )}
-          {hasFailures && !doc.finding_confirmed && (
+          {hasFailures && !allConfirmed && (
             <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">
-              {failCount} fail{failCount !== 1 ? 's' : ''}
+              {confirmedCount > 0 ? `${failCount - confirmedCount}/${failCount}` : failCount} fail{failCount !== 1 ? 's' : ''}
             </span>
           )}
         </div>
@@ -639,12 +666,12 @@ function DocumentListItem({ doc, selected, onClick }) {
 }
 
 
-function DocumentDetailPanel({ doc, selectedRule, onSelectRule, confirmingDoc, onConfirmFinding }) {
+function DocumentDetailPanel({ doc, selectedRule, onSelectRule, confirmingRuleId, onConfirmFinding }) {
   const failedRules = doc.rules?.filter(r => r.status === 'FAIL') || []
   const passedRules = doc.rules?.filter(r => r.status === 'PASS') || []
   const skippedRules = doc.rules?.filter(r => r.status === 'SKIP') || []
-  const hasFailures = failedRules.length > 0
-  const isConfirming = confirmingDoc === doc.document_id
+  const confirmedCount = failedRules.filter(r => r.finding_confirmed).length
+  const allConfirmed = failedRules.length > 0 && confirmedCount === failedRules.length
 
   return (
     <div className="flex flex-col h-full">
@@ -672,24 +699,18 @@ function DocumentDetailPanel({ doc, selectedRule, onSelectRule, confirmingDoc, o
             <div className="text-gray-400">{doc.field_values?.date}</div>
           </div>
         </div>
-        {/* Confirm Finding button - only show for documents with failures that haven't been confirmed */}
-        {hasFailures && !doc.finding_confirmed && (
-          <div className="mt-3">
-            <button
-              onClick={() => onConfirmFinding(doc.document_id)}
-              disabled={isConfirming}
-              className="px-4 py-2 bg-yellow-500 text-white text-sm font-medium rounded-md hover:bg-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isConfirming ? 'Confirming...' : 'Confirm Finding'}
-            </button>
-          </div>
-        )}
-        {/* Show confirmed status if finding was confirmed */}
-        {doc.finding_confirmed && (
+        {/* Show confirmation progress or completed status */}
+        {failedRules.length > 0 && (
           <div className="mt-3 flex items-center gap-2">
-            <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-yellow-100 text-yellow-800">
-              Finding Confirmed - Awaiting Staff Action
-            </span>
+            {allConfirmed ? (
+              <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-yellow-100 text-yellow-800">
+                All Findings Confirmed - Awaiting Staff Action
+              </span>
+            ) : confirmedCount > 0 ? (
+              <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-orange-100 text-orange-800">
+                {confirmedCount}/{failedRules.length} Findings Confirmed
+              </span>
+            ) : null}
           </div>
         )}
       </div>
@@ -748,7 +769,12 @@ function DocumentDetailPanel({ doc, selectedRule, onSelectRule, confirmingDoc, o
       {/* Selected Rule Detail */}
       <div className="flex-1 overflow-y-auto p-4">
         {selectedRule ? (
-          <RuleDetailView rule={selectedRule} fieldValues={doc.field_values} />
+          <RuleDetailView
+            rule={selectedRule}
+            fieldValues={doc.field_values}
+            confirmingRuleId={confirmingRuleId}
+            onConfirmFinding={onConfirmFinding}
+          />
         ) : (
           <p className="text-gray-500">Select a rule to view details</p>
         )}
@@ -774,7 +800,7 @@ function RuleTab({ label, count, color }) {
 }
 
 
-function RuleDetailView({ rule, fieldValues }) {
+function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding }) {
   // Extract reasoning from message (format: "STATUS - reasoning")
   const extractReasoning = () => {
     const message = rule.message || ''
@@ -796,6 +822,9 @@ function RuleDetailView({ rule, fieldValues }) {
   }
 
   const colors = statusColors[rule.status] || statusColors.ERROR
+  const isConfirming = confirmingRuleId === rule.rule_id
+  const isFailed = rule.status === 'FAIL'
+  const isConfirmed = rule.finding_confirmed
 
   return (
     <div className="space-y-4">
@@ -809,9 +838,14 @@ function RuleDetailView({ rule, fieldValues }) {
             {rule.category}
           </span>
         )}
-        {rule.status === 'FAIL' && (
+        {isFailed && !isConfirmed && (
           <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-orange-100 text-orange-800">
             BILLING BLOCKER
+          </span>
+        )}
+        {isFailed && isConfirmed && (
+          <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-yellow-100 text-yellow-800">
+            FINDING CONFIRMED
           </span>
         )}
       </div>
@@ -831,12 +865,43 @@ function RuleDetailView({ rule, fieldValues }) {
       </div>
 
       {/* Recommended Next Steps */}
-      {rule.status === 'FAIL' && (
+      {isFailed && !isConfirmed && (
         <div className="p-4 rounded-lg border border-blue-200 bg-blue-50">
           <h5 className="text-sm font-medium text-blue-800 mb-2">Recommended Next Step</h5>
           <p className="text-sm text-blue-700">
             Review the documentation for this service to verify compliance with billing requirements.
             Update the chart if corrections are needed before resubmitting for validation.
+          </p>
+        </div>
+      )}
+
+      {/* Confirm Finding Button - only for failed rules that haven't been confirmed */}
+      {isFailed && !isConfirmed && (
+        <div className="pt-2">
+          <button
+            onClick={() => onConfirmFinding(rule.rule_id)}
+            disabled={isConfirming}
+            className="px-4 py-2 bg-yellow-500 text-white text-sm font-medium rounded-md hover:bg-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isConfirming ? 'Confirming...' : 'Confirm Finding'}
+          </button>
+          <p className="text-xs text-gray-500 mt-2">
+            Confirming this finding will mark it as reviewed and move it to the staff action queue.
+          </p>
+        </div>
+      )}
+
+      {/* Confirmed status with timestamp */}
+      {isFailed && isConfirmed && (
+        <div className="p-4 rounded-lg border border-yellow-200 bg-yellow-50">
+          <h5 className="text-sm font-medium text-yellow-800 mb-1">Finding Confirmed</h5>
+          <p className="text-sm text-yellow-700">
+            This finding has been reviewed and is awaiting staff action.
+            {rule.finding_confirmed_at && (
+              <span className="block text-xs text-yellow-600 mt-1">
+                Confirmed at: {new Date(rule.finding_confirmed_at).toLocaleString()}
+              </span>
+            )}
           </p>
         </div>
       )}
