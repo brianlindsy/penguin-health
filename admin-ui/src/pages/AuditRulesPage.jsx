@@ -13,9 +13,11 @@ export function AuditRulesPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('all')
-  // null = default (rule_id asc). 'asc' / 'desc' when the user has clicked
-  // the Category header to sort by that column.
-  const [categorySort, setCategorySort] = useState(null)
+  // Unified sort control for the table. Click a header to cycle:
+  //   other column       → asc on this column
+  //   asc on this column → desc on this column
+  //   desc on this column → back to default (ID asc)
+  const [sort, setSort] = useState({ column: 'id', direction: 'asc' })
 
   useEffect(() => {
     api.listRules(orgId)
@@ -37,35 +39,37 @@ export function AuditRulesPage() {
       : rules.filter(r => r.category === categoryFilter)
 
     const list = [...filtered]
-    if (categorySort) {
-      list.sort((a, b) => {
+    list.sort((a, b) => {
+      if (sort.column === 'category') {
         const cmp = (a.category || '').localeCompare(b.category || '')
-        return categorySort === 'asc' ? cmp : -cmp
-      })
-    } else {
-      list.sort((a, b) => {
-        const aNum = parseInt(a.rule_id) || 0
-        const bNum = parseInt(b.rule_id) || 0
-        return aNum - bNum
-      })
-    }
+        return sort.direction === 'asc' ? cmp : -cmp
+      }
+      // Default / 'id' column — numeric sort on the rule id.
+      const aNum = parseInt(a.rule_id) || 0
+      const bNum = parseInt(b.rule_id) || 0
+      return sort.direction === 'asc' ? aNum - bNum : bNum - aNum
+    })
     return list
-  }, [rules, categoryFilter, categorySort])
+  }, [rules, categoryFilter, sort])
 
-  const toggleCategorySort = () => {
-    setCategorySort(prev =>
-      prev === 'asc' ? 'desc' : prev === 'desc' ? null : 'asc'
-    )
+  const toggleSort = (column) => {
+    setSort(prev => {
+      if (prev.column !== column) return { column, direction: 'asc' }
+      if (prev.direction === 'asc') return { column, direction: 'desc' }
+      // desc → back to default
+      return { column: 'id', direction: 'asc' }
+    })
   }
 
-  const sortIndicator = categorySort === 'asc' ? '▲'
-    : categorySort === 'desc' ? '▼'
-    : null
+  const sortIndicator = (column) => {
+    if (sort.column !== column) return '⇅'
+    return sort.direction === 'asc' ? '▲' : '▼'
+  }
 
   return (
     <OrgWorkspaceLayout>
       <div>
-        <div className="mb-6">
+        <div className="mb-5">
           <h1 className="text-2xl font-semibold text-gray-900">Audit Rules</h1>
           <p className="text-sm text-gray-500 mt-1">
             {displayedRules.length}
@@ -75,24 +79,37 @@ export function AuditRulesPage() {
           </p>
         </div>
 
-        {/* Category filter */}
+        {/* Filter bar — compact pill controls, matching the Staff Performance
+            landing page. Category is the only filter for now. */}
         {availableCategories.length > 0 && (
-          <div className="flex items-center gap-3 mb-4">
-            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Category</label>
-            <select
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-              className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="all">All categories</option>
-              {availableCategories.map(c => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+          <div className="flex items-center gap-2 mb-4 flex-wrap">
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-400 uppercase tracking-wide">
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+              </svg>
+              Filters
+            </span>
+
+            <div className="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded-full pl-3 pr-1 py-0.5 shadow-sm">
+              <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+              </svg>
+              <select
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+                className="text-xs font-medium text-gray-700 bg-transparent border-0 focus:outline-none focus:ring-0 pr-1 py-1 cursor-pointer"
+              >
+                <option value="all">All categories</option>
+                {availableCategories.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+
             {categoryFilter !== 'all' && (
               <button
                 onClick={() => setCategoryFilter('all')}
-                className="text-sm text-blue-600 hover:text-blue-800"
+                className="text-xs text-blue-600 hover:text-blue-800"
               >
                 Clear
               </button>
@@ -112,16 +129,25 @@ export function AuditRulesPage() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">ID</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                  <th className="px-4 py-3 text-left w-16">
                     <button
-                      onClick={toggleCategorySort}
+                      onClick={() => toggleSort('id')}
+                      className="inline-flex items-center gap-1 uppercase tracking-wide text-xs font-medium text-gray-500 hover:text-gray-700"
+                      title="Click to sort by rule number"
+                    >
+                      ID
+                      <span className="text-gray-400 w-3 text-center">{sortIndicator('id')}</span>
+                    </button>
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                  <th className="px-4 py-3 text-left">
+                    <button
+                      onClick={() => toggleSort('category')}
                       className="inline-flex items-center gap-1 uppercase tracking-wide text-xs font-medium text-gray-500 hover:text-gray-700"
                       title="Click to sort by category"
                     >
                       Category
-                      <span className="text-gray-400 w-3 text-center">{sortIndicator || '⇅'}</span>
+                      <span className="text-gray-400 w-3 text-center">{sortIndicator('category')}</span>
                     </button>
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Status</th>
