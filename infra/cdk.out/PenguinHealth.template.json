@@ -1620,6 +1620,65 @@
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--validation-runs--{runId}--documents--{docId}/Resource"
    }
   },
+  "AdminUiAdminHttpApiPUTapiorganizationsorgIdvalidationrunsrunIddocumentsdocIdconfirmfindingAdminApiIntegrationPermissionC3184FDD": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AdminUiAdminApiFunctionF9667708",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:",
+       {
+        "Ref": "AWS::AccountId"
+       },
+       ":",
+       {
+        "Ref": "AdminUiAdminHttpApi90C20B12"
+       },
+       "/*/*/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/confirm-finding"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/PUT--api--organizations--{orgId}--validation-runs--{runId}--documents--{docId}--confirm-finding/AdminApiIntegration-Permission"
+   }
+  },
+  "AdminUiAdminHttpApiPUTapiorganizationsorgIdvalidationrunsrunIddocumentsdocIdconfirmfindingDC3EE584": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "AdminUiAdminHttpApi90C20B12"
+    },
+    "AuthorizationType": "JWT",
+    "AuthorizerId": {
+     "Ref": "AdminUiAdminHttpApiCognitoAuthorizerCC473533"
+    },
+    "RouteKey": "PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/confirm-finding",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "AdminUiAdminHttpApiGETapiorganizationsAdminApiIntegrationD15C6010"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AdminUi/AdminHttpApi/PUT--api--organizations--{orgId}--validation-runs--{runId}--documents--{docId}--confirm-finding/Resource"
+   }
+  },
   "AdminUiFrontendBucket2357732C": {
    "Type": "AWS::S3::Bucket",
    "Properties": {

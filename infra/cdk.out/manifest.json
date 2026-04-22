@@ -22,7 +22,7 @@
         "validateOnSynth": false,
         "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-deploy-role-${AWS::AccountId}-us-east-1",
         "cloudFormationExecutionRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-cfn-exec-role-${AWS::AccountId}-us-east-1",
-        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1/7d32899408cd128761592b3ca1f06111243c715700302d5b15f6c3425427706e.json",
+        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1/665adca9b33dbd66f85cfffa5b07fde3e8fa5530cdd5d6554964c2c644293106.json",
         "requiresBootstrapStackVersion": 6,
         "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/hnb659fds/version",
         "additionalDependencies": [
@@ -327,6 +327,18 @@
           {
             "type": "aws:cdk:logicalId",
             "data": "AdminUiAdminHttpApiGETapiorganizationsorgIdvalidationrunsrunIddocumentsdocIdF84EACD0"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/PUT--api--organizations--{orgId}--validation-runs--{runId}--documents--{docId}--confirm-finding/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPUTapiorganizationsorgIdvalidationrunsrunIddocumentsdocIdconfirmfindingAdminApiIntegrationPermissionC3184FDD"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/PUT--api--organizations--{orgId}--validation-runs--{runId}--documents--{docId}--confirm-finding/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPUTapiorganizationsorgIdvalidationrunsrunIddocumentsdocIdconfirmfindingDC3EE584"
           }
         ],
         "/PenguinHealth/AdminUi/FrontendBucket/Resource": [
