@@ -18,6 +18,10 @@ export function RuleEditor() {
     rule_text: '',
     fields_to_extract: [],
     notes: [],
+    conditions: [],
+    conditionals: [],
+    logic: 'all',
+    fail_message: '',
   })
 
   const [loading, setLoading] = useState(true)
@@ -39,16 +43,22 @@ export function RuleEditor() {
           category: data.category,
           description: data.description || '',
           enabled: data.enabled,
-          type: data.type,
+          type: data.type || 'llm',
           version: data.version,
           rule_text: data.rule_text || '',
           fields_to_extract: data.fields_to_extract || [],
           notes: data.notes || [],
+          conditions: data.conditions || [],
+          conditionals: data.conditionals || [],
+          logic: data.logic || 'all',
+          fail_message: data.fail_message || '',
         })
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
   }, [orgId, ruleId])
+
+  const isDeterministic = rule.type === 'deterministic'
 
   const handleSave = async () => {
     setError('')
@@ -189,12 +199,14 @@ export function RuleEditor() {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
-            <input
-              type="text"
+            <select
               value={rule.type}
               onChange={e => updateField('type', e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+            >
+              <option value="llm">LLM</option>
+              <option value="deterministic">Deterministic</option>
+            </select>
           </div>
         </div>
 
@@ -226,126 +238,212 @@ export function RuleEditor() {
             <span className="text-red-500 ml-1">*</span>
           </label>
           <p className="text-xs text-gray-500 mb-2">
-            The validation logic and criteria for this rule. Describe what the LLM should check.
+            {isDeterministic
+              ? 'Description of what this rule validates (for documentation purposes).'
+              : 'The validation logic and criteria for this rule. Describe what the LLM should check.'}
           </p>
           <textarea
             value={rule.rule_text}
             onChange={e => updateField('rule_text', e.target.value)}
-            rows={8}
+            rows={isDeterministic ? 4 : 8}
             placeholder="Describe the validation rule, including failure conditions and pass criteria..."
             className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
-          <div className="mt-2 flex justify-end">
-            <button
-              onClick={handleGenerateFields}
-              disabled={generating || !rule.rule_text.trim()}
-              className="px-4 py-2 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 disabled:opacity-50"
-            >
-              {generating ? 'Generating...' : 'Generate Fields from Rule Text'}
-            </button>
-          </div>
+          {!isDeterministic && (
+            <div className="mt-2 flex justify-end">
+              <button
+                onClick={handleGenerateFields}
+                disabled={generating || !rule.rule_text.trim()}
+                className="px-4 py-2 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 disabled:opacity-50"
+              >
+                {generating ? 'Generating...' : 'Generate Fields from Rule Text'}
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Fields to Extract */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Fields to Extract</label>
-          <p className="text-xs text-gray-500 mb-2">
-            List of fields the LLM should extract from the chart text before validating.
-            Each field needs a name, type (string/number), and description.
-          </p>
-          <JsonEditor
-            value={rule.fields_to_extract}
-            onChange={v => updateField('fields_to_extract', v)}
-            label=""
-            placeholder={`[
+        {/* Deterministic Rule Configuration */}
+        {isDeterministic && (
+          <>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Logic</label>
+              <p className="text-xs text-gray-500 mb-2">
+                How conditions are evaluated: "all" (AND), "any" (OR), or "conditional" (if-then rules).
+              </p>
+              <select
+                value={rule.logic || 'all'}
+                onChange={e => updateField('logic', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="all">All (AND)</option>
+                <option value="any">Any (OR)</option>
+                <option value="conditional">Conditional (if-then)</option>
+              </select>
+            </div>
+
+            {rule.logic === 'conditional' ? (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Conditionals</label>
+                <p className="text-xs text-gray-500 mb-2">
+                  If-then rules: each conditional has "if" conditions and "then" conditions (or "pass").
+                </p>
+                <JsonEditor
+                  value={rule.conditionals}
+                  onChange={v => updateField('conditionals', v)}
+                  label=""
+                  rows={12}
+                  placeholder={`[
+  {
+    "if": [{ "field": "DiagnoseOnVisit", "operator": "starts_with", "value": "F20.0" }],
+    "then": [{ "type": "row_match", "question_field": "question_text", "question_value": "Insurance Type:", "answer_field": "answer", "answer_value": "Medicare" }]
+  },
+  {
+    "if": [{ "field": "DiagnoseOnVisit", "operator": "starts_with_any", "value": ["F33.1", "F33.2"] }],
+    "then": "pass"
+  }
+]`}
+                />
+              </div>
+            ) : (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Conditions</label>
+                <p className="text-xs text-gray-500 mb-2">
+                  List of conditions to evaluate against CSV columns. Each needs field, operator, and value or compare_to.
+                </p>
+                <JsonEditor
+                  value={rule.conditions}
+                  onChange={v => updateField('conditions', v)}
+                  label=""
+                  rows={10}
+                  placeholder={`[
+  { "field": "39_Plan_End_Date", "operator": "not_before", "compare_to": "8_Service_Date", "description": "Plan end date must be on or after service date" },
+  { "field": "age_at_service", "operator": "gte", "value": 18, "description": "Patient must be 18 or older" }
+]`}
+                />
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Fail Message</label>
+              <p className="text-xs text-gray-500 mb-2">
+                Custom message shown when the rule fails (for conditional logic when no conditions match).
+              </p>
+              <input
+                type="text"
+                value={rule.fail_message || ''}
+                onChange={e => updateField('fail_message', e.target.value)}
+                placeholder="e.g., Diagnosis code is not billable"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </>
+        )}
+
+        {/* LLM Rule Configuration */}
+        {!isDeterministic && (
+          <>
+            {/* Fields to Extract */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Fields to Extract</label>
+              <p className="text-xs text-gray-500 mb-2">
+                List of fields the LLM should extract from the chart text before validating.
+                Each field needs a name, type (string/number), and description.
+              </p>
+              <JsonEditor
+                value={rule.fields_to_extract}
+                onChange={v => updateField('fields_to_extract', v)}
+                label=""
+                placeholder={`[
   { "name": "recipient", "type": "string", "description": "The Recipient field from the header" },
   { "name": "service_location", "type": "string", "description": "Service Location field" }
 ]`}
-          />
-        </div>
-
-        {/* Notes */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
-          <p className="text-xs text-gray-500 mb-2">
-            Contextual notes to help the LLM understand the rule. Notes are enhanced by AI when added.
-          </p>
-
-          <div className="flex gap-2 mb-4">
-            <input
-              type="text"
-              value={newNote}
-              onChange={e => setNewNote(e.target.value)}
-              placeholder="Add a contextual note..."
-              className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              onKeyDown={e => e.key === 'Enter' && handleAddNote()}
-            />
-            <button
-              onClick={handleAddNote}
-              disabled={enhancing || !newNote.trim()}
-              className="px-4 py-2 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 disabled:opacity-50 whitespace-nowrap"
-            >
-              {enhancing ? 'Enhancing...' : 'Add & Enhance'}
-            </button>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4 mb-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Document ID
-              </label>
-              <input
-                type="text"
-                value={documentId}
-                onChange={e => setDocumentId(e.target.value)}
-                placeholder="ID of the medical note"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
+
+            {/* Notes */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Validation Run ID
-              </label>
-              <input
-                type="text"
-                value={validationRunId}
-                onChange={e => setValidationRunId(e.target.value)}
-                placeholder="ID of the validation run"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-          </div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+              <p className="text-xs text-gray-500 mb-2">
+                Contextual notes to help the LLM understand the rule. Notes are enhanced by AI when added.
+              </p>
 
-          {rule.notes.length > 0 && (
-            <ul className="space-y-2 mb-4">
-              {rule.notes.map((note, index) => (
-                <li key={index} className="flex items-start gap-2 bg-gray-50 p-3 rounded-md">
-                  <span className="flex-1 text-sm text-gray-700">{note}</span>
-                  <button
-                    onClick={() => handleRemoveNote(index)}
-                    className="text-xs text-red-500 hover:text-red-700"
-                  >
-                    Remove
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+              <div className="flex gap-2 mb-4">
+                <input
+                  type="text"
+                  value={newNote}
+                  onChange={e => setNewNote(e.target.value)}
+                  placeholder="Add a contextual note..."
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  onKeyDown={e => e.key === 'Enter' && handleAddNote()}
+                />
+                <button
+                  onClick={handleAddNote}
+                  disabled={enhancing || !newNote.trim()}
+                  className="px-4 py-2 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 disabled:opacity-50 whitespace-nowrap"
+                >
+                  {enhancing ? 'Enhancing...' : 'Add & Enhance'}
+                </button>
+              </div>
 
-          <p className="text-xs text-gray-400">
-            Or edit the JSON directly:
-          </p>
-          <JsonEditor
-            value={rule.notes}
-            onChange={v => updateField('notes', v)}
-            label=""
-            rows={4}
-            placeholder={`[
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Document ID
+                  </label>
+                  <input
+                    type="text"
+                    value={documentId}
+                    onChange={e => setDocumentId(e.target.value)}
+                    placeholder="ID of the medical note"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Validation Run ID
+                  </label>
+                  <input
+                    type="text"
+                    value={validationRunId}
+                    onChange={e => setValidationRunId(e.target.value)}
+                    placeholder="ID of the validation run"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              {rule.notes.length > 0 && (
+                <ul className="space-y-2 mb-4">
+                  {rule.notes.map((note, index) => (
+                    <li key={index} className="flex items-start gap-2 bg-gray-50 p-3 rounded-md">
+                      <span className="flex-1 text-sm text-gray-700">{note}</span>
+                      <button
+                        onClick={() => handleRemoveNote(index)}
+                        className="text-xs text-red-500 hover:text-red-700"
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <p className="text-xs text-gray-400">
+                Or edit the JSON directly:
+              </p>
+              <JsonEditor
+                value={rule.notes}
+                onChange={v => updateField('notes', v)}
+                label=""
+                rows={4}
+                placeholder={`[
   "'Face to Face' Recipient covers In-Person AND Video (Visual) Telehealth.",
   "'Telephone' Recipient is for Audio-Only."
 ]`}
-          />
-        </div>
+              />
+            </div>
+          </>
+        )}
 
         {/* Save */}
         <div className="flex items-center gap-3 pt-4 border-t">
