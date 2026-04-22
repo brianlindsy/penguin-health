@@ -16,12 +16,46 @@ export function AuditRuleDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
+  // Feedback form state. Uses the enhance-note endpoint under the hood to
+  // attach the submitted comment as additional context on the rule. The user
+  // experience stays "feedback only" — we don't surface existing notes here.
+  const [feedbackText, setFeedbackText] = useState('')
+  const [submittingFeedback, setSubmittingFeedback] = useState(false)
+  const [feedbackMsg, setFeedbackMsg] = useState('')
+  const [feedbackError, setFeedbackError] = useState('')
+
   useEffect(() => {
     api.getRule(orgId, ruleId)
       .then(data => setRule(data))
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
   }, [orgId, ruleId])
+
+  const submitFeedback = async () => {
+    const text = feedbackText.trim()
+    if (!text || !rule) return
+    setSubmittingFeedback(true)
+    setFeedbackError('')
+    setFeedbackMsg('')
+    try {
+      await api.enhanceNote(
+        orgId,
+        text,
+        rule.rule_text || '',
+        '', // document ID not collected in this view
+        '', // validation run ID not collected in this view
+        rule.rule_id,
+        rule.notes || [],
+      )
+      setFeedbackText('')
+      setFeedbackMsg('Thanks — your feedback was submitted.')
+      setTimeout(() => setFeedbackMsg(''), 4000)
+    } catch (err) {
+      setFeedbackError(err.message || 'Failed to submit feedback.')
+    } finally {
+      setSubmittingFeedback(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -82,6 +116,42 @@ export function AuditRuleDetailPage() {
             <div className="bg-gray-50 border border-gray-200 rounded-md p-3 text-sm text-gray-800 whitespace-pre-wrap">
               {rule.rule_text || <span className="text-gray-400 italic">No rule text.</span>}
             </div>
+          </div>
+        </div>
+
+        {/* Feedback — submissions are attached to the rule as context notes
+            so the team can tune the rule over time. */}
+        <div className="bg-white shadow rounded-lg p-6 mt-6">
+          <h2 className="text-sm font-semibold text-gray-900 uppercase tracking-wide mb-1">
+            Feedback
+          </h2>
+          <p className="text-xs text-gray-500 mb-3">
+            See something off about this rule? Let us know how it should be interpreted or adjusted.
+          </p>
+
+          <textarea
+            value={feedbackText}
+            onChange={e => setFeedbackText(e.target.value)}
+            rows={4}
+            placeholder="Share your feedback on this rule..."
+            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+
+          {feedbackError && (
+            <p className="text-sm text-red-600 mt-2">{feedbackError}</p>
+          )}
+
+          <div className="flex items-center gap-3 mt-3">
+            <button
+              onClick={submitFeedback}
+              disabled={submittingFeedback || !feedbackText.trim()}
+              className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50"
+            >
+              {submittingFeedback ? 'Submitting...' : 'Submit Feedback'}
+            </button>
+            {feedbackMsg && (
+              <span className="text-sm text-green-600">{feedbackMsg}</span>
+            )}
           </div>
         </div>
       </div>
