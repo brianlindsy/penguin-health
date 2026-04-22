@@ -205,13 +205,8 @@ function RunCard({ orgId, run }) {
     >
       <div className="flex items-start justify-between gap-4 mb-3">
         <div className="min-w-0">
-          <div className="flex items-baseline gap-3 flex-wrap">
-            <span className="text-base font-semibold text-gray-900">
-              {when ? when.toLocaleString() : 'No timestamp'}
-            </span>
-            {when && (
-              <span className="text-xs text-gray-500">{formatRelative(run.timestamp)}</span>
-            )}
+          <div className="text-base font-semibold text-gray-900">
+            {when ? when.toLocaleDateString() : 'No date'}
           </div>
           <div className="text-xs font-mono text-gray-400 mt-0.5 truncate">
             {run.validation_run_id}
