@@ -70,7 +70,6 @@ export function AuditRuleDetailPage() {
             <DetailField label="Rule ID" value={rule.rule_id} mono />
             <DetailField label="Version" value={rule.version} />
             <DetailField label="Category" value={rule.category} />
-            <DetailField label="Type" value={rule.type} />
           </div>
 
           {rule.description && (
