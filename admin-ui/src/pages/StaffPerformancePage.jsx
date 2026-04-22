@@ -53,12 +53,10 @@ export function StaffPerformancePage() {
     return map
   }, [ruleDefinitions])
 
-  // Aggregate staff performance from all validation runs
-  const staffPerformance = useMemo(() => {
+  // Runs narrowed by the active date filter. Shared across the staff roll-up
+  // and the Analytics view in ProgramSummaryView.
+  const filteredRuns = useMemo(() => {
     if (!data) return []
-
-    const staffMap = new Map()
-
     const dayMs = 24 * 60 * 60 * 1000
     const now = Date.now()
     let startCutoff = null
@@ -72,18 +70,23 @@ export function StaffPerformancePage() {
       // endCutoff is exclusive — include the full end day
       if (customEndDate) endCutoff = new Date(customEndDate).getTime() + dayMs
     }
+    if (startCutoff == null && endCutoff == null) return data
+    return data.filter(run => {
+      if (!run.timestamp) return true
+      const t = new Date(run.timestamp).getTime()
+      if (startCutoff != null && t < startCutoff) return false
+      if (endCutoff != null && t >= endCutoff) return false
+      return true
+    })
+  }, [data, periodFilter, customStartDate, customEndDate])
 
-    const filteredData = (startCutoff == null && endCutoff == null)
-      ? data
-      : data.filter(run => {
-          if (!run.timestamp) return true
-          const t = new Date(run.timestamp).getTime()
-          if (startCutoff != null && t < startCutoff) return false
-          if (endCutoff != null && t >= endCutoff) return false
-          return true
-        })
+  // Aggregate staff performance from all validation runs
+  const staffPerformance = useMemo(() => {
+    if (!data) return []
 
-    filteredData.forEach(run => {
+    const staffMap = new Map()
+
+    filteredRuns.forEach(run => {
       run.documents?.forEach(doc => {
         const employeeName = doc.field_values?.employee_name || 'Unknown'
         const program = doc.field_values?.program || 'Unknown'
@@ -155,7 +158,7 @@ export function StaffPerformancePage() {
         if (b.passRate == null) return -1
         return a.passRate - b.passRate
       })
-  }, [data, periodFilter, customStartDate, customEndDate])
+  }, [data, filteredRuns])
 
   // Filter staff by search and apply the user-selected sort order. Null pass
   // rates (unaudited) always sink to the bottom regardless of direction.
@@ -288,6 +291,7 @@ export function StaffPerformancePage() {
         ) : (
           <ProgramSummaryView
             staffPerformance={staffPerformance}
+            filteredRuns={filteredRuns}
             ruleDefinitions={ruleDefinitions}
             ruleCategoryById={ruleCategoryById}
             periodFilter={periodFilter}
@@ -307,8 +311,33 @@ export function StaffPerformancePage() {
 }
 
 
+// Business-hours math. "48 business hours" = 48 hours excluding weekends,
+// treating each weekday as 24 available hours. Iterates day by day so it's
+// fast enough even over long ranges.
+function businessHoursBetween(start, end) {
+  const a = start instanceof Date ? start : new Date(start)
+  const b = end instanceof Date ? end : new Date(end)
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return null
+  if (b <= a) return 0
+  const msPerHour = 60 * 60 * 1000
+  let total = 0
+  const cur = new Date(a)
+  while (cur < b) {
+    const dayEnd = new Date(cur)
+    dayEnd.setHours(24, 0, 0, 0)
+    const effectiveEnd = dayEnd > b ? b : dayEnd
+    const day = cur.getDay()
+    if (day !== 0 && day !== 6) {
+      total += (effectiveEnd - cur) / msPerHour
+    }
+    cur.setTime(dayEnd.getTime())
+  }
+  return total
+}
+
 function ProgramSummaryView({
   staffPerformance,
+  filteredRuns,
   ruleDefinitions,
   ruleCategoryById,
   periodFilter,
@@ -320,8 +349,10 @@ function ProgramSummaryView({
   onSelectStaff,
   onSelectProgram,
 }) {
-  // 'staff' = card lists staff ranked by errors; 'rules' = card lists recurring rule failures ranked by frequency.
+  // 'staff' = staff ranked by errors; 'rules' = recurring rule failures; 'analytics' = deeper metrics (late notes to start).
   const [viewMode, setViewMode] = useState('staff')
+  // Which analytic is selected under the Analytics view. More to come.
+  const [analyticKey, setAnalyticKey] = useState('late-notes')
   // Set of category strings to include; empty Set = no filter (show everything).
   const [categoryFilter, setCategoryFilter] = useState(() => new Set())
 
@@ -400,6 +431,46 @@ function ProgramSummaryView({
     return entries
   }, [staffPerformance, categoryFilter, ruleCategoryById])
 
+  // Analytics: notes submitted more than 48 business hours after their
+  // service date. "Submitted" is approximated by the run timestamp (when the
+  // note was picked up in a validation run). Computed per program so each
+  // card can surface its own late count + list.
+  const LATE_THRESHOLD_HOURS = 48
+  const lateNotesByProgram = useMemo(() => {
+    const map = new Map()
+    ;(filteredRuns || []).forEach(run => {
+      const runTs = run.timestamp ? new Date(run.timestamp) : null
+      if (!runTs || Number.isNaN(runTs.getTime())) return
+      run.documents?.forEach(doc => {
+        const program = doc.field_values?.program || 'Unknown'
+        const rawDate = doc.field_values?.date
+        if (!rawDate) return
+        const serviceDate = new Date(rawDate)
+        if (Number.isNaN(serviceDate.getTime())) return
+        const hours = businessHoursBetween(serviceDate, runTs)
+        if (hours == null) return
+
+        if (!map.has(program)) {
+          map.set(program, { program, totalNotes: 0, lateNotes: [] })
+        }
+        const bucket = map.get(program)
+        bucket.totalNotes += 1
+        if (hours > LATE_THRESHOLD_HOURS) {
+          bucket.lateNotes.push({
+            doc,
+            runId: run.validation_run_id,
+            runTimestamp: run.timestamp,
+            businessHours: hours,
+            daysLate: Math.floor((hours - LATE_THRESHOLD_HOURS) / 24) + 1,
+          })
+        }
+      })
+    })
+    // Sort each program's late notes by how late they are, descending.
+    map.forEach(b => { b.lateNotes.sort((a, b) => b.businessHours - a.businessHours) })
+    return map
+  }, [filteredRuns])
+
   if (staffPerformance.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center bg-white rounded-lg shadow">
@@ -426,13 +497,16 @@ function ProgramSummaryView({
             <p className="text-sm text-gray-500">
               {viewMode === 'staff'
                 ? 'Staff ranked by errors within each program. Click a name to open the risk profile.'
-                : 'Rule failures ranked by frequency within each program.'}
+                : viewMode === 'rules'
+                  ? 'Rule failures ranked by frequency within each program.'
+                  : 'Operational analytics across each program.'}
             </p>
           </div>
           <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
             {[
               { value: 'staff', label: 'By Staff' },
               { value: 'rules', label: 'By Rule' },
+              { value: 'analytics', label: 'Analytics' },
             ].map(opt => (
               <button
                 key={opt.value}
@@ -545,6 +619,9 @@ function ProgramSummaryView({
             totalErrors={p.totalErrors}
             ruleFailures={p.ruleFailures}
             viewMode={viewMode}
+            analyticKey={analyticKey}
+            onAnalyticChange={setAnalyticKey}
+            lateNotesSummary={lateNotesByProgram.get(p.program)}
             onSelectStaff={onSelectStaff}
             onSelectProgram={onSelectProgram}
           />
@@ -561,9 +638,13 @@ function ProgramSummaryCard({
   totalErrors,
   ruleFailures,
   viewMode,
+  analyticKey,
+  onAnalyticChange,
+  lateNotesSummary,
   onSelectStaff,
   onSelectProgram,
 }) {
+  const isAnalytics = viewMode === 'analytics'
   return (
     <div className="bg-gray-50 rounded-xl border border-gray-200 shadow-md hover:shadow-lg transition-shadow p-6 flex flex-col">
       <div className="mb-3 pb-3 border-b border-gray-200">
@@ -575,42 +656,135 @@ function ProgramSummaryCard({
           {program}
         </button>
         <p className="text-sm text-gray-600 mt-1">
-          {staff.length} staff · {totalErrors} {totalErrors === 1 ? 'error' : 'errors'}
+          {isAnalytics
+            ? `${lateNotesSummary?.totalNotes ?? 0} notes in this program`
+            : `${staff.length} staff · ${totalErrors} ${totalErrors === 1 ? 'error' : 'errors'}`}
         </p>
       </div>
-      {/* Fixed height for ~5 rows (each row ≈ 32px) before scrolling kicks in */}
-      <div className="overflow-y-auto max-h-40 -mx-2">
-        {viewMode === 'rules' ? (
-          ruleFailures.length === 0 ? (
-            <p className="px-2 py-1.5 text-sm text-gray-400">No rule failures.</p>
+
+      {isAnalytics ? (
+        <AnalyticsBody
+          analyticKey={analyticKey}
+          onAnalyticChange={onAnalyticChange}
+          lateNotesSummary={lateNotesSummary}
+        />
+      ) : (
+        /* Fixed height for ~5 rows (each row ≈ 32px) before scrolling kicks in */
+        <div className="overflow-y-auto max-h-40 -mx-2">
+          {viewMode === 'rules' ? (
+            ruleFailures.length === 0 ? (
+              <p className="px-2 py-1.5 text-sm text-gray-400">No rule failures.</p>
+            ) : (
+              ruleFailures.map(rule => (
+                <div
+                  key={rule.name}
+                  className="w-full flex items-center justify-between px-2 py-1.5 text-sm"
+                >
+                  <span className="text-gray-900 truncate" title={rule.name}>{rule.name}</span>
+                  <span className="text-base font-semibold text-gray-700 tabular-nums flex-shrink-0 ml-2">
+                    {rule.count}
+                  </span>
+                </div>
+              ))
+            )
           ) : (
-            ruleFailures.map(rule => (
-              <div
-                key={rule.name}
-                className="w-full flex items-center justify-between px-2 py-1.5 text-sm"
+            staff.map(s => (
+              <button
+                key={s.name}
+                onClick={() => onSelectStaff(s)}
+                className="w-full flex items-center justify-between px-2 py-1.5 rounded text-sm hover:bg-white transition-colors"
               >
-                <span className="text-gray-900 truncate" title={rule.name}>{rule.name}</span>
+                <span className="text-gray-900 truncate">{s.name}</span>
                 <span className="text-base font-semibold text-gray-700 tabular-nums flex-shrink-0 ml-2">
-                  {rule.count}
+                  {s.errorCount ?? 0}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Analytics body renders one of the available analytic lenses. For now only
+// "late-notes" exists; the selector is already wired for future additions.
+function AnalyticsBody({ analyticKey, onAnalyticChange, lateNotesSummary }) {
+  const options = [
+    { value: 'late-notes', label: 'Late notes' },
+  ]
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Metric</span>
+        <select
+          value={analyticKey}
+          onChange={(e) => onAnalyticChange(e.target.value)}
+          className="text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded-full px-2.5 py-0.5 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+        >
+          {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </div>
+
+      {analyticKey === 'late-notes' && (
+        <LateNotesAnalytic summary={lateNotesSummary} />
+      )}
+    </div>
+  )
+}
+
+function LateNotesAnalytic({ summary }) {
+  const total = summary?.totalNotes ?? 0
+  const late = summary?.lateNotes?.length ?? 0
+  const pct = total > 0 ? Math.round((late / total) * 100) : 0
+
+  if (total === 0) {
+    return (
+      <p className="text-sm text-gray-400 italic">No notes in this window.</p>
+    )
+  }
+
+  const toneBar = pct >= 25 ? 'bg-red-500' : pct >= 10 ? 'bg-yellow-500' : 'bg-green-500'
+
+  return (
+    <div>
+      {/* Headline */}
+      <div className="flex items-baseline justify-between mb-1">
+        <div className="flex items-baseline gap-1.5">
+          <span className="text-xl font-bold text-gray-900 tabular-nums">{late}</span>
+          <span className="text-xs text-gray-500">of {total} submitted late (&gt;48 business hrs)</span>
+        </div>
+        <span className="text-sm font-semibold tabular-nums text-gray-700">{pct}%</span>
+      </div>
+      <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden mb-3">
+        <div className={`${toneBar} h-full rounded-full`} style={{ width: `${pct}%` }} />
+      </div>
+
+      {/* Late notes list */}
+      {late === 0 ? (
+        <p className="text-sm text-gray-400 italic">All notes submitted within 48 business hours.</p>
+      ) : (
+        <div className="overflow-y-auto max-h-40 -mx-2">
+          {summary.lateNotes.map((entry, idx) => {
+            const employee = entry.doc.field_values?.employee_name || 'Unknown'
+            const date = entry.doc.field_values?.date || '—'
+            return (
+              <div
+                key={`${entry.doc.document_id}-${idx}`}
+                className="flex items-center justify-between px-2 py-1 text-xs"
+              >
+                <div className="min-w-0 flex items-baseline gap-1.5">
+                  <span className="text-gray-900 truncate">{employee}</span>
+                  <span className="text-gray-400">· {date}</span>
+                </div>
+                <span className="text-gray-700 tabular-nums flex-shrink-0 ml-2">
+                  {entry.daysLate}d late
                 </span>
               </div>
-            ))
-          )
-        ) : (
-          staff.map(s => (
-            <button
-              key={s.name}
-              onClick={() => onSelectStaff(s)}
-              className="w-full flex items-center justify-between px-2 py-1.5 rounded text-sm hover:bg-white transition-colors"
-            >
-              <span className="text-gray-900 truncate">{s.name}</span>
-              <span className="text-base font-semibold text-gray-700 tabular-nums flex-shrink-0 ml-2">
-                {s.errorCount ?? 0}
-              </span>
-            </button>
-          ))
-        )}
-      </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
