@@ -648,7 +648,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "aa0af855df86d273fd25d2bd4628df293948b104734678788e5486bb098cc8d7.zip"
+     "S3Key": "b414cf39858f9b808affce4afa8b76643085809b42538b0f90ce90234173c65a.zip"
     },
     "Environment": {
      "Variables": {
@@ -688,7 +688,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminApiFunction/Resource",
-    "aws:asset:path": "asset.aa0af855df86d273fd25d2bd4628df293948b104734678788e5486bb098cc8d7",
+    "aws:asset:path": "asset.b414cf39858f9b808affce4afa8b76643085809b42538b0f90ce90234173c65a",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
