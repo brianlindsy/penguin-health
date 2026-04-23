@@ -166,6 +166,11 @@ export function ValidationRunDetailPage() {
     let revenueAtRisk = 0
 
     data.documents.forEach(doc => {
+      // Exclude documents without required fields (diagnosis_code and employee_name)
+      if (!doc.field_values?.diagnosis_code || !doc.field_values?.employee_name) {
+        return
+      }
+
       const failedRules = doc.rules?.filter(r => r.status === 'FAIL') || []
       if (failedRules.length > 0) {
         if (allFailedRulesFixed(doc)) {
@@ -284,6 +289,11 @@ export function ValidationRunDetailPage() {
     if (!runPassesDateFilter) return []
 
     return data.documents.filter(doc => {
+      // Exclude documents without required fields (diagnosis_code and employee_name)
+      if (!doc.field_values?.diagnosis_code || !doc.field_values?.employee_name) {
+        return false
+      }
+
       // Service date filter (per-doc)
       if (serviceFilterActive) {
         const raw = doc.field_values?.date
