@@ -57,7 +57,7 @@ export function ValidationRunDetailPage() {
   const [selectedRule, setSelectedRule] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [ruleFilter, setRuleFilter] = useState('all')
-  const [statusFilter, setStatusFilter] = useState('all') // 'all' | 'needs_action' | 'awaiting_staff' | 'confirmed'
+  const [statusFilter, setStatusFilter] = useState('needs_action') // 'all' | 'needs_action' | 'awaiting_staff' | 'confirmed'
   const [confirmingRuleId, setConfirmingRuleId] = useState(null)
   const [resolvingRuleId, setResolvingRuleId] = useState(null)
   const [markingIncorrectRuleId, setMarkingIncorrectRuleId] = useState(null)
@@ -106,16 +106,22 @@ export function ValidationRunDetailPage() {
           // Document not found - fall through to default behavior
         }
 
+        // Helper to check if document has required fields
+        const hasRequiredFields = (d) => d.field_values?.diagnosis_code && d.field_values?.employee_name
+
         // Priority 2: Auto-select first document with failures (default behavior)
-        const firstFailed = result.documents?.find(d => d.summary?.failed > 0)
+        const firstFailed = result.documents?.find(d => d.summary?.failed > 0 && hasRequiredFields(d))
         if (firstFailed) {
           setSelectedDoc(firstFailed)
           const firstFailedRule = firstFailed.rules?.find(r => r.status === 'FAIL')
           if (firstFailedRule) setSelectedRule(firstFailedRule)
-        } else if (result.documents?.length > 0) {
-          setSelectedDoc(result.documents[0])
-          if (result.documents[0].rules?.length > 0) {
-            setSelectedRule(result.documents[0].rules[0])
+        } else {
+          const firstValidDoc = result.documents?.find(d => hasRequiredFields(d))
+          if (firstValidDoc) {
+            setSelectedDoc(firstValidDoc)
+            if (firstValidDoc.rules?.length > 0) {
+              setSelectedRule(firstValidDoc.rules[0])
+            }
           }
         }
       })
