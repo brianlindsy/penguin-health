@@ -40,10 +40,9 @@ export function StaffPerformancePage() {
   const [error, setError] = useState('')
   const [selectedStaff, setSelectedStaff] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
-  // Validation report date = when the validation run executed.
-  const [periodFilter, setPeriodFilter] = useState('all')
-  const [customStartDate, setCustomStartDate] = useState('')
-  const [customEndDate, setCustomEndDate] = useState('')
+  // Validation report filter = pick a specific report by its date, or "All".
+  // Value is 'all' or a validation_run_id.
+  const [reportFilter, setReportFilter] = useState('all')
   // Service date = the clinical service date on each individual note.
   const [serviceDateFilter, setServiceDateFilter] = useState('all')
   const [serviceCustomStartDate, setServiceCustomStartDate] = useState('')
@@ -86,20 +85,32 @@ export function StaffPerformancePage() {
     return map
   }, [ruleDefinitions])
 
-  // Runs narrowed by the validation-report-date filter (run.timestamp).
+  // Runs narrowed by the report filter: either all runs or just the one the
+  // user picked from the dropdown.
   const filteredRuns = useMemo(() => {
     if (!data) return []
-    const { start, end } = resolveDateCutoffs(periodFilter, customStartDate, customEndDate)
-    if (start == null && end == null) return data
-    return data.filter(run => {
-      if (!run.timestamp) return false
-      const t = new Date(run.timestamp).getTime()
-      if (Number.isNaN(t)) return false
-      if (start != null && t < start) return false
-      if (end != null && t >= end) return false
-      return true
-    })
-  }, [data, periodFilter, customStartDate, customEndDate])
+    if (reportFilter === 'all') return data
+    return data.filter(run => run.validation_run_id === reportFilter)
+  }, [data, reportFilter])
+
+  // List of report options for the chip dropdown: sorted newest-first, each
+  // labeled by its date (ties broken by time so same-day reports are distinct).
+  const reportOptions = useMemo(() => {
+    if (!data) return []
+    return [...data]
+      .filter(r => r.timestamp)
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      .map(r => {
+        const d = new Date(r.timestamp)
+        const dateLabel = d.toLocaleDateString()
+        return {
+          id: r.validation_run_id,
+          label: dateLabel,
+          // Disambiguate same-day reports with time.
+          detail: d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+        }
+      })
+  }, [data])
 
   // Predicate applied to each note — separate from the run-level filter so a
   // user can combine "validated in the last 7 days" with "service date in Q1".
@@ -370,12 +381,9 @@ export function StaffPerformancePage() {
             passesServiceDate={passesServiceDate}
             ruleDefinitions={ruleDefinitions}
             ruleCategoryById={ruleCategoryById}
-            periodFilter={periodFilter}
-            onPeriodChange={setPeriodFilter}
-            customStartDate={customStartDate}
-            onCustomStartChange={setCustomStartDate}
-            customEndDate={customEndDate}
-            onCustomEndChange={setCustomEndDate}
+            reportFilter={reportFilter}
+            onReportChange={setReportFilter}
+            reportOptions={reportOptions}
             serviceDateFilter={serviceDateFilter}
             onServiceDateChange={setServiceDateFilter}
             serviceCustomStartDate={serviceCustomStartDate}
@@ -423,12 +431,9 @@ function ProgramSummaryView({
   passesServiceDate,
   ruleDefinitions,
   ruleCategoryById,
-  periodFilter,
-  onPeriodChange,
-  customStartDate,
-  onCustomStartChange,
-  customEndDate,
-  onCustomEndChange,
+  reportFilter,
+  onReportChange,
+  reportOptions,
   serviceDateFilter,
   onServiceDateChange,
   serviceCustomStartDate,
@@ -673,10 +678,11 @@ function ProgramSummaryView({
           </p>
         </div>
         <div className="flex flex-col gap-2 items-end">
-          <DateFilterChip
-            label="Validation date"
-            periodFilter={periodFilter}
-            onPeriodChange={onPeriodChange}
+          <ReportFilterChip
+            label="Report"
+            reports={reportOptions}
+            value={reportFilter}
+            onChange={onReportChange}
           />
           <DateFilterChip
             label="Service date"
@@ -686,17 +692,6 @@ function ProgramSummaryView({
         </div>
       </div>
 
-      {/* Custom range inputs appear here when either filter is set to Custom. */}
-      {periodFilter === 'custom' && (
-        <CustomDateRange
-          label="Validation date range"
-          start={customStartDate}
-          onStartChange={onCustomStartChange}
-          end={customEndDate}
-          onEndChange={onCustomEndChange}
-          onClear={() => { onPeriodChange('all'); onCustomStartChange(''); onCustomEndChange('') }}
-        />
-      )}
       {serviceDateFilter === 'custom' && (
         <CustomDateRange
           label="Service date range"
@@ -897,6 +892,41 @@ function ProgramSummaryCard({
 
 // Analytics overview: polished bar chart across programs + a stack of
 // collapsible program boxes showing each program's late notes (linked).
+// Pill-style selector for picking a specific validation report. Each
+// option is labeled by the report's date (with time as a subtle
+// disambiguator for same-day reports).
+function ReportFilterChip({ label, reports, value, onChange }) {
+  const active = value !== 'all'
+  return (
+    <div className={`inline-flex items-center gap-2 rounded-full pl-3 pr-1.5 py-1 shadow-sm border transition-colors ${
+      active ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-200'
+    }`}>
+      <svg className={`w-4 h-4 ${active ? 'text-blue-500' : 'text-gray-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+      </svg>
+      {label && (
+        <span className={`text-[11px] font-semibold uppercase tracking-wider ${active ? 'text-blue-700' : 'text-gray-500'}`}>
+          {label}
+        </span>
+      )}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`text-sm font-medium bg-transparent border-0 focus:outline-none focus:ring-0 pr-1 py-0.5 cursor-pointer max-w-[200px] truncate ${
+          active ? 'text-blue-700' : 'text-gray-700'
+        }`}
+      >
+        <option value="all">All reports</option>
+        {reports.map(r => (
+          <option key={r.id} value={r.id}>
+            {r.label}{r.detail ? ` · ${r.detail}` : ''}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
 // Date filter pill used in the hero row. Optional label prefix makes it
 // clear which dimension is being filtered when more than one chip is shown.
 function DateFilterChip({ label, periodFilter, onPeriodChange }) {

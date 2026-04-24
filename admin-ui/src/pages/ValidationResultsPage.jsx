@@ -6,20 +6,61 @@ import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
 // Customer-facing Validation Results list. Reuses the runs from
 // api.listValidationRuns, but replaces the dense admin table with a card
 // layout, summary stats, and an inline date filter.
+// Count of "awaiting staff" docs in a run: failing docs where every failed
+// rule has been reviewed (finding_confirmed or fixed) but at least one
+// hasn't been fixed yet. Mirrors the status logic on ValidationRunDetailPage.
+function countAwaitingStaff(detail) {
+  let awaiting = 0
+  detail?.documents?.forEach(doc => {
+    const failed = doc.rules?.filter(r => r.status === 'FAIL') || []
+    if (failed.length === 0) return
+    const allConfirmedOrFixed = failed.every(r => r.finding_confirmed || r.fixed)
+    const anyNotFixed = failed.some(r => !r.fixed)
+    if (allConfirmedOrFixed && anyNotFixed) awaiting += 1
+  })
+  return awaiting
+}
+
 export function ValidationResultsPage() {
   const { orgId } = useParams()
   const [runs, setRuns] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  // rule_id -> number of docs awaiting staff. Filled in after the list loads
+  // so the cards can render immediately and update as counts arrive.
+  const [awaitingByRun, setAwaitingByRun] = useState({})
   const [periodFilter, setPeriodFilter] = useState('all')
   const [customStartDate, setCustomStartDate] = useState('')
   const [customEndDate, setCustomEndDate] = useState('')
 
   useEffect(() => {
+    let cancelled = false
     api.listValidationRuns(orgId)
-      .then(data => setRuns(data.runs || []))
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
+      .then(data => {
+        if (cancelled) return
+        const list = data.runs || []
+        setRuns(list)
+        setLoading(false)
+
+        // Background: fetch details for each run (cap at 50) to compute the
+        // "awaiting staff" count. Merge results as they land so cards update
+        // incrementally rather than blocking on the slowest fetch.
+        list.slice(0, 50).forEach(run => {
+          api.getValidationRun(orgId, run.validation_run_id)
+            .then(detail => {
+              if (cancelled) return
+              const count = countAwaitingStaff(detail)
+              setAwaitingByRun(prev => ({ ...prev, [run.validation_run_id]: count }))
+            })
+            .catch(() => { /* leave count undefined; card shows "—" */ })
+        })
+      })
+      .catch(err => {
+        if (cancelled) return
+        setError(err.message)
+        setLoading(false)
+      })
+    return () => { cancelled = true }
   }, [orgId])
 
   // Apply date window filter based on the run's own timestamp.
@@ -58,16 +99,17 @@ export function ValidationResultsPage() {
   // High-level numbers for the summary strip at the top.
   const summary = useMemo(() => {
     const total = filteredRuns.length
-    let docs = 0, pass = 0, fail = 0, skip = 0
+    let docs = 0, pass = 0, fail = 0, skip = 0, awaiting = 0
     filteredRuns.forEach(r => {
       docs += r.total_documents || 0
       pass += r.passed || 0
       fail += r.failed || 0
       skip += r.skipped || 0
+      awaiting += awaitingByRun[r.validation_run_id] ?? 0
     })
     const latest = sortedRuns[0]
-    return { total, docs, pass, fail, skip, latest }
-  }, [filteredRuns, sortedRuns])
+    return { total, docs, pass, fail, skip, awaiting, latest }
+  }, [filteredRuns, sortedRuns, awaitingByRun])
 
   return (
     <OrgWorkspaceLayout>
@@ -84,10 +126,11 @@ export function ValidationResultsPage() {
 
         {/* Summary strip */}
         {!loading && !error && filteredRuns.length > 0 && (
-          <div className="grid grid-cols-4 gap-3 mb-5">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
             <SummaryCard label="Runs" value={summary.total} />
             <SummaryCard label="Documents" value={summary.docs} />
             <SummaryCard label="Failures" value={summary.fail} tone="red" />
+            <SummaryCard label="Awaiting staff" value={summary.awaiting} tone="amber" />
             <SummaryCard
               label="Most recent"
               value={summary.latest?.timestamp ? formatRelative(summary.latest.timestamp) : '—'}
@@ -165,7 +208,12 @@ export function ValidationResultsPage() {
         ) : (
           <div className="space-y-3">
             {sortedRuns.map(run => (
-              <RunCard key={run.validation_run_id} orgId={orgId} run={run} />
+              <RunCard
+                key={run.validation_run_id}
+                orgId={orgId}
+                run={run}
+                awaiting={awaitingByRun[run.validation_run_id]}
+              />
             ))}
           </div>
         )}
@@ -175,7 +223,9 @@ export function ValidationResultsPage() {
 }
 
 function SummaryCard({ label, value, subtext, tone, valueClassName }) {
-  const toneClass = tone === 'red' ? 'text-red-600' : 'text-gray-900'
+  const toneClass = tone === 'red' ? 'text-red-600'
+    : tone === 'amber' ? 'text-amber-600'
+    : 'text-gray-900'
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-3 shadow-sm">
       <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{label}</div>
@@ -185,7 +235,7 @@ function SummaryCard({ label, value, subtext, tone, valueClassName }) {
   )
 }
 
-function RunCard({ orgId, run }) {
+function RunCard({ orgId, run, awaiting }) {
   const total = run.total_documents || 0
   const passed = run.passed || 0
   const failed = run.failed || 0
@@ -195,6 +245,14 @@ function RunCard({ orgId, run }) {
   const failPct = (failed / processed) * 100
   const skipPct = (skipped / processed) * 100
   const overallStatus = failed > 0 ? 'FAIL' : 'PASS'
+
+  // Awaiting staff is a subset of fail. Split the failed segment visually so
+  // "awaiting" (amber) reads distinctly from "still needs action" (red).
+  const awaitingCount = typeof awaiting === 'number' ? awaiting : null
+  const awaitingInFail = awaitingCount != null ? Math.min(awaitingCount, failed) : 0
+  const needsActionInFail = awaitingCount != null ? Math.max(failed - awaitingInFail, 0) : failed
+  const needsActionPct = (needsActionInFail / processed) * 100
+  const awaitingPct = (awaitingInFail / processed) * 100
 
   const when = run.timestamp ? new Date(run.timestamp) : null
 
@@ -215,18 +273,24 @@ function RunCard({ orgId, run }) {
         <StatusPill status={overallStatus} />
       </div>
 
-      {/* Stacked pass/fail/skip progress bar */}
+      {/* Stacked pass / fail-needs-action / fail-awaiting / skip progress bar */}
       <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden flex mb-3">
         {passPct > 0 && <div className="bg-green-500" style={{ width: `${passPct}%` }} />}
-        {failPct > 0 && <div className="bg-red-500" style={{ width: `${failPct}%` }} />}
+        {needsActionPct > 0 && <div className="bg-red-500" style={{ width: `${needsActionPct}%` }} />}
+        {awaitingPct > 0 && <div className="bg-amber-500" style={{ width: `${awaitingPct}%` }} />}
         {skipPct > 0 && <div className="bg-gray-300" style={{ width: `${skipPct}%` }} />}
       </div>
 
       {/* Count chips */}
-      <div className="flex items-center gap-4 text-sm">
+      <div className="flex items-center gap-4 text-sm flex-wrap">
         <CountChip label="Docs" value={total} color="gray" />
         <CountChip label="Pass" value={passed} color="green" />
         <CountChip label="Fail" value={failed} color="red" />
+        <CountChip
+          label="Awaiting"
+          value={awaitingCount == null ? '—' : awaitingCount}
+          color="amber"
+        />
         <CountChip label="Skip" value={skipped} color="neutral" />
       </div>
     </Link>
@@ -237,6 +301,7 @@ function CountChip({ label, value, color }) {
   const colors = {
     green: 'text-green-700',
     red: 'text-red-700',
+    amber: 'text-amber-700',
     gray: 'text-gray-900',
     neutral: 'text-gray-600',
   }
