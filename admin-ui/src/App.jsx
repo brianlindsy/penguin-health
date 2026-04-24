@@ -14,6 +14,7 @@ import { AuditRulesPage } from './pages/AuditRulesPage.jsx'
 import { AuditRuleDetailPage } from './pages/AuditRuleDetailPage.jsx'
 import { ValidationResultsPage } from './pages/ValidationResultsPage.jsx'
 import { RevenueAnalysisPage } from './pages/RevenueAnalysisPage.jsx'
+import { DashboardPage } from './pages/DashboardPage.jsx'
 import { setTokenProvider, setOnUnauthorized } from './api/client.js'
 
 // Redirect /organizations/:orgId/validation-runs to org detail with validation tab
@@ -53,6 +54,7 @@ function App() {
         <Route path="/organizations/:orgId/audit-rules/:ruleId" element={<AuditRuleDetailPage />} />
         <Route path="/organizations/:orgId/validation-results" element={<ValidationResultsPage />} />
         <Route path="/organizations/:orgId/revenue-analysis" element={<RevenueAnalysisPage />} />
+        <Route path="/organizations/:orgId/dashboard" element={<DashboardPage />} />
       </Route>
     </Routes>
   )
