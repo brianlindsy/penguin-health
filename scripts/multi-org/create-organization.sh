@@ -57,7 +57,6 @@ echo -e "${BLUE}Step 2: Creating Folder Structure${NC}"
 echo ""
 
 FOLDERS=(
-    "rag-documents/"
     "textract-to-be-processed/"
     "textract-processed/"
     "textract-processing/"
@@ -70,7 +69,6 @@ FOLDERS=(
     "archived/csv/"
     "archived/sftp/"
     "archived/irp/"
-    "irp-config/"
     "validation-reports/"
 )
 
@@ -179,6 +177,7 @@ MULTI_ORG_LAMBDAS=(
     "penguin-health-process-raw-charts-multi-org"
     "penguin-health-textract-result-handler-multi-org"
     "penguin-health-rules-engine-rag"
+    "penguin-health-csv-splitter-multi-org"
 )
 
 for LAMBDA_NAME in "${MULTI_ORG_LAMBDAS[@]}"; do
