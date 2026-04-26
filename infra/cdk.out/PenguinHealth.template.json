@@ -2671,7 +2671,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "ee0a901d89ea979fc637d4215677b0fc3cb54e29c888aa2b95ded9e74ff6379d.zip"
+     "S3Key": "e17564963c581ca4f64d4d58919aeb6ae0f29b5a46218351da895aff778ecd66.zip"
     },
     "FunctionName": "penguin-health-rules-engine-rag",
     "Handler": "rules_engine_rag.lambda_handler",
@@ -2701,7 +2701,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/RulesEngineRagFn/Resource",
-    "aws:asset:path": "asset.ee0a901d89ea979fc637d4215677b0fc3cb54e29c888aa2b95ded9e74ff6379d",
+    "aws:asset:path": "asset.e17564963c581ca4f64d4d58919aeb6ae0f29b5a46218351da895aff778ecd66",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -2893,7 +2893,7 @@
    "Type": "AWS::Events::Rule",
    "Properties": {
     "Name": "penguin-health-catholic-charities-validation-schedule",
-    "ScheduleExpression": "cron(0 10 * * ? *)",
+    "ScheduleExpression": "cron(0 10 ? * MON-FRI *)",
     "State": "ENABLED",
     "Tags": [
      {
@@ -2948,7 +2948,7 @@
    "Type": "AWS::Events::Rule",
    "Properties": {
     "Name": "penguin-health-circles-of-care-validation-schedule",
-    "ScheduleExpression": "cron(30 10 * * ? *)",
+    "ScheduleExpression": "cron(30 10 ? * MON-FRI *)",
     "State": "ENABLED",
     "Tags": [
      {

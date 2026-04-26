@@ -198,7 +198,7 @@ class AuditEngine(Construct):
         # Catholic Charities: 11PM EDT = 03:00 UTC (next day)
         events.Rule(self, "CatholicCharitiesValidationSchedule",
             rule_name=f"{config.PROJECT_NAME}-catholic-charities-validation-schedule",
-            schedule=events.Schedule.cron(hour="10", minute="0"),
+            schedule=events.Schedule.cron(hour="10", minute="0", week_day="MON-FRI"),
             targets=[
                 targets.LambdaFunction(
                     self.rules_engine_fn,
@@ -212,7 +212,7 @@ class AuditEngine(Construct):
         # Circles of Care: 6:30AM EDT = 10:30 UTC
         events.Rule(self, "CirclesOfCareValidationSchedule",
             rule_name=f"{config.PROJECT_NAME}-circles-of-care-validation-schedule",
-            schedule=events.Schedule.cron(hour="10", minute="30"),
+            schedule=events.Schedule.cron(hour="10", minute="30", week_day="MON-FRI"),
             targets=[
                 targets.LambdaFunction(
                     self.rules_engine_fn,
