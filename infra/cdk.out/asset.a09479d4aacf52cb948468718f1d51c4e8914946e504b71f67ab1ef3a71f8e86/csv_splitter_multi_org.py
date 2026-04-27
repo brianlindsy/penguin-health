@@ -19,7 +19,6 @@ from multi_org_config import extract_org_id_from_bucket
 # Import all splitters
 from splitters.catholic_charities import CatholicCharitiesSplitter
 from splitters.circles_of_care import CirclesOfCareSplitter
-from splitters.demo import DemoSplitter
 
 s3_client = boto3.client('s3')
 
@@ -32,7 +31,6 @@ def register_splitters():
     splitter_classes = [
         CatholicCharitiesSplitter,
         CirclesOfCareSplitter,
-        DemoSplitter,
     ]
 
     for cls in splitter_classes:
