@@ -195,7 +195,7 @@ class AuditEngine(Construct):
         org_config_table.grant_read_data(self.csv_splitter_fn)
 
         # ----- Scheduled validation runs -----
-        # Catholic Charities: 11PM EDT = 03:00 UTC (next day)
+        # Catholic Charities: 6:00AM EDT = 10:00 UTC
         events.Rule(self, "CatholicCharitiesValidationSchedule",
             rule_name=f"{config.PROJECT_NAME}-catholic-charities-validation-schedule",
             schedule=events.Schedule.cron(hour="10", minute="0", week_day="MON-FRI"),

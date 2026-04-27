@@ -358,12 +358,12 @@ export function StaffPerformancePage() {
             onBack={() => setSelectedStaff(null)}
             filterBar={
               <FilterBar
-                periodFilter={periodFilter}
-                onPeriodChange={setPeriodFilter}
-                customStartDate={customStartDate}
-                onCustomStartChange={setCustomStartDate}
-                customEndDate={customEndDate}
-                onCustomEndChange={setCustomEndDate}
+                periodFilter={serviceDateFilter}
+                onPeriodChange={setServiceDateFilter}
+                customStartDate={serviceCustomStartDate}
+                onCustomStartChange={setServiceCustomStartDate}
+                customEndDate={serviceCustomEndDate}
+                onCustomEndChange={setServiceCustomEndDate}
                 allStaff={staffPerformance}
                 selectedStaffName={selectedStaff?.name || ''}
                 onSelectStaffName={(name) => {

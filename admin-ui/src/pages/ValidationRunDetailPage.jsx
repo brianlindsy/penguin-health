@@ -47,9 +47,8 @@ function parseRunIdTimestamp(runId) {
 
 export function ValidationRunDetailPage() {
   const { orgId, runId } = useParams()
-  const [searchParams, setSearchParams] = useSearchParams()
-  // Capture initial doc ID from URL on first render only
-  const initialDocIdRef = useRef(searchParams.get('doc'))
+  const [searchParams] = useSearchParams()
+  const docIdFromUrl = searchParams.get('doc')
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -57,7 +56,8 @@ export function ValidationRunDetailPage() {
   const [selectedRule, setSelectedRule] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [ruleFilter, setRuleFilter] = useState('all')
-  const [statusFilter, setStatusFilter] = useState('needs_action') // 'all' | 'needs_action' | 'awaiting_staff' | 'confirmed'
+  // If deep-linking to a doc, start with 'all' filter so the doc is visible
+  const [statusFilter, setStatusFilter] = useState(docIdFromUrl ? 'all' : 'needs_action')
   const [confirmingRuleId, setConfirmingRuleId] = useState(null)
   const [resolvingRuleId, setResolvingRuleId] = useState(null)
   const [markingIncorrectRuleId, setMarkingIncorrectRuleId] = useState(null)
@@ -78,56 +78,54 @@ export function ValidationRunDetailPage() {
   // runs-list endpoint (same source the Validation Results tab uses).
   const [runTimestamp, setRunTimestamp] = useState(null)
 
+  // Load validation run data - only depends on orgId and runId
   useEffect(() => {
-    const docIdFromUrl = initialDocIdRef.current
+    setLoading(true)
     api.getValidationRun(orgId, runId)
       .then(result => {
         setData(result)
-
-        // Priority 1: Select document from URL query param if present
-        if (docIdFromUrl) {
-          const targetDoc = result.documents?.find(d => String(d.document_id) === String(docIdFromUrl))
-          if (targetDoc) {
-            setSelectedDoc(targetDoc)
-            const firstFailedRule = targetDoc.rules?.find(r => r.status === 'FAIL')
-            setSelectedRule(firstFailedRule || targetDoc.rules?.[0] || null)
-            // Reset filters to ensure the document is visible
-            setStatusFilter('all')
-            setSearchTerm('')
-            setProgramFilter('all')
-            setCategoryFilter('all')
-            setRuleFilter('all')
-            // Clear query param to keep URL clean
-            setSearchParams({}, { replace: true })
-            // Clear the ref so navigation within the page works normally
-            initialDocIdRef.current = null
-            return
-          }
-          // Document not found - fall through to default behavior
-        }
-
-        // Helper to check if document has required fields
-        const hasRequiredFields = (d) => d.field_values?.diagnosis_code && d.field_values?.employee_name
-
-        // Priority 2: Auto-select first document with failures (default behavior)
-        const firstFailed = result.documents?.find(d => d.summary?.failed > 0 && hasRequiredFields(d))
-        if (firstFailed) {
-          setSelectedDoc(firstFailed)
-          const firstFailedRule = firstFailed.rules?.find(r => r.status === 'FAIL')
-          if (firstFailedRule) setSelectedRule(firstFailedRule)
-        } else {
-          const firstValidDoc = result.documents?.find(d => hasRequiredFields(d))
-          if (firstValidDoc) {
-            setSelectedDoc(firstValidDoc)
-            if (firstValidDoc.rules?.length > 0) {
-              setSelectedRule(firstValidDoc.rules[0])
-            }
-          }
-        }
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
-  }, [orgId, runId, setSearchParams])
+  }, [orgId, runId])
+
+  // Handle document selection after data loads
+  // This runs when data changes OR when docIdFromUrl changes
+  useEffect(() => {
+    if (!data?.documents) return
+
+    // Helper to check if document has required fields
+    const hasRequiredFields = (d) => d.field_values?.diagnosis_code && d.field_values?.employee_name
+
+    // Priority 1: Select document from URL query param if present
+    if (docIdFromUrl) {
+      const targetDoc = data.documents.find(d => String(d.document_id) === String(docIdFromUrl))
+      if (targetDoc) {
+        setSelectedDoc(targetDoc)
+        const firstFailedRule = targetDoc.rules?.find(r => r.status === 'FAIL')
+        setSelectedRule(firstFailedRule || targetDoc.rules?.[0] || null)
+        return
+      }
+    }
+
+    // Priority 2: Auto-select first document with failures (only if no doc is selected yet)
+    if (!selectedDoc) {
+      const firstFailed = data.documents.find(d => d.summary?.failed > 0 && hasRequiredFields(d))
+      if (firstFailed) {
+        setSelectedDoc(firstFailed)
+        const firstFailedRule = firstFailed.rules?.find(r => r.status === 'FAIL')
+        if (firstFailedRule) setSelectedRule(firstFailedRule)
+      } else {
+        const firstValidDoc = data.documents.find(d => hasRequiredFields(d))
+        if (firstValidDoc) {
+          setSelectedDoc(firstValidDoc)
+          if (firstValidDoc.rules?.length > 0) {
+            setSelectedRule(firstValidDoc.rules[0])
+          }
+        }
+      }
+    }
+  }, [data, docIdFromUrl]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch the run's own timestamp from the list endpoint — the detail payload
   // doesn't include one. Failures are silent; the filter falls back to the
@@ -369,8 +367,17 @@ export function ValidationRunDetailPage() {
     })
   }, [data, runId, runTimestamp, searchTerm, statusFilter, ruleFilter, programFilter, categoryFilter, dateFilter, customStartDate, customEndDate, serviceDateFilter, serviceCustomStartDate, serviceCustomEndDate])
 
-  // When status filter changes, select the first document in the filtered list
+  // Track if this is the first render to skip the statusFilter effect on mount
+  const isFirstRender = useRef(true)
+
+  // When status filter changes (user clicks a filter), select the first document in the filtered list
   useEffect(() => {
+    // Skip on first render - let the document selection effect handle initial selection
+    if (isFirstRender.current) {
+      isFirstRender.current = false
+      return
+    }
+
     if (filteredDocs.length > 0) {
       const firstDoc = filteredDocs[0]
       setSelectedDoc(firstDoc)
@@ -381,7 +388,7 @@ export function ValidationRunDetailPage() {
       setSelectedDoc(null)
       setSelectedRule(null)
     }
-  }, [statusFilter])
+  }, [statusFilter, filteredDocs])
 
   if (loading) return <OrgWorkspaceLayout><div className="flex items-center justify-center h-64"><p className="text-gray-500">Loading validation run...</p></div></OrgWorkspaceLayout>
   if (error) return <OrgWorkspaceLayout><div className="p-4"><p className="text-red-600">Error: {error}</p></div></OrgWorkspaceLayout>
