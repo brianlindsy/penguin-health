@@ -11,19 +11,26 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 
-// Mock amazon-cognito-identity-js
+// Use vi.hoisted to create mocks that are available when vi.mock is hoisted
+const { mockGetCurrentUser } = vi.hoisted(() => {
+  return {
+    mockGetCurrentUser: vi.fn(),
+  }
+})
+
 vi.mock('amazon-cognito-identity-js', () => ({
   CognitoUserPool: vi.fn().mockImplementation(() => ({
-    getCurrentUser: vi.fn().mockReturnValue(null),
+    getCurrentUser: mockGetCurrentUser,
   })),
   CognitoUser: vi.fn(),
   AuthenticationDetails: vi.fn(),
 }))
 
+// Import after mocking
+import { AuthProvider, useAuth } from '../../auth/AuthProvider.jsx'
+
 // Test component to access auth context
 function TestConsumer() {
-  // Import dynamically to get fresh instance after mocks
-  const { useAuth } = require('../../auth/AuthProvider.jsx')
   const { user, loading, userClaims } = useAuth()
 
   if (loading) return <div data-testid="loading">Loading...</div>
@@ -40,39 +47,11 @@ function TestConsumer() {
 describe('AuthProvider', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.resetModules()
-  })
-
-  it('shows loading state initially', async () => {
-    const { CognitoUserPool } = await import('amazon-cognito-identity-js')
-
-    // Mock user pool with no current user
-    CognitoUserPool.mockImplementation(() => ({
-      getCurrentUser: vi.fn().mockReturnValue(null),
-    }))
-
-    const { AuthProvider } = await import('../../auth/AuthProvider.jsx')
-
-    render(
-      <AuthProvider>
-        <TestConsumer />
-      </AuthProvider>
-    )
-
-    // Should eventually show no user (after loading)
-    await waitFor(() => {
-      expect(screen.queryByTestId('user')).toHaveTextContent('No user')
-    })
+    mockGetCurrentUser.mockReturnValue(null)
   })
 
   it('shows no user when not logged in', async () => {
-    const { CognitoUserPool } = await import('amazon-cognito-identity-js')
-
-    CognitoUserPool.mockImplementation(() => ({
-      getCurrentUser: vi.fn().mockReturnValue(null),
-    }))
-
-    const { AuthProvider } = await import('../../auth/AuthProvider.jsx')
+    mockGetCurrentUser.mockReturnValue(null)
 
     render(
       <AuthProvider>
@@ -86,8 +65,6 @@ describe('AuthProvider', () => {
   })
 
   it('extracts user claims from valid session', async () => {
-    const { CognitoUserPool } = await import('amazon-cognito-identity-js')
-
     const mockIdToken = {
       getJwtToken: () => 'mock-jwt-token',
       payload: {
@@ -104,14 +81,10 @@ describe('AuthProvider', () => {
 
     const mockCognitoUser = {
       getUsername: () => 'admin@test.com',
-      getSession: vi.fn((callback) => callback(null, mockSession)),
+      getSession: (callback) => callback(null, mockSession),
     }
 
-    CognitoUserPool.mockImplementation(() => ({
-      getCurrentUser: vi.fn().mockReturnValue(mockCognitoUser),
-    }))
-
-    const { AuthProvider } = await import('../../auth/AuthProvider.jsx')
+    mockGetCurrentUser.mockReturnValue(mockCognitoUser)
 
     render(
       <AuthProvider>
@@ -121,14 +94,13 @@ describe('AuthProvider', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('user')).toHaveTextContent('admin@test.com')
-      expect(screen.getByTestId('is-super-admin')).toHaveTextContent('true')
-      expect(screen.getByTestId('org-id')).toHaveTextContent('org-123')
     })
+
+    expect(screen.getByTestId('is-super-admin')).toHaveTextContent('true')
+    expect(screen.getByTestId('org-id')).toHaveTextContent('org-123')
   })
 
   it('detects non-super-admin users', async () => {
-    const { CognitoUserPool } = await import('amazon-cognito-identity-js')
-
     const mockIdToken = {
       getJwtToken: () => 'mock-jwt-token',
       payload: {
@@ -145,14 +117,10 @@ describe('AuthProvider', () => {
 
     const mockCognitoUser = {
       getUsername: () => 'user@test.com',
-      getSession: vi.fn((callback) => callback(null, mockSession)),
+      getSession: (callback) => callback(null, mockSession),
     }
 
-    CognitoUserPool.mockImplementation(() => ({
-      getCurrentUser: vi.fn().mockReturnValue(mockCognitoUser),
-    }))
-
-    const { AuthProvider } = await import('../../auth/AuthProvider.jsx')
+    mockGetCurrentUser.mockReturnValue(mockCognitoUser)
 
     render(
       <AuthProvider>
@@ -162,27 +130,22 @@ describe('AuthProvider', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('user')).toHaveTextContent('user@test.com')
-      expect(screen.getByTestId('is-super-admin')).toHaveTextContent('false')
     })
+
+    expect(screen.getByTestId('is-super-admin')).toHaveTextContent('false')
   })
 
   it('handles invalid session', async () => {
-    const { CognitoUserPool } = await import('amazon-cognito-identity-js')
-
     const mockSession = {
       isValid: () => false,
     }
 
     const mockCognitoUser = {
       getUsername: () => 'user@test.com',
-      getSession: vi.fn((callback) => callback(null, mockSession)),
+      getSession: (callback) => callback(null, mockSession),
     }
 
-    CognitoUserPool.mockImplementation(() => ({
-      getCurrentUser: vi.fn().mockReturnValue(mockCognitoUser),
-    }))
-
-    const { AuthProvider } = await import('../../auth/AuthProvider.jsx')
+    mockGetCurrentUser.mockReturnValue(mockCognitoUser)
 
     render(
       <AuthProvider>
@@ -196,18 +159,12 @@ describe('AuthProvider', () => {
   })
 
   it('handles session error', async () => {
-    const { CognitoUserPool } = await import('amazon-cognito-identity-js')
-
     const mockCognitoUser = {
       getUsername: () => 'user@test.com',
-      getSession: vi.fn((callback) => callback(new Error('Session expired'), null)),
+      getSession: (callback) => callback(new Error('Session expired'), null),
     }
 
-    CognitoUserPool.mockImplementation(() => ({
-      getCurrentUser: vi.fn().mockReturnValue(mockCognitoUser),
-    }))
-
-    const { AuthProvider } = await import('../../auth/AuthProvider.jsx')
+    mockGetCurrentUser.mockReturnValue(mockCognitoUser)
 
     render(
       <AuthProvider>
@@ -218,5 +175,39 @@ describe('AuthProvider', () => {
     await waitFor(() => {
       expect(screen.getByTestId('user')).toHaveTextContent('No user')
     })
+  })
+
+  it('handles missing cognito groups gracefully', async () => {
+    const mockIdToken = {
+      getJwtToken: () => 'mock-jwt-token',
+      payload: {
+        email: 'user@test.com',
+        // No cognito:groups field
+      },
+    }
+
+    const mockSession = {
+      isValid: () => true,
+      getIdToken: () => mockIdToken,
+    }
+
+    const mockCognitoUser = {
+      getUsername: () => 'user@test.com',
+      getSession: (callback) => callback(null, mockSession),
+    }
+
+    mockGetCurrentUser.mockReturnValue(mockCognitoUser)
+
+    render(
+      <AuthProvider>
+        <TestConsumer />
+      </AuthProvider>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId('user')).toHaveTextContent('user@test.com')
+    })
+
+    expect(screen.getByTestId('is-super-admin')).toHaveTextContent('false')
   })
 })
