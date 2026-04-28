@@ -7,25 +7,31 @@ All tests run entirely in-memory with zero network calls.
 
 import json
 import os
+
+# Set AWS environment variables BEFORE importing boto3 or any modules that use it
+# This is critical because admin_api.py creates boto3 clients at module level
+os.environ['AWS_ACCESS_KEY_ID'] = 'testing'
+os.environ['AWS_SECRET_ACCESS_KEY'] = 'testing'
+os.environ['AWS_SECURITY_TOKEN'] = 'testing'
+os.environ['AWS_SESSION_TOKEN'] = 'testing'
+os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
+
 import pytest
 import boto3
 from moto import mock_aws
 
 
 # -----------------------------------------------------------------------------
-# AWS Credentials Fixture
+# AWS Credentials Fixture (for documentation, env vars already set above)
 # -----------------------------------------------------------------------------
 
 @pytest.fixture(scope="function")
 def aws_credentials():
-    """Set fake AWS credentials for moto to intercept boto3 calls."""
-    os.environ['AWS_ACCESS_KEY_ID'] = 'testing'
-    os.environ['AWS_SECRET_ACCESS_KEY'] = 'testing'
-    os.environ['AWS_SECURITY_TOKEN'] = 'testing'
-    os.environ['AWS_SESSION_TOKEN'] = 'testing'
-    os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
+    """
+    AWS credentials are set at module level above.
+    This fixture exists for compatibility and documentation.
+    """
     yield
-    # Cleanup not strictly necessary as each test gets fresh environment
 
 
 # -----------------------------------------------------------------------------
