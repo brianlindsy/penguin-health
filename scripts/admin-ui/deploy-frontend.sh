@@ -25,7 +25,7 @@ NC='\033[0m'
 
 echo -e "${BLUE}Running tests...${NC}"
 cd "$FRONTEND_DIR"
-npm run test
+npm run test:run
 echo ""
 echo -e "${BLUE}Building admin UI...${NC}"
 npm run build

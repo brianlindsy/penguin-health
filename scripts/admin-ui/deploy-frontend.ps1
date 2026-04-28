@@ -18,7 +18,7 @@ $Region = "us-east-1"
 
 Write-Host "Running tests..." -ForegroundColor Blue
 Set-Location $FrontendDir
-npm run test
+npm run test:run
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host ""
