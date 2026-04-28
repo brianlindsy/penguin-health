@@ -23,8 +23,11 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${BLUE}Building admin UI...${NC}"
+echo -e "${BLUE}Running tests...${NC}"
 cd "$FRONTEND_DIR"
+npm run test
+echo ""
+echo -e "${BLUE}Building admin UI...${NC}"
 npm run build
 
 echo ""

@@ -16,8 +16,13 @@ $FrontendDir = Join-Path $ProjectRoot "admin-ui"
 $BucketName = "penguin-health-admin-ui"
 $Region = "us-east-1"
 
-Write-Host "Building admin UI..." -ForegroundColor Blue
+Write-Host "Running tests..." -ForegroundColor Blue
 Set-Location $FrontendDir
+npm run test
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+Write-Host ""
+Write-Host "Building admin UI..." -ForegroundColor Blue
 npm run build
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
