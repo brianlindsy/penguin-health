@@ -9,6 +9,28 @@
 
 $ErrorActionPreference = "Stop"
 
+# Check and install prerequisites
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    Write-Host "npm not found. Attempting to install Node.js via winget..." -ForegroundColor Yellow
+    winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Error: Failed to install Node.js. Please install manually." -ForegroundColor Red
+        exit 1
+    }
+    # Refresh PATH
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
+}
+if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
+    Write-Host "AWS CLI not found. Attempting to install via winget..." -ForegroundColor Yellow
+    winget install Amazon.AWSCLI --accept-source-agreements --accept-package-agreements
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Error: Failed to install AWS CLI. Please install manually." -ForegroundColor Red
+        exit 1
+    }
+    # Refresh PATH
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
+}
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 $FrontendDir = Join-Path $ProjectRoot "admin-ui"
