@@ -10,8 +10,7 @@ Tests the declarative rule evaluation system including:
 
 import sys
 import os
-import pytest
-from datetime import datetime, time
+from datetime import datetime
 
 # Add lambda directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))

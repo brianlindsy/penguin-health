@@ -183,7 +183,7 @@ class TestRBACConsistency:
     ):
         """User without valid claims should be blocked from all org endpoints."""
         from api.admin_api import (
-            list_organizations, get_organization, list_rules
+            list_organizations
         )
 
         # list_organizations doesn't require org_id, but needs valid user
@@ -247,14 +247,10 @@ class TestAuditTrailRecording:
         self, mock_dynamodb, sample_org_config, super_admin_event
     ):
         """Rule update should update the updated_at timestamp."""
-        from api.admin_api import update_rule, get_rule
+        from api.admin_api import update_rule
 
         event = {**super_admin_event}
         path_params = {'orgId': 'test-org', 'ruleId': 'rule-001'}
-
-        # Get original timestamp
-        original = get_rule(event=event, path_params=path_params)
-        original_body = json.loads(original['body'])
 
         # Update the rule
         body = {'name': 'Updated Rule Name'}

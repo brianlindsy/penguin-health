@@ -12,7 +12,6 @@ import sys
 import os
 import pytest
 from datetime import datetime, timedelta
-from io import StringIO
 
 # Add lambda directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))

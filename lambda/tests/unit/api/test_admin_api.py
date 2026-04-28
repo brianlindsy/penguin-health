@@ -11,7 +11,6 @@ Tests the Admin API Lambda function including:
 import json
 import sys
 import os
-import pytest
 
 # Add lambda directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
