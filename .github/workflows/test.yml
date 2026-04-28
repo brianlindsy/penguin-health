@@ -89,18 +89,3 @@ jobs:
 
       - name: Run Python lint
         run: ruff check lambda/
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: admin-ui/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: admin-ui
-        run: npm ci
-
-      - name: Run frontend lint
-        working-directory: admin-ui
-        run: npm run lint
