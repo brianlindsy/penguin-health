@@ -209,10 +209,10 @@ class AuditEngine(Construct):
             ],
         )
 
-        # Circles of Care: 6:30AM EDT = 10:30 UTC
+        # Circles of Care: 7:15AM EDT = 11:15 UTC
         events.Rule(self, "CirclesOfCareValidationSchedule",
             rule_name=f"{config.PROJECT_NAME}-circles-of-care-validation-schedule",
-            schedule=events.Schedule.cron(hour="10", minute="30", week_day="MON-FRI"),
+            schedule=events.Schedule.cron(hour="11", minute="15", week_day="MON-FRI"),
             targets=[
                 targets.LambdaFunction(
                     self.rules_engine_fn,
