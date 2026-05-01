@@ -22,7 +22,7 @@
         "validateOnSynth": false,
         "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-deploy-role-${AWS::AccountId}-us-east-1",
         "cloudFormationExecutionRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-cfn-exec-role-${AWS::AccountId}-us-east-1",
-        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1/834d5a11cd2658d24a9862943e411a28945c48d1b905be265f8a129f41c336e2.json",
+        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1/72627d07ccfbab49aeae593a32cb6324ab861457f73da81b92f15cec2500f045.json",
         "requiresBootstrapStackVersion": 6,
         "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/hnb659fds/version",
         "additionalDependencies": [
@@ -533,28 +533,52 @@
             "data": "AuditEngineCsvSplitterFn2779AE35"
           }
         ],
-        "/PenguinHealth/AuditEngine/CatholicCharitiesValidationSchedule/Resource": [
+        "/PenguinHealth/AuditEngine/CatholicCharitiesMondayValidationSchedule/Resource": [
           {
             "type": "aws:cdk:logicalId",
-            "data": "AuditEngineCatholicCharitiesValidationSchedule9A50A971"
+            "data": "AuditEngineCatholicCharitiesMondayValidationSchedule659BECE8"
           }
         ],
-        "/PenguinHealth/AuditEngine/CatholicCharitiesValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B": [
+        "/PenguinHealth/AuditEngine/CatholicCharitiesMondayValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B": [
           {
             "type": "aws:cdk:logicalId",
-            "data": "AuditEngineCatholicCharitiesValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822BE7FB03B6"
+            "data": "AuditEngineCatholicCharitiesMondayValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B384F0A17"
           }
         ],
-        "/PenguinHealth/AuditEngine/CirclesOfCareValidationSchedule/Resource": [
+        "/PenguinHealth/AuditEngine/CatholicCharitiesDailyValidationSchedule/Resource": [
           {
             "type": "aws:cdk:logicalId",
-            "data": "AuditEngineCirclesOfCareValidationScheduleB1C09086"
+            "data": "AuditEngineCatholicCharitiesDailyValidationSchedule6AA3DE5A"
           }
         ],
-        "/PenguinHealth/AuditEngine/CirclesOfCareValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B": [
+        "/PenguinHealth/AuditEngine/CatholicCharitiesDailyValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B": [
           {
             "type": "aws:cdk:logicalId",
-            "data": "AuditEngineCirclesOfCareValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B1C1EBE01"
+            "data": "AuditEngineCatholicCharitiesDailyValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B8BA6ABEC"
+          }
+        ],
+        "/PenguinHealth/AuditEngine/CirclesOfCareMondayValidationSchedule/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AuditEngineCirclesOfCareMondayValidationSchedule0DE801CB"
+          }
+        ],
+        "/PenguinHealth/AuditEngine/CirclesOfCareMondayValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AuditEngineCirclesOfCareMondayValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B3C4175F3"
+          }
+        ],
+        "/PenguinHealth/AuditEngine/CirclesOfCareDailyValidationSchedule/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AuditEngineCirclesOfCareDailyValidationSchedule219EEE74"
+          }
+        ],
+        "/PenguinHealth/AuditEngine/CirclesOfCareDailyValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AuditEngineCirclesOfCareDailyValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B00269079"
           }
         ],
         "/PenguinHealth/UserPoolId": [

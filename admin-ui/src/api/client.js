@@ -98,13 +98,15 @@ export const api = {
   listValidationRuns: (orgId) =>
     request(`/api/organizations/${orgId}/validation-runs`),
 
-  triggerValidationRun: (orgId, categories) =>
-    request(`/api/organizations/${orgId}/validation-runs`, {
+  triggerValidationRun: (orgId, categories, dates) => {
+    const body = {}
+    if (categories && categories.length) body.categories = categories
+    if (dates && dates.length) body.dates = dates
+    return request(`/api/organizations/${orgId}/validation-runs`, {
       method: 'POST',
-      body: JSON.stringify(
-        categories && categories.length ? { categories } : {}
-      ),
-    }),
+      body: JSON.stringify(body),
+    })
+  },
 
   // RBAC
   getMyPermissions: () => request('/api/me/permissions'),

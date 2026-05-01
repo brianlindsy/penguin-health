@@ -5,6 +5,8 @@ import { StatusBadge } from '../components/StatusBadge.jsx'
 import { ValidationStatusBadge } from '../components/ValidationStatusBadge.jsx'
 import { JsonEditor } from '../components/JsonEditor.jsx'
 import { RunCategories } from '../components/RunCategories.jsx'
+import { RunDates } from '../components/RunDates.jsx'
+import { RunTimestamp } from '../components/RunTimestamp.jsx'
 import { usePermissions } from '../auth/usePermissions.js'
 
 const TABS = ['Rules', 'Field Mappings', 'Validation Results']
@@ -320,11 +322,44 @@ function FieldMappingsTab({ config, onSave, saving, saveMsg }) {
 }
 
 
+// Earliest date the date-scoped validation flow supports. Hardcoded both here
+// and on the backend (lambda/api/admin_api.py CUTOVER_DATE) — anything earlier
+// pre-dates the data/{date}/ S3 layout and has no folder to validate.
+const RUN_CUTOVER_DATE = '2026-05-01'
+
+function todayLocalISO() {
+  // Today, formatted as YYYY-MM-DD in the user's local timezone. We send the
+  // string verbatim to the API; the backend treats it as a UTC date. That's
+  // a one-day mismatch only for users near the date line — acceptable for v1.
+  const d = new Date()
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
+function expandDateRange(startISO, endISO) {
+  // Inclusive day-by-day expansion of [start, end] into ISO strings.
+  if (!startISO || !endISO || startISO > endISO) return []
+  const out = []
+  const cursor = new Date(`${startISO}T00:00:00`)
+  const end = new Date(`${endISO}T00:00:00`)
+  while (cursor <= end) {
+    const yyyy = cursor.getFullYear()
+    const mm = String(cursor.getMonth() + 1).padStart(2, '0')
+    const dd = String(cursor.getDate()).padStart(2, '0')
+    out.push(`${yyyy}-${mm}-${dd}`)
+    cursor.setDate(cursor.getDate() + 1)
+  }
+  return out
+}
+
 function ValidationResultsTab({ orgId }) {
   const perms = usePermissions()
   const runnable = useMemo(() => Array.from(perms.runnableCategories()).sort(),
     [perms])
   const canRunAny = runnable.length > 0
+  const today = todayLocalISO()
 
   const [runs, setRuns] = useState([])
   const [loading, setLoading] = useState(true)
@@ -337,6 +372,17 @@ function ValidationResultsTab({ orgId }) {
   // Default to running every category the user is allowed to run.
   const [selectedCategories, setSelectedCategories] = useState(runnable)
   const [pickerOpen, setPickerOpen] = useState(false)
+  // Date range for the run itself — bounded by the cutover and today.
+  // Defaults to today/today (single-day run).
+  const [runDateStart, setRunDateStart] = useState(today)
+  const [runDateEnd, setRunDateEnd] = useState(today)
+  const runDates = useMemo(
+    () => expandDateRange(runDateStart, runDateEnd),
+    [runDateStart, runDateEnd],
+  )
+  const datesValid = runDates.length > 0
+    && runDateStart >= RUN_CUTOVER_DATE
+    && runDateEnd <= today
 
   // Keep `selectedCategories` aligned with `runnable` once permissions arrive.
   useEffect(() => {
@@ -366,11 +412,15 @@ function ValidationResultsTab({ orgId }) {
       setTriggerMsg('Error: select at least one category')
       return
     }
+    if (!datesValid) {
+      setTriggerMsg('Error: pick a valid date range')
+      return
+    }
     setTriggering(true)
     setTriggerMsg('')
     setPickerOpen(false)
     try {
-      await api.triggerValidationRun(orgId, selectedCategories)
+      await api.triggerValidationRun(orgId, selectedCategories, runDates)
       setTriggerMsg('Validation run started. Results will appear shortly.')
       setTimeout(() => {
         loadRuns()
@@ -425,6 +475,38 @@ function ValidationResultsTab({ orgId }) {
           )}
           {canRunAny && (
             <div className="relative flex items-center gap-2">
+              {/* Date range picker — bounded by [cutover, today].
+                  Defaults to single-day (today/today). */}
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-white border border-gray-300 rounded-md">
+                <label className="text-xs text-gray-500" htmlFor="run-date-start">From</label>
+                <input
+                  id="run-date-start"
+                  type="date"
+                  min={RUN_CUTOVER_DATE}
+                  max={today}
+                  value={runDateStart}
+                  disabled={triggering}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    setRunDateStart(v)
+                    if (runDateEnd && v > runDateEnd) setRunDateEnd(v)
+                  }}
+                  className="text-xs text-gray-700 bg-transparent focus:outline-none"
+                  aria-label="Run start date"
+                />
+                <label className="text-xs text-gray-500" htmlFor="run-date-end">to</label>
+                <input
+                  id="run-date-end"
+                  type="date"
+                  min={runDateStart || RUN_CUTOVER_DATE}
+                  max={today}
+                  value={runDateEnd}
+                  disabled={triggering}
+                  onChange={(e) => setRunDateEnd(e.target.value)}
+                  className="text-xs text-gray-700 bg-transparent focus:outline-none"
+                  aria-label="Run end date"
+                />
+              </div>
               <button
                 onClick={() => setPickerOpen(o => !o)}
                 disabled={triggering}
@@ -456,7 +538,7 @@ function ValidationResultsTab({ orgId }) {
               )}
               <button
                 onClick={handleTriggerValidation}
-                disabled={triggering || selectedCategories.length === 0}
+                disabled={triggering || selectedCategories.length === 0 || !datesValid}
                 className="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
               >
                 {triggering ? (
@@ -539,7 +621,8 @@ function ValidationResultsTab({ orgId }) {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Run ID</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Run Time</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Data Dates</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Categories</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Docs</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Pass</th>
@@ -560,7 +643,10 @@ function ValidationResultsTab({ orgId }) {
                     </Link>
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-600">
-                    {run.timestamp ? new Date(run.timestamp).toLocaleString() : '-'}
+                    <RunTimestamp value={run.timestamp} />
+                  </td>
+                  <td className="px-4 py-3">
+                    <RunDates dates={run.dates} />
                   </td>
                   <td className="px-4 py-3">
                     <RunCategories categories={run.categories} />

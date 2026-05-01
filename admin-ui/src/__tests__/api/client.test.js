@@ -209,6 +209,36 @@ describe('API Client', () => {
     expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({})
   })
 
+  it('forwards dates[] to triggerValidationRun', async () => {
+    setTokenProvider(() => Promise.resolve('token'))
+
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      json: () => Promise.resolve({}),
+    })
+
+    await api.triggerValidationRun('org-123', ['Billing'], ['2026-05-12', '2026-05-13'])
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body)
+    expect(body.dates).toEqual(['2026-05-12', '2026-05-13'])
+    expect(body.categories).toEqual(['Billing'])
+  })
+
+  it('omits dates when empty', async () => {
+    setTokenProvider(() => Promise.resolve('token'))
+
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      json: () => Promise.resolve({}),
+    })
+
+    await api.triggerValidationRun('org-123', ['Billing'], [])
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body)
+    expect(body.dates).toBeUndefined()
+  })
+
   it('getMyPermissions hits /api/me/permissions', async () => {
     setTokenProvider(() => Promise.resolve('token'))
 

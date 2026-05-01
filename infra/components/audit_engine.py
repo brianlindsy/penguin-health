@@ -195,31 +195,47 @@ class AuditEngine(Construct):
         org_config_table.grant_read_data(self.csv_splitter_fn)
 
         # ----- Scheduled validation runs -----
-        # Catholic Charities: 6:00AM EDT = 10:00 UTC
-        events.Rule(self, "CatholicCharitiesValidationSchedule",
-            rule_name=f"{config.PROJECT_NAME}-catholic-charities-validation-schedule",
-            schedule=events.Schedule.cron(hour="10", minute="0", week_day="MON-FRI"),
-            targets=[
-                targets.LambdaFunction(
-                    self.rules_engine_fn,
-                    event=events.RuleTargetInput.from_object({
-                        "organization_id": "catholic-charities-multi-org"
-                    })
-                )
-            ],
-        )
+        # Two rules per org so the cron expression itself encodes the
+        # Monday-vs-rest split:
+        #   Monday    -> validate Sat + Sun + today's (Mon) ingest, since the
+        #                weekend's data was never picked up by an earlier run.
+        #   Other day -> validate today's ingest only.
+        # The relative `date_window` is resolved to concrete dates by the
+        # rules engine at run time — cron is when, payload is what to look at.
+        for org_id, hour, minute, rule_prefix, label in [
+            ("catholic-charities-multi-org", "10", "0",
+             "catholic-charities-validation", "CatholicCharities"),
+            ("circles-of-care", "11", "15",
+             "circles-of-care-validation", "CirclesOfCare"),
+        ]:
+            # Monday at HH:MM UTC — validates Sat, Sun, and today (Mon).
+            events.Rule(self, f"{label}MondayValidationSchedule",
+                rule_name=f"{config.PROJECT_NAME}-{rule_prefix}-monday",
+                schedule=events.Schedule.cron(hour=hour, minute=minute, week_day="MON"),
+                targets=[
+                    targets.LambdaFunction(
+                        self.rules_engine_fn,
+                        event=events.RuleTargetInput.from_object({
+                            "organization_id": org_id,
+                            "date_window": {"days_back_from_today": [2, 1, 0]},
+                        })
+                    )
+                ],
+            )
 
-        # Circles of Care: 7:15AM EDT = 11:15 UTC
-        events.Rule(self, "CirclesOfCareValidationSchedule",
-            rule_name=f"{config.PROJECT_NAME}-circles-of-care-validation-schedule",
-            schedule=events.Schedule.cron(hour="11", minute="15", week_day="MON-FRI"),
-            targets=[
-                targets.LambdaFunction(
-                    self.rules_engine_fn,
-                    event=events.RuleTargetInput.from_object({
-                        "organization_id": "circles-of-care"
-                    })
-                )
-            ],
-        )
+            # Tue-Fri at HH:MM UTC — validates today's ingest only.
+            # Sat/Sun deliveries go unvalidated until Monday's catch-up run.
+            events.Rule(self, f"{label}DailyValidationSchedule",
+                rule_name=f"{config.PROJECT_NAME}-{rule_prefix}-daily",
+                schedule=events.Schedule.cron(hour=hour, minute=minute, week_day="TUE-FRI"),
+                targets=[
+                    targets.LambdaFunction(
+                        self.rules_engine_fn,
+                        event=events.RuleTargetInput.from_object({
+                            "organization_id": org_id,
+                            "date_window": {"days_back_from_today": [0]},
+                        })
+                    )
+                ],
+            )
 

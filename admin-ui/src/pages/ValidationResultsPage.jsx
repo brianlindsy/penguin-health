@@ -3,6 +3,8 @@ import { useParams, Link } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
 import { RunCategories } from '../components/RunCategories.jsx'
+import { RunDates } from '../components/RunDates.jsx'
+import { RunTimestamp } from '../components/RunTimestamp.jsx'
 
 // Customer-facing Validation Results list. Reuses the runs from
 // api.listValidationRuns, but replaces the dense admin table with a card
@@ -255,8 +257,6 @@ function RunCard({ orgId, run, awaiting }) {
   const needsActionPct = (needsActionInFail / processed) * 100
   const awaitingPct = (awaitingInFail / processed) * 100
 
-  const when = run.timestamp ? new Date(run.timestamp) : null
-
   return (
     <Link
       to={`/organizations/${orgId}/validation-runs/${run.validation_run_id}`}
@@ -265,12 +265,15 @@ function RunCard({ orgId, run, awaiting }) {
       <div className="flex items-start justify-between gap-4 mb-3">
         <div className="min-w-0">
           <div className="text-base font-semibold text-gray-900">
-            {when ? when.toLocaleDateString() : 'No date'}
+            <RunTimestamp value={run.timestamp} fallback="No date" />
           </div>
           <div className="text-xs font-mono text-gray-400 mt-0.5 truncate">
             {run.validation_run_id}
           </div>
-          <div className="mt-1.5">
+          <div className="mt-1.5 flex flex-col gap-1">
+            <div className="text-xs text-gray-500">
+              Data: <RunDates dates={run.dates} />
+            </div>
             <RunCategories categories={run.categories} />
           </div>
         </div>

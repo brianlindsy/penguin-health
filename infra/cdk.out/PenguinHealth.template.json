@@ -648,7 +648,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "bd289a6501ed223409cfe7c2953e5ee5b9034131fc1f4981850c5da51f5ccae6.zip"
+     "S3Key": "406e466824bee9d9e48affada94b883ee634c081def9825d10311691bb376401.zip"
     },
     "Environment": {
      "Variables": {
@@ -688,7 +688,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminApiFunction/Resource",
-    "aws:asset:path": "asset.bd289a6501ed223409cfe7c2953e5ee5b9034131fc1f4981850c5da51f5ccae6",
+    "aws:asset:path": "asset.406e466824bee9d9e48affada94b883ee634c081def9825d10311691bb376401",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -2600,7 +2600,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "0cded80b48a9b2d36992d78fe777b4e1a5b38963ef9011d4d2558f1f61c8daac.zip"
+     "S3Key": "d89704fa57098ca4e838a5222fb1ff0d0a58ebdfd2a2b4d6704f6e2cbeee6368.zip"
     },
     "FunctionName": "penguin-health-textract-result-handler-multi-org",
     "Handler": "textract_result_handler_multi_org.lambda_handler",
@@ -2630,7 +2630,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/TextractResultHandlerFn/Resource",
-    "aws:asset:path": "asset.0cded80b48a9b2d36992d78fe777b4e1a5b38963ef9011d4d2558f1f61c8daac",
+    "aws:asset:path": "asset.d89704fa57098ca4e838a5222fb1ff0d0a58ebdfd2a2b4d6704f6e2cbeee6368",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -2966,7 +2966,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "4d200071c4934676616d6b45a2756406440bc57142db6827b9f7095fe313be4c.zip"
+     "S3Key": "5a5962c1d3d421d0cd6f2926174a4101585336fb69b4daf84d392dd30a0bae3b.zip"
     },
     "FunctionName": "penguin-health-rules-engine-rag",
     "Handler": "rules_engine_rag.lambda_handler",
@@ -2996,7 +2996,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/RulesEngineRagFn/Resource",
-    "aws:asset:path": "asset.4d200071c4934676616d6b45a2756406440bc57142db6827b9f7095fe313be4c",
+    "aws:asset:path": "asset.5a5962c1d3d421d0cd6f2926174a4101585336fb69b4daf84d392dd30a0bae3b",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -3149,7 +3149,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "198ac4011ef905c450caa64bfdc0dc95df6bb13dc6e176da89c749e4baad5b53.zip"
+     "S3Key": "51f472c2be56179dacdfdc0d23fc26729382c4b79129c35a29a129214fe5cab0.zip"
     },
     "FunctionName": "penguin-health-csv-splitter-multi-org",
     "Handler": "csv_splitter_multi_org.lambda_handler",
@@ -3179,16 +3179,16 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/CsvSplitterFn/Resource",
-    "aws:asset:path": "asset.198ac4011ef905c450caa64bfdc0dc95df6bb13dc6e176da89c749e4baad5b53",
+    "aws:asset:path": "asset.51f472c2be56179dacdfdc0d23fc26729382c4b79129c35a29a129214fe5cab0",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
   },
-  "AuditEngineCatholicCharitiesValidationSchedule9A50A971": {
+  "AuditEngineCatholicCharitiesMondayValidationSchedule659BECE8": {
    "Type": "AWS::Events::Rule",
    "Properties": {
-    "Name": "penguin-health-catholic-charities-validation-schedule",
-    "ScheduleExpression": "cron(0 10 ? * MON-FRI *)",
+    "Name": "penguin-health-catholic-charities-validation-monday",
+    "ScheduleExpression": "cron(0 10 ? * MON *)",
     "State": "ENABLED",
     "Tags": [
      {
@@ -3209,15 +3209,15 @@
        ]
       },
       "Id": "Target0",
-      "Input": "{\"organization_id\":\"catholic-charities-multi-org\"}"
+      "Input": "{\"organization_id\":\"catholic-charities-multi-org\",\"date_window\":{\"days_back_from_today\":[2,1,0]}}"
      }
     ]
    },
    "Metadata": {
-    "aws:cdk:path": "PenguinHealth/AuditEngine/CatholicCharitiesValidationSchedule/Resource"
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CatholicCharitiesMondayValidationSchedule/Resource"
    }
   },
-  "AuditEngineCatholicCharitiesValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822BE7FB03B6": {
+  "AuditEngineCatholicCharitiesMondayValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B384F0A17": {
    "Type": "AWS::Lambda::Permission",
    "Properties": {
     "Action": "lambda:InvokeFunction",
@@ -3230,20 +3230,20 @@
     "Principal": "events.amazonaws.com",
     "SourceArn": {
      "Fn::GetAtt": [
-      "AuditEngineCatholicCharitiesValidationSchedule9A50A971",
+      "AuditEngineCatholicCharitiesMondayValidationSchedule659BECE8",
       "Arn"
      ]
     }
    },
    "Metadata": {
-    "aws:cdk:path": "PenguinHealth/AuditEngine/CatholicCharitiesValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B"
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CatholicCharitiesMondayValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B"
    }
   },
-  "AuditEngineCirclesOfCareValidationScheduleB1C09086": {
+  "AuditEngineCatholicCharitiesDailyValidationSchedule6AA3DE5A": {
    "Type": "AWS::Events::Rule",
    "Properties": {
-    "Name": "penguin-health-circles-of-care-validation-schedule",
-    "ScheduleExpression": "cron(15 11 ? * MON-FRI *)",
+    "Name": "penguin-health-catholic-charities-validation-daily",
+    "ScheduleExpression": "cron(0 10 ? * TUE-FRI *)",
     "State": "ENABLED",
     "Tags": [
      {
@@ -3264,15 +3264,15 @@
        ]
       },
       "Id": "Target0",
-      "Input": "{\"organization_id\":\"circles-of-care\"}"
+      "Input": "{\"organization_id\":\"catholic-charities-multi-org\",\"date_window\":{\"days_back_from_today\":[0]}}"
      }
     ]
    },
    "Metadata": {
-    "aws:cdk:path": "PenguinHealth/AuditEngine/CirclesOfCareValidationSchedule/Resource"
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CatholicCharitiesDailyValidationSchedule/Resource"
    }
   },
-  "AuditEngineCirclesOfCareValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B1C1EBE01": {
+  "AuditEngineCatholicCharitiesDailyValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B8BA6ABEC": {
    "Type": "AWS::Lambda::Permission",
    "Properties": {
     "Action": "lambda:InvokeFunction",
@@ -3285,13 +3285,123 @@
     "Principal": "events.amazonaws.com",
     "SourceArn": {
      "Fn::GetAtt": [
-      "AuditEngineCirclesOfCareValidationScheduleB1C09086",
+      "AuditEngineCatholicCharitiesDailyValidationSchedule6AA3DE5A",
       "Arn"
      ]
     }
    },
    "Metadata": {
-    "aws:cdk:path": "PenguinHealth/AuditEngine/CirclesOfCareValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B"
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CatholicCharitiesDailyValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B"
+   }
+  },
+  "AuditEngineCirclesOfCareMondayValidationSchedule0DE801CB": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Name": "penguin-health-circles-of-care-validation-monday",
+    "ScheduleExpression": "cron(15 11 ? * MON *)",
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Project",
+      "Value": "penguin-health"
+     }
+    ],
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "AuditEngineRulesEngineRagFnB2BFCB1D",
+        "Arn"
+       ]
+      },
+      "Id": "Target0",
+      "Input": "{\"organization_id\":\"circles-of-care\",\"date_window\":{\"days_back_from_today\":[2,1,0]}}"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CirclesOfCareMondayValidationSchedule/Resource"
+   }
+  },
+  "AuditEngineCirclesOfCareMondayValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B3C4175F3": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AuditEngineRulesEngineRagFnB2BFCB1D",
+      "Arn"
+     ]
+    },
+    "Principal": "events.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "AuditEngineCirclesOfCareMondayValidationSchedule0DE801CB",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CirclesOfCareMondayValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B"
+   }
+  },
+  "AuditEngineCirclesOfCareDailyValidationSchedule219EEE74": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Name": "penguin-health-circles-of-care-validation-daily",
+    "ScheduleExpression": "cron(15 11 ? * TUE-FRI *)",
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Project",
+      "Value": "penguin-health"
+     }
+    ],
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "AuditEngineRulesEngineRagFnB2BFCB1D",
+        "Arn"
+       ]
+      },
+      "Id": "Target0",
+      "Input": "{\"organization_id\":\"circles-of-care\",\"date_window\":{\"days_back_from_today\":[0]}}"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CirclesOfCareDailyValidationSchedule/Resource"
+   }
+  },
+  "AuditEngineCirclesOfCareDailyValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B00269079": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AuditEngineRulesEngineRagFnB2BFCB1D",
+      "Arn"
+     ]
+    },
+    "Principal": "events.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "AuditEngineCirclesOfCareDailyValidationSchedule219EEE74",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/AuditEngine/CirclesOfCareDailyValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B"
    }
   },
   "CDKMetadata": {
