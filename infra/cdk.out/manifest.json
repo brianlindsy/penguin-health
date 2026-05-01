@@ -22,7 +22,7 @@
         "validateOnSynth": false,
         "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-deploy-role-${AWS::AccountId}-us-east-1",
         "cloudFormationExecutionRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-cfn-exec-role-${AWS::AccountId}-us-east-1",
-        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1/41848f77dcf74398a5879b8a6ed14fee0a137fcf29634ade3ce068fcad58b5b7.json",
+        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1/834d5a11cd2658d24a9862943e411a28945c48d1b905be265f8a129f41c336e2.json",
         "requiresBootstrapStackVersion": 6,
         "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/hnb659fds/version",
         "additionalDependencies": [
@@ -363,6 +363,66 @@
           {
             "type": "aws:cdk:logicalId",
             "data": "AdminUiAdminHttpApiPUTapiorganizationsorgIdvalidationrunsrunIddocumentsdocIdmarkincorrect629D30D2"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/GET--api--me--permissions/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiGETapimepermissionsAdminApiIntegrationPermission2CE216C9"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/GET--api--me--permissions/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiGETapimepermissionsA234E48E"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--users/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiGETapiorganizationsorgIdusersAdminApiIntegrationPermission4B137C1D"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--users/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiGETapiorganizationsorgIdusersB715CF10"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--users--{email}/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiGETapiorganizationsorgIdusersemailAdminApiIntegrationPermission8CF0EB5C"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--users--{email}/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiGETapiorganizationsorgIdusersemailB1FBCD99"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/PUT--api--organizations--{orgId}--users--{email}/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPUTapiorganizationsorgIdusersemailAdminApiIntegrationPermissionBBF2550D"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/PUT--api--organizations--{orgId}--users--{email}/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPUTapiorganizationsorgIdusersemailE96D66D9"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/DELETE--api--organizations--{orgId}--users--{email}/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiDELETEapiorganizationsorgIdusersemailAdminApiIntegrationPermission2A90D011"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/DELETE--api--organizations--{orgId}--users--{email}/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiDELETEapiorganizationsorgIdusersemailE6D2A7D4"
           }
         ],
         "/PenguinHealth/AdminUi/FrontendBucket/Resource": [

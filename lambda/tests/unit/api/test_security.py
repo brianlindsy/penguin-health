@@ -232,7 +232,7 @@ class TestAuditTrailRecording:
         body = {
             'id': 'audit-test-rule',
             'name': 'Audit Test Rule',
-            'category': 'Compliance',
+            'category': 'Compliance Audit',
             'rule_text': 'Test rule for audit.',
         }
 

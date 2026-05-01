@@ -64,6 +64,23 @@ const mockValidationRuns = [
 ]
 
 export const handlers = [
+  // Current user's permission record (defaults to super-admin so existing
+  // tests behave as before).
+  http.get('*/api/me/permissions', () => {
+    return HttpResponse.json({
+      is_super_admin: true,
+      role: null,
+      organization_id: null,
+      report_permissions: {
+        Intake: ['view', 'run'],
+        Billing: ['view', 'run'],
+        'Compliance Audit': ['view', 'run'],
+        'Quality Assurance': ['view', 'run'],
+      },
+      analytics_permissions: ['staff_performance', 'revenue_analysis'],
+    })
+  }),
+
   // List organizations
   http.get('*/api/organizations', () => {
     return HttpResponse.json({
@@ -178,4 +195,68 @@ export const handlers = [
       feedback_given_by: 'test@example.com',
     })
   }),
+
+  // ---- User permissions CRUD ----
+  http.get('*/api/organizations/:orgId/users', ({ params }) => {
+    const list = userPermStore.list(params.orgId)
+    return HttpResponse.json({ users: list, count: list.length })
+  }),
+
+  http.get('*/api/organizations/:orgId/users/:email', ({ params }) => {
+    const email = decodeURIComponent(params.email)
+    const user = userPermStore.get(params.orgId, email)
+    if (!user) return HttpResponse.json({ error: 'Not found' }, { status: 404 })
+    return HttpResponse.json(user)
+  }),
+
+  http.put('*/api/organizations/:orgId/users/:email', async ({ params, request }) => {
+    const email = decodeURIComponent(params.email)
+    const body = await request.json()
+    const existing = userPermStore.get(params.orgId, email)
+    const item = userPermStore.put(params.orgId, email, body)
+    return HttpResponse.json(item, { status: existing ? 200 : 201 })
+  }),
+
+  http.delete('*/api/organizations/:orgId/users/:email', ({ params }) => {
+    const email = decodeURIComponent(params.email)
+    userPermStore.remove(params.orgId, email)
+    // Backend returns 204 with body '{}' (its response() helper json-encodes
+    // empty dicts), so the client's await res.json() succeeds.
+    return HttpResponse.json({}, { status: 200 })
+  }),
 ]
+
+// In-memory store so tests can round-trip create → list → edit → delete.
+// Reset between tests by calling resetUserPermStore() in test setup.
+const _userPermData = new Map() // key: `${orgId}::${email}`
+export const userPermStore = {
+  reset() { _userPermData.clear() },
+  list(orgId) {
+    return [..._userPermData.entries()]
+      .filter(([k]) => k.startsWith(`${orgId}::`))
+      .map(([, v]) => v)
+  },
+  get(orgId, email) {
+    return _userPermData.get(`${orgId}::${email}`) || null
+  },
+  put(orgId, email, body) {
+    const item = {
+      email,
+      organization_id: orgId,
+      role: body.role || 'member',
+      report_permissions: body.report_permissions || {},
+      analytics_permissions: body.analytics_permissions || [],
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: new Date().toISOString(),
+    }
+    _userPermData.set(`${orgId}::${email}`, item)
+    return item
+  },
+  remove(orgId, email) {
+    _userPermData.delete(`${orgId}::${email}`)
+  },
+}
+
+export function resetUserPermStore() {
+  userPermStore.reset()
+}

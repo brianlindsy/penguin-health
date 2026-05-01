@@ -22,7 +22,7 @@ from aws_cdk.aws_apigatewayv2_authorizers import HttpJwtAuthorizer
 from constructs import Construct
 
 import config
-from components.bundler import CopyFileBundler
+from components.bundler import CopyFileBundler, MultiFileBundler
 
 
 class AdminUi(Construct):
@@ -83,12 +83,13 @@ class AdminUi(Construct):
             handler="admin_api.lambda_handler",
             code=_lambda.Code.from_asset(
                 lambda_api_dir,
-                exclude=["*", "!admin_api.py"],
+                exclude=["*", "!admin_api.py", "!permissions.py"],
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
-                    local=CopyFileBundler(
-                        os.path.join(lambda_api_dir, "admin_api.py")
-                    ),
+                    local=MultiFileBundler([
+                        os.path.join(lambda_api_dir, "admin_api.py"),
+                        os.path.join(lambda_api_dir, "permissions.py"),
+                    ]),
                 ),
             ),
             timeout=Duration.seconds(60),  # Longer timeout for LLM calls
@@ -173,6 +174,11 @@ class AdminUi(Construct):
             ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/confirm-finding"),
             ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-resolved"),
             ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-incorrect"),
+            ("GET",  "/api/me/permissions"),
+            ("GET",  "/api/organizations/{orgId}/users"),
+            ("GET",  "/api/organizations/{orgId}/users/{email}"),
+            ("PUT",  "/api/organizations/{orgId}/users/{email}"),
+            ("DELETE", "/api/organizations/{orgId}/users/{email}"),
         ]
 
         for method, path in routes:

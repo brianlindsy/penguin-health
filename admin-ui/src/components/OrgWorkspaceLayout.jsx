@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { api } from '../api/client.js'
+import { usePermissions } from '../auth/usePermissions.js'
 
 // Shared left-nav "bumper" for org-scoped workspace pages. Sections + items
 // mirror the product mockup (Dashboard, Audit Rules, Analytics & Insights,
@@ -12,6 +13,7 @@ export function OrgWorkspaceLayout({ children }) {
   const location = useLocation()
   const pathname = location.pathname
   const tab = new URLSearchParams(location.search).get('tab')
+  const perms = usePermissions()
 
   // Fetch the most recent validation run so the "Today's Validation" shortcut
   // can deep-link straight to its detail page. Runs are ordered by timestamp
@@ -73,6 +75,7 @@ export function OrgWorkspaceLayout({ children }) {
           to: `/organizations/${orgId}/staff-performance`,
           icon: UsersIcon,
           active: pathname === `/organizations/${orgId}/staff-performance`,
+          visible: perms.canViewAnalytics('staff_performance'),
         },
         {
           key: 'audit-rules',
@@ -103,6 +106,20 @@ export function OrgWorkspaceLayout({ children }) {
           to: `/organizations/${orgId}/revenue-analysis`,
           icon: DollarIcon,
           active: pathname === `/organizations/${orgId}/revenue-analysis`,
+          visible: perms.canViewAnalytics('revenue_analysis'),
+        },
+      ],
+    },
+    {
+      label: 'Administration',
+      items: [
+        {
+          key: 'users',
+          label: 'Users & Permissions',
+          to: `/organizations/${orgId}/users`,
+          icon: UsersIcon,
+          active: pathname === `/organizations/${orgId}/users`,
+          visible: perms.isSuperAdmin,
         },
       ],
     },
@@ -124,16 +141,22 @@ export function OrgWorkspaceLayout({ children }) {
         </div>
 
         <nav className="p-3 space-y-4">
-          {sections.map(section => (
-            <div key={section.label}>
-              <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider px-2 mb-1.5">
-                {section.label}
+          {sections
+            .map(section => ({
+              ...section,
+              items: section.items.filter(i => i.visible !== false),
+            }))
+            .filter(section => section.items.length > 0)
+            .map(section => (
+              <div key={section.label}>
+                <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider px-2 mb-1.5">
+                  {section.label}
+                </div>
+                <div className="space-y-0.5">
+                  {section.items.map(item => <NavItem key={item.key} item={item} />)}
+                </div>
               </div>
-              <div className="space-y-0.5">
-                {section.items.map(item => <NavItem key={item.key} item={item} />)}
-              </div>
-            </div>
-          ))}
+            ))}
         </nav>
       </aside>
 

@@ -10,12 +10,20 @@
 
 import '@testing-library/jest-dom'
 import { cleanup } from '@testing-library/react'
-import { afterEach, vi } from 'vitest'
+import { afterEach, beforeAll, afterAll, vi } from 'vitest'
+import { server } from './src/__tests__/mocks/server.js'
+import { resetUserPermStore } from './src/__tests__/mocks/handlers.js'
 
-// Cleanup after each test
+// Bring up MSW for the duration of the test session so any request the
+// frontend fires (e.g. /api/me/permissions on AuthProvider mount) hits a
+// mock instead of the network. Tests can override handlers via server.use().
+beforeAll(() => server.listen({ onUnhandledRequest: 'bypass' }))
 afterEach(() => {
   cleanup()
+  server.resetHandlers()
+  resetUserPermStore()
 })
+afterAll(() => server.close())
 
 // Mock environment variables
 vi.stubEnv('VITE_API_URL', 'http://localhost:3000')

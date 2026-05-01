@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
+import { RunCategories } from '../components/RunCategories.jsx'
 
 // Customer-facing Validation Results list. Reuses the runs from
 // api.listValidationRuns, but replaces the dense admin table with a card
@@ -268,6 +269,9 @@ function RunCard({ orgId, run, awaiting }) {
           </div>
           <div className="text-xs font-mono text-gray-400 mt-0.5 truncate">
             {run.validation_run_id}
+          </div>
+          <div className="mt-1.5">
+            <RunCategories categories={run.categories} />
           </div>
         </div>
         <StatusPill status={overallStatus} />

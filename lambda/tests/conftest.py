@@ -7,6 +7,7 @@ All tests run entirely in-memory with zero network calls.
 
 import json
 import os
+import sys
 
 # Set AWS environment variables BEFORE importing boto3 or any modules that use it
 # This is critical because admin_api.py creates boto3 clients at module level
@@ -15,6 +16,11 @@ os.environ['AWS_SECRET_ACCESS_KEY'] = 'testing'
 os.environ['AWS_SECURITY_TOKEN'] = 'testing'
 os.environ['AWS_SESSION_TOKEN'] = 'testing'
 os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
+
+# admin_api.py and permissions.py are bundled flat at the Lambda asset root,
+# so admin_api.py uses `import permissions`. Make that work in tests too by
+# putting lambda/api on sys.path.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'api'))
 
 import pytest
 import boto3
@@ -32,6 +38,22 @@ def aws_credentials():
     This fixture exists for compatibility and documentation.
     """
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_permission_cache():
+    """The permission loader caches per (email, org_id); flush between tests."""
+    try:
+        import permissions as _perms
+        _perms.invalidate_cache()
+    except ImportError:
+        pass
+    yield
+    try:
+        import permissions as _perms
+        _perms.invalidate_cache()
+    except ImportError:
+        pass
 
 
 # -----------------------------------------------------------------------------
@@ -165,7 +187,7 @@ def sample_org_config(mock_dynamodb):
         'gsi1sk': 'ORG#test-org#RULE#rule-001',
         'rule_id': 'rule-001',
         'name': 'Service Date Documentation',
-        'category': 'Compliance',
+        'category': 'Compliance Audit',
         'enabled': True,
         'type': 'llm',
         'rule_text': 'Verify the service date is documented in the chart.',
@@ -215,7 +237,8 @@ def sample_validation_result(mock_dynamodb, sample_org_config):
         'validation_run_id': '20240115-100000',
         'organization_id': 'test-org',
         'rules': [
-            {'rule_id': 'rule-001', 'status': 'FAIL', 'message': 'Service date not found'}
+            {'rule_id': 'rule-001', 'category': 'Compliance Audit',
+             'status': 'FAIL', 'message': 'Service date not found'}
         ],
         'extracted_fields': {'service_id': '12345'},
     })
@@ -291,6 +314,57 @@ def org_user_event():
         'pathParameters': {},
         'body': None,
     }
+
+
+@pytest.fixture
+def member_event():
+    """API Gateway event simulating a non-admin org member (no Cognito groups)."""
+    return {
+        'requestContext': {
+            'authorizer': {
+                'jwt': {
+                    'claims': {
+                        'email': 'member@example.com',
+                        'sub': 'member-id-789',
+                        'cognito:groups': '[]',
+                        'custom:organization_id': 'test-org',
+                    }
+                }
+            }
+        },
+        'pathParameters': {},
+        'body': None,
+    }
+
+
+@pytest.fixture
+def seed_user_perms(mock_dynamodb):
+    """Helper fixture: write a USER#<email> / ORG#<org> perm record."""
+    table = mock_dynamodb.Table('penguin-health-org-config')
+
+    def _seed(email, org_id, *, role='member', report_permissions=None,
+              analytics_permissions=None):
+        from datetime import datetime
+        report_permissions = report_permissions or {}
+        analytics_permissions = analytics_permissions or []
+        now = datetime.utcnow().isoformat() + 'Z'
+        item = {
+            'pk': f'USER#{email}',
+            'sk': f'ORG#{org_id}',
+            'gsi1pk': 'USER_PERM',
+            'gsi1sk': f'ORG#{org_id}#USER#{email}',
+            'email': email,
+            'organization_id': org_id,
+            'role': role,
+            'report_permissions': report_permissions,
+            'analytics_permissions': analytics_permissions,
+            'created_at': now,
+            'updated_at': now,
+        }
+        table.put_item(Item=item)
+        return item
+
+    return _seed
 
 
 @pytest.fixture

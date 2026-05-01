@@ -4,6 +4,7 @@ import {
   CognitoUser,
   AuthenticationDetails,
 } from 'amazon-cognito-identity-js'
+import { api } from '../api/client.js'
 
 const AuthContext = createContext(null)
 
@@ -47,7 +48,23 @@ export function AuthProvider({ children }) {
     organizationId: null,
     isSuperAdmin: false,
   })
+  const [permissions, setPermissions] = useState(null)
   const [loading, setLoading] = useState(true)
+
+  // Fetch the caller's permission record from the backend. The frontend
+  // permission object is purely for rendering — every API call is independently
+  // authorized server-side, so this is not a security boundary.
+  const refreshPermissions = useCallback(async () => {
+    try {
+      const data = await api.getMyPermissions()
+      setPermissions(data)
+      return data
+    } catch (err) {
+      console.error('Failed to load permissions', err)
+      setPermissions(null)
+      return null
+    }
+  }, [])
 
   useEffect(() => {
     const cognitoUser = userPool.getCurrentUser()
@@ -56,6 +73,8 @@ export function AuthProvider({ children }) {
         if (err || !session?.isValid()) {
           setUser(null)
           setUserClaims({ email: null, groups: [], organizationId: null, isSuperAdmin: false })
+          setPermissions(null)
+          setLoading(false)
         } else {
           const idToken = session.getIdToken()
           const claims = extractUserClaims(idToken)
@@ -65,13 +84,14 @@ export function AuthProvider({ children }) {
             token: session.getIdToken().getJwtToken(),
           })
           setUserClaims(claims)
+          // Permissions load in the background — don't block initial render.
+          refreshPermissions().finally(() => setLoading(false))
         }
-        setLoading(false)
       })
     } else {
       setLoading(false)
     }
-  }, [])
+  }, [refreshPermissions])
 
   const login = useCallback((email, password) => {
     return new Promise((resolve, reject) => {
@@ -95,6 +115,7 @@ export function AuthProvider({ children }) {
             token: session.getIdToken().getJwtToken(),
           })
           setUserClaims(claims)
+          refreshPermissions()
           resolve(session)
         },
         onFailure: (err) => {
@@ -120,6 +141,7 @@ export function AuthProvider({ children }) {
             token: session.getIdToken().getJwtToken(),
           })
           setUserClaims(claims)
+          refreshPermissions()
           resolve(session)
         },
         onFailure: reject,
@@ -134,6 +156,7 @@ export function AuthProvider({ children }) {
     }
     setUser(null)
     setUserClaims({ email: null, groups: [], organizationId: null, isSuperAdmin: false })
+    setPermissions(null)
   }, [])
 
   const getToken = useCallback(() => {
@@ -158,6 +181,8 @@ export function AuthProvider({ children }) {
       user,
       userClaims,
       isSuperAdmin: userClaims.isSuperAdmin,
+      permissions,
+      refreshPermissions,
       loading,
       login,
       logout,

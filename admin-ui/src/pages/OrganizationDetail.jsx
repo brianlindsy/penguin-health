@@ -4,6 +4,8 @@ import { api } from '../api/client.js'
 import { StatusBadge } from '../components/StatusBadge.jsx'
 import { ValidationStatusBadge } from '../components/ValidationStatusBadge.jsx'
 import { JsonEditor } from '../components/JsonEditor.jsx'
+import { RunCategories } from '../components/RunCategories.jsx'
+import { usePermissions } from '../auth/usePermissions.js'
 
 const TABS = ['Rules', 'Field Mappings', 'Validation Results']
 const TAB_PARAM_MAP = {
@@ -182,6 +184,7 @@ export function OrganizationDetail() {
 
 
 function RulesTab({ orgId, rules, onToggle }) {
+  const perms = usePermissions()
   const sorted = [...rules].sort((a, b) => {
     const aNum = parseInt(a.rule_id) || 0
     const bNum = parseInt(b.rule_id) || 0
@@ -194,12 +197,14 @@ function RulesTab({ orgId, rules, onToggle }) {
         <h2 className="text-lg font-medium text-gray-900">
           Validation Rules ({rules.length})
         </h2>
-        <Link
-          to={`/organizations/${orgId}/rules/new`}
-          className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700"
-        >
-          Add Rule
-        </Link>
+        {perms.isOrgAdmin && (
+          <Link
+            to={`/organizations/${orgId}/rules/new`}
+            className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700"
+          >
+            Add Rule
+          </Link>
+        )}
       </div>
 
       <div className="bg-white shadow rounded-lg overflow-hidden">
@@ -316,6 +321,11 @@ function FieldMappingsTab({ config, onSave, saving, saveMsg }) {
 
 
 function ValidationResultsTab({ orgId }) {
+  const perms = usePermissions()
+  const runnable = useMemo(() => Array.from(perms.runnableCategories()).sort(),
+    [perms])
+  const canRunAny = runnable.length > 0
+
   const [runs, setRuns] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -324,6 +334,14 @@ function ValidationResultsTab({ orgId }) {
   const [periodFilter, setPeriodFilter] = useState('all')
   const [customStartDate, setCustomStartDate] = useState('')
   const [customEndDate, setCustomEndDate] = useState('')
+  // Default to running every category the user is allowed to run.
+  const [selectedCategories, setSelectedCategories] = useState(runnable)
+  const [pickerOpen, setPickerOpen] = useState(false)
+
+  // Keep `selectedCategories` aligned with `runnable` once permissions arrive.
+  useEffect(() => {
+    setSelectedCategories(runnable)
+  }, [runnable.join('|')])
 
   const loadRuns = () => {
     setLoading(true)
@@ -337,13 +355,23 @@ function ValidationResultsTab({ orgId }) {
     loadRuns()
   }, [orgId])
 
+  const toggleCategory = (cat) => {
+    setSelectedCategories(prev =>
+      prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]
+    )
+  }
+
   const handleTriggerValidation = async () => {
+    if (selectedCategories.length === 0) {
+      setTriggerMsg('Error: select at least one category')
+      return
+    }
     setTriggering(true)
     setTriggerMsg('')
+    setPickerOpen(false)
     try {
-      await api.triggerValidationRun(orgId)
+      await api.triggerValidationRun(orgId, selectedCategories)
       setTriggerMsg('Validation run started. Results will appear shortly.')
-      // Refresh the list after a short delay to show the new run
       setTimeout(() => {
         loadRuns()
         setTriggerMsg('')
@@ -395,23 +423,56 @@ function ValidationResultsTab({ orgId }) {
               {triggerMsg}
             </span>
           )}
-          <button
-            onClick={handleTriggerValidation}
-            disabled={triggering}
-            className="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
-          >
-            {triggering ? (
-              <>
-                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                Running...
-              </>
-            ) : (
-              'Run Validation'
-            )}
-          </button>
+          {canRunAny && (
+            <div className="relative flex items-center gap-2">
+              <button
+                onClick={() => setPickerOpen(o => !o)}
+                disabled={triggering}
+                className="px-3 py-2 text-xs text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+                title="Choose rule categories to validate"
+              >
+                {selectedCategories.length === runnable.length
+                  ? 'All categories'
+                  : `${selectedCategories.length} of ${runnable.length} categories`}
+                <span className="ml-1 text-gray-400">▾</span>
+              </button>
+              {pickerOpen && (
+                <div className="absolute right-32 top-full mt-1 z-10 bg-white border border-gray-200 rounded-md shadow-lg p-3 w-56">
+                  <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
+                    Categories
+                  </div>
+                  {runnable.map(cat => (
+                    <label key={cat} className="flex items-center gap-2 py-1 text-sm cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedCategories.includes(cat)}
+                        onChange={() => toggleCategory(cat)}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="text-gray-700">{cat}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              <button
+                onClick={handleTriggerValidation}
+                disabled={triggering || selectedCategories.length === 0}
+                className="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
+              >
+                {triggering ? (
+                  <>
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Running...
+                  </>
+                ) : (
+                  'Run Validation'
+                )}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -479,6 +540,7 @@ function ValidationResultsTab({ orgId }) {
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Run ID</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Categories</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Docs</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Pass</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Fail</th>
@@ -499,6 +561,9 @@ function ValidationResultsTab({ orgId }) {
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-600">
                     {run.timestamp ? new Date(run.timestamp).toLocaleString() : '-'}
+                  </td>
+                  <td className="px-4 py-3">
+                    <RunCategories categories={run.categories} />
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-900 font-medium">{run.total_documents}</td>
                   <td className="px-4 py-3 text-sm text-green-600 font-medium">{run.passed}</td>

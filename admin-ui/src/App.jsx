@@ -15,7 +15,9 @@ import { AuditRuleDetailPage } from './pages/AuditRuleDetailPage.jsx'
 import { ValidationResultsPage } from './pages/ValidationResultsPage.jsx'
 import { RevenueAnalysisPage } from './pages/RevenueAnalysisPage.jsx'
 import { DashboardPage } from './pages/DashboardPage.jsx'
+import { UsersPage } from './pages/UsersPage.jsx'
 import { setTokenProvider, setOnUnauthorized } from './api/client.js'
+import { RoleGuard } from './auth/RoleGuard.jsx'
 
 // Redirect /organizations/:orgId/validation-runs to org detail with validation tab
 function ValidationRunsRedirect() {
@@ -45,16 +47,52 @@ function App() {
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route path="/" element={<OrganizationsPage />} />
         <Route path="/organizations/:orgId" element={<OrganizationDetail />} />
-        <Route path="/organizations/:orgId/rules/new" element={<RuleCreator />} />
-        <Route path="/organizations/:orgId/rules/:ruleId" element={<RuleEditor />} />
+        <Route
+          path="/organizations/:orgId/rules/new"
+          element={
+            <RoleGuard requireOrgAdmin>
+              <RuleCreator />
+            </RoleGuard>
+          }
+        />
+        <Route
+          path="/organizations/:orgId/rules/:ruleId"
+          element={
+            <RoleGuard requireOrgAdmin>
+              <RuleEditor />
+            </RoleGuard>
+          }
+        />
         <Route path="/organizations/:orgId/validation-runs" element={<ValidationRunsRedirect />} />
         <Route path="/organizations/:orgId/validation-runs/:runId" element={<ValidationRunDetailPage />} />
-        <Route path="/organizations/:orgId/staff-performance" element={<StaffPerformancePage />} />
+        <Route
+          path="/organizations/:orgId/staff-performance"
+          element={
+            <RoleGuard requireAnalytics="staff_performance">
+              <StaffPerformancePage />
+            </RoleGuard>
+          }
+        />
         <Route path="/organizations/:orgId/audit-rules" element={<AuditRulesPage />} />
         <Route path="/organizations/:orgId/audit-rules/:ruleId" element={<AuditRuleDetailPage />} />
         <Route path="/organizations/:orgId/validation-results" element={<ValidationResultsPage />} />
-        <Route path="/organizations/:orgId/revenue-analysis" element={<RevenueAnalysisPage />} />
+        <Route
+          path="/organizations/:orgId/revenue-analysis"
+          element={
+            <RoleGuard requireAnalytics="revenue_analysis">
+              <RevenueAnalysisPage />
+            </RoleGuard>
+          }
+        />
         <Route path="/organizations/:orgId/dashboard" element={<DashboardPage />} />
+        <Route
+          path="/organizations/:orgId/users"
+          element={
+            <RoleGuard requireSuperAdmin>
+              <UsersPage />
+            </RoleGuard>
+          }
+        />
       </Route>
     </Routes>
   )

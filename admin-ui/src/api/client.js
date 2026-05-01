@@ -31,6 +31,12 @@ async function request(path, options = {}) {
     throw new Error('Unauthorized')
   }
 
+  // 204 No Content (used by DELETEs) has no body to parse.
+  if (res.status === 204) {
+    if (!res.ok) throw new Error(`Request failed: ${res.status}`)
+    return null
+  }
+
   const data = await res.json()
 
   if (!res.ok) {
@@ -92,9 +98,32 @@ export const api = {
   listValidationRuns: (orgId) =>
     request(`/api/organizations/${orgId}/validation-runs`),
 
-  triggerValidationRun: (orgId) =>
+  triggerValidationRun: (orgId, categories) =>
     request(`/api/organizations/${orgId}/validation-runs`, {
       method: 'POST',
+      body: JSON.stringify(
+        categories && categories.length ? { categories } : {}
+      ),
+    }),
+
+  // RBAC
+  getMyPermissions: () => request('/api/me/permissions'),
+
+  listOrgUsers: (orgId) =>
+    request(`/api/organizations/${orgId}/users`),
+
+  getOrgUser: (orgId, email) =>
+    request(`/api/organizations/${orgId}/users/${encodeURIComponent(email)}`),
+
+  upsertOrgUser: (orgId, email, payload) =>
+    request(`/api/organizations/${orgId}/users/${encodeURIComponent(email)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteOrgUser: (orgId, email) =>
+    request(`/api/organizations/${orgId}/users/${encodeURIComponent(email)}`, {
+      method: 'DELETE',
     }),
 
   getValidationRun: (orgId, runId) =>

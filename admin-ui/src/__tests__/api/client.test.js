@@ -180,6 +180,53 @@ describe('API Client', () => {
     )
   })
 
+  it('forwards categories[] to triggerValidationRun', async () => {
+    setTokenProvider(() => Promise.resolve('token'))
+
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      json: () => Promise.resolve({ validation_run_id: 'new-run-id' }),
+    })
+
+    await api.triggerValidationRun('org-123', ['Billing', 'Intake'])
+
+    const call = fetchSpy.mock.calls[0]
+    expect(call[1].method).toBe('POST')
+    expect(JSON.parse(call[1].body)).toEqual({ categories: ['Billing', 'Intake'] })
+  })
+
+  it('omits categories from triggerValidationRun body when none supplied', async () => {
+    setTokenProvider(() => Promise.resolve('token'))
+
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      json: () => Promise.resolve({}),
+    })
+
+    await api.triggerValidationRun('org-123')
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({})
+  })
+
+  it('getMyPermissions hits /api/me/permissions', async () => {
+    setTokenProvider(() => Promise.resolve('token'))
+
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ is_super_admin: false }),
+    })
+
+    const result = await api.getMyPermissions()
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining('/api/me/permissions'),
+      expect.any(Object),
+    )
+    expect(result).toEqual({ is_super_admin: false })
+  })
+
   it('returns parsed JSON data on success', async () => {
     setTokenProvider(() => Promise.resolve('token'))
 

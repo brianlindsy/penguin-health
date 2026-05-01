@@ -276,7 +276,7 @@ class TestRuleCRUD:
         body = {
             'id': 'new-rule',
             'name': 'New Test Rule',
-            'category': 'Compliance',
+            'category': 'Compliance Audit',
             'rule_text': 'Verify the documentation is complete.',
         }
 
@@ -296,7 +296,7 @@ class TestRuleCRUD:
         body = {
             'id': 'rule-001',  # Already exists in sample_org_config
             'name': 'Duplicate Rule',
-            'category': 'Compliance',
+            'category': 'Compliance Audit',
             'rule_text': 'Verify documentation.',
         }
 
@@ -315,7 +315,7 @@ class TestRuleCRUD:
         body = {
             'id': 'deterministic-rule',
             'name': 'Deterministic Rule',
-            'category': 'Compliance',
+            'category': 'Compliance Audit',
             'type': 'deterministic',
             'conditions': [
                 {'field': 'status', 'operator': 'equals', 'value': 'approved'}
