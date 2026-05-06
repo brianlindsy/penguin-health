@@ -881,13 +881,13 @@ function DocumentListItem({ doc, selected, onClick }) {
           </span>
         ) : (
           <a
-            href={getCredibleLink(doc.document_id)}
+            href={getCredibleLink(fv.service_id || doc.document_id)}
             target="_blank"
             rel="noopener noreferrer"
             className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
             onClick={(e) => e.stopPropagation()}
           >
-            {doc.document_id}
+            {fv.service_id || doc.document_id}
           </a>
         )}
         <div className="flex items-center gap-1">
@@ -959,21 +959,6 @@ function DocumentListItem({ doc, selected, onClick }) {
           )}
         </div>
 
-        {/* Service ID */}
-        {fv.service_id && fv.service_id !== doc.document_id && (
-          <div className="flex items-center gap-1">
-            <span className="text-gray-400">Service ID:</span>
-            <a
-              href={getCredibleLink(fv.service_id)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-800 hover:underline font-mono text-[10px]"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {fv.service_id}
-            </a>
-          </div>
-        )}
       </div>
 
       {/* Rule status indicators — sorted FAIL → PASS → SKIP */}
@@ -1019,12 +1004,12 @@ function DocumentDetailPanel({ doc, selectedRule, onSelectRule, confirmingRuleId
             <p className="text-sm text-gray-500">
               ID:{' '}
               <a
-                href={getCredibleLink(doc.document_id)}
+                href={getCredibleLink(doc.field_values?.service_id || doc.document_id)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-blue-600 hover:text-blue-800 hover:underline"
               >
-                {doc.document_id}
+                {doc.field_values?.service_id || doc.document_id}
               </a>
             </p>
           </div>

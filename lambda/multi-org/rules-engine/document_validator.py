@@ -18,19 +18,20 @@ from deterministic_evaluator import evaluate_deterministic_rule
 
 def extract_document_id_from_filename(filename):
     """
-    Extract document ID from CSV filename in format {documentID}.csv.
+    Extract document ID from CSV filename in format {timestamp}__{visitID}.csv.
+    Falls back to the whole stem if no `__` separator is present (legacy files).
 
     Args:
-        filename: The filename or path (e.g., 'path/to/12345.csv')
+        filename: The filename or path (e.g., 'path/to/20260503T120000__12345.csv')
 
     Returns:
-        str: The document ID (filename without .csv extension) or None
+        str: The document ID or None if not a .csv file
     """
     basename = os.path.basename(filename)
-    if basename.endswith('.csv'):
-        # Remove .csv extension to get document ID
-        return basename[:-4]
-    return None
+    if not basename.endswith('.csv'):
+        return None
+    stem = basename[:-4]
+    return stem.rsplit('__', 1)[-1]
 
 
 def evaluate_rule(rule_config, fields, data=None):
@@ -293,7 +294,7 @@ def validate_document(data, filename, config, org_id, validation_run_id):
     failed = sum(1 for r in rule_results if r['status'] == 'FAIL')
     skipped = sum(1 for r in rule_results if r['status'] == 'SKIP')
 
-    # For CSV files, extract document_id from filename (format: visit_documentID.csv)
+    # For CSV files, extract document_id from filename (format: {timestamp}__{visitID}.csv)
     # Otherwise use the field value from the document
     document_id = extract_document_id_from_filename(filename)
     if not document_id:
