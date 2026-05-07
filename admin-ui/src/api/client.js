@@ -95,8 +95,15 @@ export const api = {
     }),
 
   // Validation Results
-  listValidationRuns: (orgId) =>
-    request(`/api/organizations/${orgId}/validation-runs`),
+  listValidationRuns: (orgId, { since, until, includeDetails, limit } = {}) => {
+    const qs = new URLSearchParams()
+    if (since) qs.set('since', since)
+    if (until) qs.set('until', until)
+    if (includeDetails) qs.set('include', 'details')
+    if (limit != null) qs.set('limit', String(limit))
+    const suffix = qs.toString() ? `?${qs}` : ''
+    return request(`/api/organizations/${orgId}/validation-runs${suffix}`)
+  },
 
   triggerValidationRun: (orgId, categories, dates) => {
     const body = {}

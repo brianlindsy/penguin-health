@@ -135,11 +135,16 @@ export const handlers = [
     })
   }),
 
-  // List validation runs
-  http.get('*/api/organizations/:orgId/validation-runs', () => {
+  // List validation runs (optionally with embedded details)
+  http.get('*/api/organizations/:orgId/validation-runs', ({ request }) => {
+    const url = new URL(request.url)
+    const runs = url.searchParams.get('include') === 'details'
+      ? mockValidationRuns.map(r => ({ ...r, documents: [], total_count: 0 }))
+      : mockValidationRuns
     return HttpResponse.json({
-      runs: mockValidationRuns,
-      count: mockValidationRuns.length,
+      runs,
+      count: runs.length,
+      truncated: false,
     })
   }),
 
