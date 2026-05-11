@@ -18,6 +18,7 @@ import config
 from components.database import Database
 from components.admin_ui import AdminUi
 from components.audit_engine import AuditEngine
+from components.analytics import Analytics
 
 
 class PenguinHealthStack(Stack):
@@ -45,6 +46,9 @@ class PenguinHealthStack(Stack):
             irp_table=db.irp_table,
             notifications_topic=db.notifications_topic,
         )
+
+        # ----- Analytics (Athena + Glue) -----
+        analytics = Analytics(self, "Analytics")
 
         # ----- Outputs: Admin UI -----
         CfnOutput(self, "UserPoolId",
@@ -93,3 +97,13 @@ class PenguinHealthStack(Stack):
             value=db.notifications_topic.topic_arn,
             description="SNS topic ARN for Textract notifications",
         )
+
+        # ----- Outputs: Analytics -----
+        # One Athena workgroup per org; query results land in each org's
+        # own bucket under athena-results/ for PHI isolation.
+        for org_id, wg in analytics.workgroups.items():
+            safe_id = org_id.replace("-", "")
+            CfnOutput(self, f"AthenaWorkGroup{safe_id}",
+                value=wg.name,
+                description=f"Athena workgroup for {org_id}",
+            )

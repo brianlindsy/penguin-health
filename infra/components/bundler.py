@@ -33,6 +33,49 @@ class MultiFileBundler:
 
 
 @jsii.implements(ILocalBundling)
+class PipInstallBundler:
+    """
+    Bundles Python source files alongside pip-installed dependencies.
+
+    Pip is invoked with --platform manylinux2014_x86_64 / --only-binary=:all:
+    so the wheels match the Lambda Linux x86_64 runtime regardless of where
+    `cdk synth` runs. The pinned Python version must match the Lambda
+    runtime — wheels are not interchangeable across CPython minor versions.
+
+    Args:
+        source_paths: List of source file paths to copy into the asset.
+        requirements: List of pip requirement strings (e.g. "fastparquet==2025.1.0").
+        python_version: CPython minor (e.g. "3.13") matching the Lambda runtime.
+    """
+
+    def __init__(self, source_paths: list[str], requirements: list[str],
+                 python_version: str = "3.13"):
+        self._source_paths = source_paths
+        self._requirements = requirements
+        self._python_version = python_version
+
+    def try_bundle(self, output_dir: str, options) -> bool:
+        import subprocess
+
+        for path in self._source_paths:
+            shutil.copy2(path, output_dir)
+
+        if self._requirements:
+            cmd = [
+                "python3", "-m", "pip", "install",
+                "--no-cache-dir",
+                "--target", output_dir,
+                "--platform", "manylinux2014_x86_64",
+                "--python-version", self._python_version,
+                "--only-binary=:all:",
+                "--implementation", "cp",
+                *self._requirements,
+            ]
+            subprocess.run(cmd, check=True)
+        return True
+
+
+@jsii.implements(ILocalBundling)
 class DirectoryBundler:
     """
     Bundles files and directories into the Lambda asset output directory.

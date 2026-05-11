@@ -18,7 +18,12 @@ from aws_cdk import (
 from constructs import Construct
 
 import config
-from components.bundler import CopyFileBundler, MultiFileBundler, DirectoryBundler
+from components.bundler import (
+    CopyFileBundler,
+    MultiFileBundler,
+    DirectoryBundler,
+    PipInstallBundler,
+)
 
 
 class AuditEngine(Construct):
@@ -116,7 +121,9 @@ class AuditEngine(Construct):
         )
 
         # ----- rules-engine-rag -----
-        # Module files for the rules engine (refactored for maintainability)
+        # Module files for the rules engine (refactored for maintainability).
+        # Pinned to Python 3.13 (rest of stack runs 3.14) because fastparquet
+        # and its pandas/numpy deps don't yet ship Linux wheels for 3.14.
         rules_engine_modules = [
             "rules_engine_rag.py",      # Lambda entry point
             "multi_org_config.py",       # DynamoDB org config loading
@@ -126,20 +133,33 @@ class AuditEngine(Construct):
             "deterministic_evaluator.py", # Code-based deterministic rule evaluation
             "results_handler.py",        # DynamoDB storage and CSV reports
             "field_extractor.py",        # Text field extraction
+            "parquet_writer.py",         # End-of-run Parquet snapshot for Athena
+        ]
+
+        rules_engine_requirements = [
+            # fastparquet pulls pandas, numpy, cramjam transitively via
+            # PipInstallBundler (which doesn't pass --no-deps), so listing
+            # fastparquet alone is enough.
+            "fastparquet==2024.11.0",
         ]
 
         self.rules_engine_fn = _lambda.Function(self, "RulesEngineRagFn",
             function_name=f"{config.PROJECT_NAME}-rules-engine-rag",
-            runtime=_lambda.Runtime.PYTHON_3_14,
+            runtime=_lambda.Runtime.PYTHON_3_13,
             handler="rules_engine_rag.lambda_handler",
             code=_lambda.Code.from_asset(
                 rules_engine_dir,
                 exclude=["*"] + [f"!{m}" for m in rules_engine_modules],
                 bundling=BundlingOptions(
-                    image=_lambda.Runtime.PYTHON_3_14.bundling_image,
-                    local=MultiFileBundler([
-                        os.path.join(rules_engine_dir, m) for m in rules_engine_modules
-                    ]),
+                    image=_lambda.Runtime.PYTHON_3_13.bundling_image,
+                    local=PipInstallBundler(
+                        source_paths=[
+                            os.path.join(rules_engine_dir, m)
+                            for m in rules_engine_modules
+                        ],
+                        requirements=rules_engine_requirements,
+                        python_version="3.13",
+                    ),
                 ),
             ),
             timeout=Duration.minutes(15),  # Max Lambda timeout for continuation pattern

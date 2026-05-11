@@ -57,7 +57,7 @@ export function StaffPerformancePage() {
     // into older windows like "Last 90 days" without silently dropping runs.
     Promise.all([
       api.listRules(orgId),
-      api.listValidationRuns(orgId, { includeDetails: true, limit: 50 })
+      api.listValidationRuns(orgId, { includeDetails: true, slim: true, limit: 50 })
         .then(runsData => runsData.runs || []),
     ])
       .then(([rulesResponse, runsWithDetails]) => {

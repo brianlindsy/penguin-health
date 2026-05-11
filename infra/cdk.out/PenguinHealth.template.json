@@ -648,7 +648,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "6db02151bc46b681117fe68f363ea90d57e53de50b16998959a07e0d1954e492.zip"
+     "S3Key": "5ccc05b0a7f6792eb30ec58de8fd0e45d4ff27e4c3e2d6296abed6c7f2e8b361.zip"
     },
     "Environment": {
      "Variables": {
@@ -688,7 +688,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AdminUi/AdminApiFunction/Resource",
-    "aws:asset:path": "asset.6db02151bc46b681117fe68f363ea90d57e53de50b16998959a07e0d1954e492",
+    "aws:asset:path": "asset.5ccc05b0a7f6792eb30ec58de8fd0e45d4ff27e4c3e2d6296abed6c7f2e8b361",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -2966,7 +2966,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
      },
-     "S3Key": "ea89c7fd58cdcdd691112c3096102edf31e1bb351e3f33446db6dfe73b2993d5.zip"
+     "S3Key": "f2a4de06e77f94f0b7ef6fdf3f03e127be29e2d5c76356fba7594a109364bae4.zip"
     },
     "FunctionName": "penguin-health-rules-engine-rag",
     "Handler": "rules_engine_rag.lambda_handler",
@@ -2977,7 +2977,7 @@
       "Arn"
      ]
     },
-    "Runtime": "python3.14",
+    "Runtime": "python3.13",
     "Tags": [
      {
       "Key": "ManagedBy",
@@ -2996,7 +2996,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/AuditEngine/RulesEngineRagFn/Resource",
-    "aws:asset:path": "asset.ea89c7fd58cdcdd691112c3096102edf31e1bb351e3f33446db6dfe73b2993d5",
+    "aws:asset:path": "asset.f2a4de06e77f94f0b7ef6fdf3f03e127be29e2d5c76356fba7594a109364bae4",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -3404,10 +3404,1260 @@
     "aws:cdk:path": "PenguinHealth/AuditEngine/CirclesOfCareDailyValidationSchedule/AllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B"
    }
   },
+  "AnalyticsAnalyticsDatabase331EE14A": {
+   "Type": "AWS::Glue::Database",
+   "Properties": {
+    "CatalogId": {
+     "Ref": "AWS::AccountId"
+    },
+    "DatabaseInput": {
+     "Description": "Penguin Health analytics — charts (CSV) and validation_results (Parquet), per org.",
+     "Name": "penguin_health_analytics"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/Analytics/AnalyticsDatabase"
+   }
+  },
+  "AnalyticsChartsTablecirclesofcare96512CEF": {
+   "Type": "AWS::Glue::Table",
+   "Properties": {
+    "CatalogId": {
+     "Ref": "AWS::AccountId"
+    },
+    "DatabaseName": "penguin_health_analytics",
+    "TableInput": {
+     "Description": "Per-chart CSV files for circles-of-care written by the CSV splitter. One file per chart; many rows per file.",
+     "Name": "charts_circles_of_care",
+     "Parameters": {
+      "classification": "csv",
+      "skip.header.line.count": "1",
+      "projection.enabled": "true",
+      "projection.ingest_date.type": "date",
+      "projection.ingest_date.format": "yyyy-MM-dd",
+      "projection.ingest_date.range": "2024-01-01,NOW",
+      "projection.ingest_date.interval": "1",
+      "projection.ingest_date.interval.unit": "DAYS",
+      "storage.location.template": "s3://penguin-health-circles-of-care/data/${ingest_date}/"
+     },
+     "PartitionKeys": [
+      {
+       "Name": "ingest_date",
+       "Type": "string"
+      }
+     ],
+     "StorageDescriptor": {
+      "Columns": [
+       {
+        "Name": "fake_client_id",
+        "Type": "string"
+       },
+       {
+        "Name": "clientvisit_id",
+        "Type": "string"
+       },
+       {
+        "Name": "grade",
+        "Type": "string"
+       },
+       {
+        "Name": "race_desc",
+        "Type": "string"
+       },
+       {
+        "Name": "ethnicity_desc",
+        "Type": "string"
+       },
+       {
+        "Name": "sex",
+        "Type": "string"
+       },
+       {
+        "Name": "marital_status",
+        "Type": "string"
+       },
+       {
+        "Name": "age_at_service",
+        "Type": "string"
+       },
+       {
+        "Name": "visittype",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_id",
+        "Type": "string"
+       },
+       {
+        "Name": "service_date",
+        "Type": "string"
+       },
+       {
+        "Name": "episode_id",
+        "Type": "string"
+       },
+       {
+        "Name": "program_desc",
+        "Type": "string"
+       },
+       {
+        "Name": "admission_date",
+        "Type": "string"
+       },
+       {
+        "Name": "discharge_date",
+        "Type": "string"
+       },
+       {
+        "Name": "icd10_codes",
+        "Type": "string"
+       },
+       {
+        "Name": "problem_list_order",
+        "Type": "string"
+       },
+       {
+        "Name": "fake_client_id2",
+        "Type": "string"
+       },
+       {
+        "Name": "clientvisit_id2",
+        "Type": "string"
+       },
+       {
+        "Name": "first_referral",
+        "Type": "string"
+       },
+       {
+        "Name": "question_text",
+        "Type": "string"
+       },
+       {
+        "Name": "answer",
+        "Type": "string"
+       },
+       {
+        "Name": "type",
+        "Type": "string"
+       },
+       {
+        "Name": "episode_id2",
+        "Type": "string"
+       },
+       {
+        "Name": "cptcode",
+        "Type": "string"
+       },
+       {
+        "Name": "first_name",
+        "Type": "string"
+       },
+       {
+        "Name": "last_name",
+        "Type": "string"
+       },
+       {
+        "Name": "rate",
+        "Type": "string"
+       },
+       {
+        "Name": "initial_appt",
+        "Type": "string"
+       },
+       {
+        "Name": "agegroup",
+        "Type": "string"
+       },
+       {
+        "Name": "diagnose_on_visit",
+        "Type": "string"
+       }
+      ],
+      "InputFormat": "org.apache.hadoop.mapred.TextInputFormat",
+      "Location": "s3://penguin-health-circles-of-care/data/",
+      "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
+      "SerdeInfo": {
+       "Parameters": {
+        "separator": ",",
+        "quoteChar": "\"",
+        "escapeChar": "\\"
+       },
+       "SerializationLibrary": "org.apache.hadoop.hive.serde2.OpenCSVSerde"
+      }
+     },
+     "TableType": "EXTERNAL_TABLE"
+    }
+   },
+   "DependsOn": [
+    "AnalyticsAnalyticsDatabase331EE14A"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/Analytics/ChartsTable_circles_of_care"
+   }
+  },
+  "AnalyticsValidationResultsTablecirclesofcareF1FF1BC6": {
+   "Type": "AWS::Glue::Table",
+   "Properties": {
+    "CatalogId": {
+     "Ref": "AWS::AccountId"
+    },
+    "DatabaseName": "penguin_health_analytics",
+    "TableInput": {
+     "Description": "End-of-run Parquet snapshot of validation results for circles-of-care. One row per rule per document. Mutable feedback fields are intentionally NOT included.",
+     "Name": "validation_results_circles_of_care",
+     "Parameters": {
+      "classification": "parquet",
+      "projection.enabled": "true",
+      "projection.validation_date.type": "date",
+      "projection.validation_date.format": "yyyy-MM-dd",
+      "projection.validation_date.range": "2026-05-01,NOW",
+      "projection.validation_date.interval": "1",
+      "projection.validation_date.interval.unit": "DAYS",
+      "storage.location.template": "s3://penguin-health-circles-of-care/analytics/validation_results/validation_date=${validation_date}/"
+     },
+     "PartitionKeys": [
+      {
+       "Name": "validation_date",
+       "Type": "string"
+      }
+     ],
+     "StorageDescriptor": {
+      "Columns": [
+       {
+        "Name": "organization_id",
+        "Type": "string"
+       },
+       {
+        "Name": "validation_run_id",
+        "Type": "string"
+       },
+       {
+        "Name": "validation_timestamp",
+        "Type": "string"
+       },
+       {
+        "Name": "document_id",
+        "Type": "string"
+       },
+       {
+        "Name": "filename",
+        "Type": "string"
+       },
+       {
+        "Name": "s3_key",
+        "Type": "string"
+       },
+       {
+        "Name": "rule_id",
+        "Type": "string"
+       },
+       {
+        "Name": "rule_name",
+        "Type": "string"
+       },
+       {
+        "Name": "category",
+        "Type": "string"
+       },
+       {
+        "Name": "rule_type",
+        "Type": "string"
+       },
+       {
+        "Name": "status",
+        "Type": "string"
+       },
+       {
+        "Name": "message",
+        "Type": "string"
+       },
+       {
+        "Name": "field_date",
+        "Type": "string"
+       },
+       {
+        "Name": "field_employee_name",
+        "Type": "string"
+       },
+       {
+        "Name": "field_program",
+        "Type": "string"
+       },
+       {
+        "Name": "field_cpt_code",
+        "Type": "string"
+       },
+       {
+        "Name": "field_rate",
+        "Type": "string"
+       },
+       {
+        "Name": "field_values_json",
+        "Type": "string"
+       }
+      ],
+      "InputFormat": "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat",
+      "Location": "s3://penguin-health-circles-of-care/analytics/validation_results/",
+      "OutputFormat": "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat",
+      "SerdeInfo": {
+       "SerializationLibrary": "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+      }
+     },
+     "TableType": "EXTERNAL_TABLE"
+    }
+   },
+   "DependsOn": [
+    "AnalyticsAnalyticsDatabase331EE14A"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/Analytics/ValidationResultsTable_circles_of_care"
+   }
+  },
+  "AnalyticsAnalyticsWorkGroupcirclesofcare63088F6A": {
+   "Type": "AWS::Athena::WorkGroup",
+   "Properties": {
+    "Description": "Analytics queries over circles-of-care's charts and validation_results. Query results land in this org's bucket only — never commingled with other orgs' data.",
+    "Name": "penguin-health-analytics-circles-of-care",
+    "RecursiveDeleteOption": true,
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Project",
+      "Value": "penguin-health"
+     }
+    ],
+    "WorkGroupConfiguration": {
+     "EnforceWorkGroupConfiguration": true,
+     "PublishCloudWatchMetricsEnabled": true,
+     "ResultConfiguration": {
+      "EncryptionConfiguration": {
+       "EncryptionOption": "SSE_S3"
+      },
+      "OutputLocation": "s3://penguin-health-circles-of-care/athena-results/"
+     }
+    }
+   },
+   "DependsOn": [
+    "AnalyticsAnalyticsDatabase331EE14A"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/Analytics/AnalyticsWorkGroup_circles_of_care"
+   }
+  },
+  "AnalyticsChartsTablecatholiccharitiesmultiorgFAD9D2FD": {
+   "Type": "AWS::Glue::Table",
+   "Properties": {
+    "CatalogId": {
+     "Ref": "AWS::AccountId"
+    },
+    "DatabaseName": "penguin_health_analytics",
+    "TableInput": {
+     "Description": "Per-chart CSV files for catholic-charities-multi-org written by the CSV splitter. One file per chart; many rows per file.",
+     "Name": "charts_catholic_charities_multi_org",
+     "Parameters": {
+      "classification": "csv",
+      "skip.header.line.count": "1",
+      "projection.enabled": "true",
+      "projection.ingest_date.type": "date",
+      "projection.ingest_date.format": "yyyy-MM-dd",
+      "projection.ingest_date.range": "2024-01-01,NOW",
+      "projection.ingest_date.interval": "1",
+      "projection.ingest_date.interval.unit": "DAYS",
+      "storage.location.template": "s3://penguin-health-catholic-charities-multi-org/data/${ingest_date}/"
+     },
+     "PartitionKeys": [
+      {
+       "Name": "ingest_date",
+       "Type": "string"
+      }
+     ],
+     "StorageDescriptor": {
+      "Columns": [
+       {
+        "Name": "visit_link_50",
+        "Type": "string"
+       },
+       {
+        "Name": "service_id_1",
+        "Type": "string"
+       },
+       {
+        "Name": "consumer_name_2",
+        "Type": "string"
+       },
+       {
+        "Name": "consumer_dob_3",
+        "Type": "string"
+       },
+       {
+        "Name": "episode_id_4",
+        "Type": "string"
+       },
+       {
+        "Name": "staff_name_5",
+        "Type": "string"
+       },
+       {
+        "Name": "staff_id_6",
+        "Type": "string"
+       },
+       {
+        "Name": "program_7",
+        "Type": "string"
+       },
+       {
+        "Name": "program_name_7b",
+        "Type": "string"
+       },
+       {
+        "Name": "service_date_8",
+        "Type": "string"
+       },
+       {
+        "Name": "start_time_9",
+        "Type": "string"
+       },
+       {
+        "Name": "end_time_10",
+        "Type": "string"
+       },
+       {
+        "Name": "revised_start_11",
+        "Type": "string"
+       },
+       {
+        "Name": "revised_end_12",
+        "Type": "string"
+       },
+       {
+        "Name": "duration_13",
+        "Type": "string"
+       },
+       {
+        "Name": "signed_time_14",
+        "Type": "string"
+       },
+       {
+        "Name": "transferred_time_15",
+        "Type": "string"
+       },
+       {
+        "Name": "cpt_code_16",
+        "Type": "string"
+       },
+       {
+        "Name": "client_insurance_order_26s",
+        "Type": "string"
+       },
+       {
+        "Name": "billing_order_26b",
+        "Type": "string"
+       },
+       {
+        "Name": "billing_sequence_26c",
+        "Type": "string"
+       },
+       {
+        "Name": "billing_group_id_26t",
+        "Type": "string"
+       },
+       {
+        "Name": "billing_group_name_26u",
+        "Type": "string"
+       },
+       {
+        "Name": "units_17",
+        "Type": "string"
+       },
+       {
+        "Name": "rate_18",
+        "Type": "string"
+       },
+       {
+        "Name": "modifier_1_19",
+        "Type": "string"
+       },
+       {
+        "Name": "modifier_2_20",
+        "Type": "string"
+       },
+       {
+        "Name": "visit_type_id_21",
+        "Type": "string"
+       },
+       {
+        "Name": "visit_type_name_21b",
+        "Type": "string"
+       },
+       {
+        "Name": "location_code_22",
+        "Type": "string"
+       },
+       {
+        "Name": "location_label_22b",
+        "Type": "string"
+       },
+       {
+        "Name": "recipient_code_23",
+        "Type": "string"
+       },
+       {
+        "Name": "recipient_label_23b",
+        "Type": "string"
+       },
+       {
+        "Name": "approved_24",
+        "Type": "string"
+       },
+       {
+        "Name": "non_billable_25",
+        "Type": "string"
+       },
+       {
+        "Name": "authorization_id_26",
+        "Type": "string"
+       },
+       {
+        "Name": "narrative_simple_27",
+        "Type": "string"
+       },
+       {
+        "Name": "narrative_rich_28",
+        "Type": "string"
+       },
+       {
+        "Name": "next_steps_effective_29c",
+        "Type": "string"
+       },
+       {
+        "Name": "next_steps_form_only_29b",
+        "Type": "string"
+       },
+       {
+        "Name": "next_steps_29",
+        "Type": "string"
+       },
+       {
+        "Name": "form_q_and_a_30_31",
+        "Type": "string"
+       },
+       {
+        "Name": "vitals_bp_32",
+        "Type": "string"
+       },
+       {
+        "Name": "vitals_pulse_33",
+        "Type": "string"
+       },
+       {
+        "Name": "vitals_temp_34",
+        "Type": "string"
+       },
+       {
+        "Name": "vitals_weight_35",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_start_date_38",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_end_date_39",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_status_40",
+        "Type": "string"
+       },
+       {
+        "Name": "diagnosis_code_primary_41b",
+        "Type": "string"
+       },
+       {
+        "Name": "external_id_44",
+        "Type": "string"
+       },
+       {
+        "Name": "insurance_45",
+        "Type": "string"
+       },
+       {
+        "Name": "has_next_insurance_flag_26o",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_type_46",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_goals_only_47b",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_objectives_only_47c",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_interventions_only_47d",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_signed_date_48",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_signer_49",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_qp_signer_49g",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_signed_date_qp_49h",
+        "Type": "string"
+       }
+      ],
+      "InputFormat": "org.apache.hadoop.mapred.TextInputFormat",
+      "Location": "s3://penguin-health-catholic-charities-multi-org/data/",
+      "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
+      "SerdeInfo": {
+       "Parameters": {
+        "separator": ",",
+        "quoteChar": "\"",
+        "escapeChar": "\\"
+       },
+       "SerializationLibrary": "org.apache.hadoop.hive.serde2.OpenCSVSerde"
+      }
+     },
+     "TableType": "EXTERNAL_TABLE"
+    }
+   },
+   "DependsOn": [
+    "AnalyticsAnalyticsDatabase331EE14A"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/Analytics/ChartsTable_catholic_charities_multi_org"
+   }
+  },
+  "AnalyticsValidationResultsTablecatholiccharitiesmultiorg23545C8F": {
+   "Type": "AWS::Glue::Table",
+   "Properties": {
+    "CatalogId": {
+     "Ref": "AWS::AccountId"
+    },
+    "DatabaseName": "penguin_health_analytics",
+    "TableInput": {
+     "Description": "End-of-run Parquet snapshot of validation results for catholic-charities-multi-org. One row per rule per document. Mutable feedback fields are intentionally NOT included.",
+     "Name": "validation_results_catholic_charities_multi_org",
+     "Parameters": {
+      "classification": "parquet",
+      "projection.enabled": "true",
+      "projection.validation_date.type": "date",
+      "projection.validation_date.format": "yyyy-MM-dd",
+      "projection.validation_date.range": "2026-05-01,NOW",
+      "projection.validation_date.interval": "1",
+      "projection.validation_date.interval.unit": "DAYS",
+      "storage.location.template": "s3://penguin-health-catholic-charities-multi-org/analytics/validation_results/validation_date=${validation_date}/"
+     },
+     "PartitionKeys": [
+      {
+       "Name": "validation_date",
+       "Type": "string"
+      }
+     ],
+     "StorageDescriptor": {
+      "Columns": [
+       {
+        "Name": "organization_id",
+        "Type": "string"
+       },
+       {
+        "Name": "validation_run_id",
+        "Type": "string"
+       },
+       {
+        "Name": "validation_timestamp",
+        "Type": "string"
+       },
+       {
+        "Name": "document_id",
+        "Type": "string"
+       },
+       {
+        "Name": "filename",
+        "Type": "string"
+       },
+       {
+        "Name": "s3_key",
+        "Type": "string"
+       },
+       {
+        "Name": "rule_id",
+        "Type": "string"
+       },
+       {
+        "Name": "rule_name",
+        "Type": "string"
+       },
+       {
+        "Name": "category",
+        "Type": "string"
+       },
+       {
+        "Name": "rule_type",
+        "Type": "string"
+       },
+       {
+        "Name": "status",
+        "Type": "string"
+       },
+       {
+        "Name": "message",
+        "Type": "string"
+       },
+       {
+        "Name": "field_date",
+        "Type": "string"
+       },
+       {
+        "Name": "field_employee_name",
+        "Type": "string"
+       },
+       {
+        "Name": "field_program",
+        "Type": "string"
+       },
+       {
+        "Name": "field_cpt_code",
+        "Type": "string"
+       },
+       {
+        "Name": "field_rate",
+        "Type": "string"
+       },
+       {
+        "Name": "field_values_json",
+        "Type": "string"
+       }
+      ],
+      "InputFormat": "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat",
+      "Location": "s3://penguin-health-catholic-charities-multi-org/analytics/validation_results/",
+      "OutputFormat": "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat",
+      "SerdeInfo": {
+       "SerializationLibrary": "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+      }
+     },
+     "TableType": "EXTERNAL_TABLE"
+    }
+   },
+   "DependsOn": [
+    "AnalyticsAnalyticsDatabase331EE14A"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/Analytics/ValidationResultsTable_catholic_charities_multi_org"
+   }
+  },
+  "AnalyticsAnalyticsWorkGroupcatholiccharitiesmultiorg857B471B": {
+   "Type": "AWS::Athena::WorkGroup",
+   "Properties": {
+    "Description": "Analytics queries over catholic-charities-multi-org's charts and validation_results. Query results land in this org's bucket only — never commingled with other orgs' data.",
+    "Name": "penguin-health-analytics-catholic-charities-multi-org",
+    "RecursiveDeleteOption": true,
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Project",
+      "Value": "penguin-health"
+     }
+    ],
+    "WorkGroupConfiguration": {
+     "EnforceWorkGroupConfiguration": true,
+     "PublishCloudWatchMetricsEnabled": true,
+     "ResultConfiguration": {
+      "EncryptionConfiguration": {
+       "EncryptionOption": "SSE_S3"
+      },
+      "OutputLocation": "s3://penguin-health-catholic-charities-multi-org/athena-results/"
+     }
+    }
+   },
+   "DependsOn": [
+    "AnalyticsAnalyticsDatabase331EE14A"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/Analytics/AnalyticsWorkGroup_catholic_charities_multi_org"
+   }
+  },
+  "AnalyticsChartsTabledemoD2770239": {
+   "Type": "AWS::Glue::Table",
+   "Properties": {
+    "CatalogId": {
+     "Ref": "AWS::AccountId"
+    },
+    "DatabaseName": "penguin_health_analytics",
+    "TableInput": {
+     "Description": "Per-chart CSV files for demo written by the CSV splitter. One file per chart; many rows per file.",
+     "Name": "charts_demo",
+     "Parameters": {
+      "classification": "csv",
+      "skip.header.line.count": "1",
+      "projection.enabled": "true",
+      "projection.ingest_date.type": "date",
+      "projection.ingest_date.format": "yyyy-MM-dd",
+      "projection.ingest_date.range": "2024-01-01,NOW",
+      "projection.ingest_date.interval": "1",
+      "projection.ingest_date.interval.unit": "DAYS",
+      "storage.location.template": "s3://penguin-health-demo/data/${ingest_date}/"
+     },
+     "PartitionKeys": [
+      {
+       "Name": "ingest_date",
+       "Type": "string"
+      }
+     ],
+     "StorageDescriptor": {
+      "Columns": [
+       {
+        "Name": "visit_link_50",
+        "Type": "string"
+       },
+       {
+        "Name": "service_id_1",
+        "Type": "string"
+       },
+       {
+        "Name": "consumer_name_2",
+        "Type": "string"
+       },
+       {
+        "Name": "consumer_dob_3",
+        "Type": "string"
+       },
+       {
+        "Name": "episode_id_4",
+        "Type": "string"
+       },
+       {
+        "Name": "staff_name_5",
+        "Type": "string"
+       },
+       {
+        "Name": "staff_id_6",
+        "Type": "string"
+       },
+       {
+        "Name": "program_7",
+        "Type": "string"
+       },
+       {
+        "Name": "program_name_7b",
+        "Type": "string"
+       },
+       {
+        "Name": "service_date_8",
+        "Type": "string"
+       },
+       {
+        "Name": "start_time_9",
+        "Type": "string"
+       },
+       {
+        "Name": "end_time_10",
+        "Type": "string"
+       },
+       {
+        "Name": "revised_start_11",
+        "Type": "string"
+       },
+       {
+        "Name": "revised_end_12",
+        "Type": "string"
+       },
+       {
+        "Name": "duration_13",
+        "Type": "string"
+       },
+       {
+        "Name": "signed_time_14",
+        "Type": "string"
+       },
+       {
+        "Name": "transferred_time_15",
+        "Type": "string"
+       },
+       {
+        "Name": "cpt_code_16",
+        "Type": "string"
+       },
+       {
+        "Name": "client_insurance_order_26s",
+        "Type": "string"
+       },
+       {
+        "Name": "billing_order_26b",
+        "Type": "string"
+       },
+       {
+        "Name": "billing_sequence_26c",
+        "Type": "string"
+       },
+       {
+        "Name": "billing_group_id_26t",
+        "Type": "string"
+       },
+       {
+        "Name": "billing_group_name_26u",
+        "Type": "string"
+       },
+       {
+        "Name": "units_17",
+        "Type": "string"
+       },
+       {
+        "Name": "rate_18",
+        "Type": "string"
+       },
+       {
+        "Name": "modifier_1_19",
+        "Type": "string"
+       },
+       {
+        "Name": "modifier_2_20",
+        "Type": "string"
+       },
+       {
+        "Name": "visit_type_id_21",
+        "Type": "string"
+       },
+       {
+        "Name": "visit_type_name_21b",
+        "Type": "string"
+       },
+       {
+        "Name": "location_code_22",
+        "Type": "string"
+       },
+       {
+        "Name": "location_label_22b",
+        "Type": "string"
+       },
+       {
+        "Name": "recipient_code_23",
+        "Type": "string"
+       },
+       {
+        "Name": "recipient_label_23b",
+        "Type": "string"
+       },
+       {
+        "Name": "approved_24",
+        "Type": "string"
+       },
+       {
+        "Name": "non_billable_25",
+        "Type": "string"
+       },
+       {
+        "Name": "authorization_id_26",
+        "Type": "string"
+       },
+       {
+        "Name": "narrative_simple_27",
+        "Type": "string"
+       },
+       {
+        "Name": "narrative_rich_28",
+        "Type": "string"
+       },
+       {
+        "Name": "next_steps_effective_29c",
+        "Type": "string"
+       },
+       {
+        "Name": "next_steps_form_only_29b",
+        "Type": "string"
+       },
+       {
+        "Name": "next_steps_29",
+        "Type": "string"
+       },
+       {
+        "Name": "form_q_and_a_30_31",
+        "Type": "string"
+       },
+       {
+        "Name": "vitals_bp_32",
+        "Type": "string"
+       },
+       {
+        "Name": "vitals_pulse_33",
+        "Type": "string"
+       },
+       {
+        "Name": "vitals_temp_34",
+        "Type": "string"
+       },
+       {
+        "Name": "vitals_weight_35",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_start_date_38",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_end_date_39",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_status_40",
+        "Type": "string"
+       },
+       {
+        "Name": "diagnosis_code_primary_41b",
+        "Type": "string"
+       },
+       {
+        "Name": "external_id_44",
+        "Type": "string"
+       },
+       {
+        "Name": "insurance_45",
+        "Type": "string"
+       },
+       {
+        "Name": "has_next_insurance_flag_26o",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_type_46",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_goals_only_47b",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_objectives_only_47c",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_interventions_only_47d",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_signed_date_48",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_signer_49",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_qp_signer_49g",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_signed_date_qp_49h",
+        "Type": "string"
+       },
+       {
+        "Name": "tx_plus_intervention_documentation_47g",
+        "Type": "string"
+       },
+       {
+        "Name": "plan_documentation_47e",
+        "Type": "string"
+       }
+      ],
+      "InputFormat": "org.apache.hadoop.mapred.TextInputFormat",
+      "Location": "s3://penguin-health-demo/data/",
+      "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
+      "SerdeInfo": {
+       "Parameters": {
+        "separator": ",",
+        "quoteChar": "\"",
+        "escapeChar": "\\"
+       },
+       "SerializationLibrary": "org.apache.hadoop.hive.serde2.OpenCSVSerde"
+      }
+     },
+     "TableType": "EXTERNAL_TABLE"
+    }
+   },
+   "DependsOn": [
+    "AnalyticsAnalyticsDatabase331EE14A"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/Analytics/ChartsTable_demo"
+   }
+  },
+  "AnalyticsValidationResultsTabledemo44A02AB4": {
+   "Type": "AWS::Glue::Table",
+   "Properties": {
+    "CatalogId": {
+     "Ref": "AWS::AccountId"
+    },
+    "DatabaseName": "penguin_health_analytics",
+    "TableInput": {
+     "Description": "End-of-run Parquet snapshot of validation results for demo. One row per rule per document. Mutable feedback fields are intentionally NOT included.",
+     "Name": "validation_results_demo",
+     "Parameters": {
+      "classification": "parquet",
+      "projection.enabled": "true",
+      "projection.validation_date.type": "date",
+      "projection.validation_date.format": "yyyy-MM-dd",
+      "projection.validation_date.range": "2026-05-01,NOW",
+      "projection.validation_date.interval": "1",
+      "projection.validation_date.interval.unit": "DAYS",
+      "storage.location.template": "s3://penguin-health-demo/analytics/validation_results/validation_date=${validation_date}/"
+     },
+     "PartitionKeys": [
+      {
+       "Name": "validation_date",
+       "Type": "string"
+      }
+     ],
+     "StorageDescriptor": {
+      "Columns": [
+       {
+        "Name": "organization_id",
+        "Type": "string"
+       },
+       {
+        "Name": "validation_run_id",
+        "Type": "string"
+       },
+       {
+        "Name": "validation_timestamp",
+        "Type": "string"
+       },
+       {
+        "Name": "document_id",
+        "Type": "string"
+       },
+       {
+        "Name": "filename",
+        "Type": "string"
+       },
+       {
+        "Name": "s3_key",
+        "Type": "string"
+       },
+       {
+        "Name": "rule_id",
+        "Type": "string"
+       },
+       {
+        "Name": "rule_name",
+        "Type": "string"
+       },
+       {
+        "Name": "category",
+        "Type": "string"
+       },
+       {
+        "Name": "rule_type",
+        "Type": "string"
+       },
+       {
+        "Name": "status",
+        "Type": "string"
+       },
+       {
+        "Name": "message",
+        "Type": "string"
+       },
+       {
+        "Name": "field_date",
+        "Type": "string"
+       },
+       {
+        "Name": "field_employee_name",
+        "Type": "string"
+       },
+       {
+        "Name": "field_program",
+        "Type": "string"
+       },
+       {
+        "Name": "field_cpt_code",
+        "Type": "string"
+       },
+       {
+        "Name": "field_rate",
+        "Type": "string"
+       },
+       {
+        "Name": "field_values_json",
+        "Type": "string"
+       }
+      ],
+      "InputFormat": "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat",
+      "Location": "s3://penguin-health-demo/analytics/validation_results/",
+      "OutputFormat": "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat",
+      "SerdeInfo": {
+       "SerializationLibrary": "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+      }
+     },
+     "TableType": "EXTERNAL_TABLE"
+    }
+   },
+   "DependsOn": [
+    "AnalyticsAnalyticsDatabase331EE14A"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/Analytics/ValidationResultsTable_demo"
+   }
+  },
+  "AnalyticsAnalyticsWorkGroupdemo72EB335F": {
+   "Type": "AWS::Athena::WorkGroup",
+   "Properties": {
+    "Description": "Analytics queries over demo's charts and validation_results. Query results land in this org's bucket only — never commingled with other orgs' data.",
+    "Name": "penguin-health-analytics-demo",
+    "RecursiveDeleteOption": true,
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Project",
+      "Value": "penguin-health"
+     }
+    ],
+    "WorkGroupConfiguration": {
+     "EnforceWorkGroupConfiguration": true,
+     "PublishCloudWatchMetricsEnabled": true,
+     "ResultConfiguration": {
+      "EncryptionConfiguration": {
+       "EncryptionOption": "SSE_S3"
+      },
+      "OutputLocation": "s3://penguin-health-demo/athena-results/"
+     }
+    }
+   },
+   "DependsOn": [
+    "AnalyticsAnalyticsDatabase331EE14A"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PenguinHealth/Analytics/AnalyticsWorkGroup_demo"
+   }
+  },
   "CDKMetadata": {
    "Type": "AWS::CDK::Metadata",
    "Properties": {
-    "Analytics": "v2:deflate64:H4sIAAAAAAAA/3VRyU7DMBD9Fu6uoY2EuLZFLCeiFM6V47hhaGJHnnGrEPnfsZ0uEYjTWzyLZ2bBF9k9v7sRR5zJaj9roOTDhoTcs2Bth6rXojVVMN9F2Si23ulEPEONwTQdyGQmsnElSgsdgdHRnWrPpKk1kOHDByqbG9PEkAs/k3UDStP06a/zbI3rPGtEW1aCD09Oy3PLKc+VbQExNQfR8qEw4wgJc9OA7FNcYmGkbCsQFSFfRgiaDysn94pWAhUbaUw4sRGudabaM9FBLUgdRX9Y8OGFqFt2EMMiRBnWXKfvjCRahXE0sldNqrbiPMoveY1bOvo0Fr6VTaUvKqy7Ma7aWaOJD4+AZKF0KX+TvVmoQS+lVIjrEGDHW/xjT5M9U4dwjHD6wp12GdB7Vig0zkrF0uriRKDrVNRR58izvA9f07cZn8/5w80XAsys0wSt4sWIPzplRhGMAgAA"
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/3VSy07DMBD8lt5dA62EuJYiHieqFMQRbZxtWJrYkb2mKlb+HdvpIwJx2pnx+LGznsnZ/FpeTmDnpqraThsqZVgzqK2I0nuo9hpaU0XxBcoGxXKjM+iF0y6KpiOVxQzWvnTKUsdkdFLHvBfK1JrYyPDq0K6MaZLlhI9g2RBqHi/9VR6s8V0vGmjLCmS491odrxzjFdqWnMuXE7QyFGZoIdeVaUjtsy+j2NL8HZxDdnKRSuQy3Hq1Rb4Fh2KAacMBDeV8zpj3AjqqgXEH+6+ZDI/M3aKjZEsl0RhznZ8zgCQVxvOAnjRjbeHYyi969i08fxhL32jz0ScW426MrzbWaJbhjhxbKn3ev54/W6pJL5RC55bRYIdZ/COPN/cCv+Iw4ugLf8jSp99QNx5lSGZgKFNa558C/IEaZBTejN0eZlegM94qFDnqlADpOj/Cc+e5F6t9bEVfzOXVlbyZfDqiqfWaqUVZDPUHHF7hWLwCAAA="
    },
    "Metadata": {
     "aws:cdk:path": "PenguinHealth/CDKMetadata/Default"
@@ -3516,6 +4766,18 @@
    "Value": {
     "Ref": "DatabaseNotificationsTopicF00E869E"
    }
+  },
+  "AthenaWorkGroupcirclesofcare": {
+   "Description": "Athena workgroup for circles-of-care",
+   "Value": "penguin-health-analytics-circles-of-care"
+  },
+  "AthenaWorkGroupcatholiccharitiesmultiorg": {
+   "Description": "Athena workgroup for catholic-charities-multi-org",
+   "Value": "penguin-health-analytics-catholic-charities-multi-org"
+  },
+  "AthenaWorkGroupdemo": {
+   "Description": "Athena workgroup for demo",
+   "Value": "penguin-health-analytics-demo"
   }
  },
  "Parameters": {

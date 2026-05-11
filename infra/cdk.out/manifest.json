@@ -22,7 +22,7 @@
         "validateOnSynth": false,
         "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-deploy-role-${AWS::AccountId}-us-east-1",
         "cloudFormationExecutionRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-cfn-exec-role-${AWS::AccountId}-us-east-1",
-        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1/39a7ecd01c6447f33de540d0daad7633a179cc3faa682a33454018dec72bdbab.json",
+        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1/8b46b50caa4b5d9489f04abe14579321887b929fb20ed1c1991b26e8cca9d978.json",
         "requiresBootstrapStackVersion": 6,
         "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/hnb659fds/version",
         "additionalDependencies": [
@@ -581,6 +581,66 @@
             "data": "AuditEngineCirclesOfCareDailyValidationScheduleAllowEventRulePenguinHealthAuditEngineRulesEngineRagFn6716822B00269079"
           }
         ],
+        "/PenguinHealth/Analytics/AnalyticsDatabase": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AnalyticsAnalyticsDatabase331EE14A"
+          }
+        ],
+        "/PenguinHealth/Analytics/ChartsTable_circles_of_care": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AnalyticsChartsTablecirclesofcare96512CEF"
+          }
+        ],
+        "/PenguinHealth/Analytics/ValidationResultsTable_circles_of_care": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AnalyticsValidationResultsTablecirclesofcareF1FF1BC6"
+          }
+        ],
+        "/PenguinHealth/Analytics/AnalyticsWorkGroup_circles_of_care": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AnalyticsAnalyticsWorkGroupcirclesofcare63088F6A"
+          }
+        ],
+        "/PenguinHealth/Analytics/ChartsTable_catholic_charities_multi_org": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AnalyticsChartsTablecatholiccharitiesmultiorgFAD9D2FD"
+          }
+        ],
+        "/PenguinHealth/Analytics/ValidationResultsTable_catholic_charities_multi_org": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AnalyticsValidationResultsTablecatholiccharitiesmultiorg23545C8F"
+          }
+        ],
+        "/PenguinHealth/Analytics/AnalyticsWorkGroup_catholic_charities_multi_org": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AnalyticsAnalyticsWorkGroupcatholiccharitiesmultiorg857B471B"
+          }
+        ],
+        "/PenguinHealth/Analytics/ChartsTable_demo": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AnalyticsChartsTabledemoD2770239"
+          }
+        ],
+        "/PenguinHealth/Analytics/ValidationResultsTable_demo": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AnalyticsValidationResultsTabledemo44A02AB4"
+          }
+        ],
+        "/PenguinHealth/Analytics/AnalyticsWorkGroup_demo": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AnalyticsAnalyticsWorkGroupdemo72EB335F"
+          }
+        ],
         "/PenguinHealth/UserPoolId": [
           {
             "type": "aws:cdk:logicalId",
@@ -645,6 +705,24 @@
           {
             "type": "aws:cdk:logicalId",
             "data": "NotificationsTopicArn"
+          }
+        ],
+        "/PenguinHealth/AthenaWorkGroupcirclesofcare": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AthenaWorkGroupcirclesofcare"
+          }
+        ],
+        "/PenguinHealth/AthenaWorkGroupcatholiccharitiesmultiorg": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AthenaWorkGroupcatholiccharitiesmultiorg"
+          }
+        ],
+        "/PenguinHealth/AthenaWorkGroupdemo": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AthenaWorkGroupdemo"
           }
         ],
         "/PenguinHealth/CDKMetadata/Default": [
