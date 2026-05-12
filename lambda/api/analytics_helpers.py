@@ -179,10 +179,10 @@ _CHART_COLUMNS = {
         "ethnicity_desc", "sex", "marital_status", "age_at_service",
         "visittype", "plan_id", "service_date", "episode_id",
         "program_desc", "admission_date", "discharge_date", "icd10_codes",
-        "problem_list_order", "fake_client_id2", "clientvisit_id2",
-        "first_referral", "question_text", "answer", "type", "episode_id2",
-        "cptcode", "first_name", "last_name", "rate", "initial_appt",
-        "agegroup", "diagnose_on_visit",
+        "problem_list_order", "diagnose_on_visit", "fake_client_id2",
+        "clientvisit_id2", "first_referral", "question_text", "answer",
+        "type", "episode_id2", "cptcode", "first_name", "last_name", "rate",
+        "initial_appt", "agegroup", "diagnose_on_visit2",
     ],
     # TODO(audit): catholic-charities and demo column notes have not been
     # verified against live data — only circles-of-care has been audited.

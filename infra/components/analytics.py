@@ -68,6 +68,7 @@ ORG_TABLES = {
             "discharge_date",
             "icd10_codes",
             "problem_list_order",
+            "diagnose_on_visit",
             "fake_client_id2",
             "clientvisit_id2",
             "first_referral",
@@ -81,7 +82,7 @@ ORG_TABLES = {
             "rate",
             "initial_appt",
             "agegroup",
-            "diagnose_on_visit",
+            "diagnose_on_visit2",
         ],
     },
     "catholic-charities-multi-org": {

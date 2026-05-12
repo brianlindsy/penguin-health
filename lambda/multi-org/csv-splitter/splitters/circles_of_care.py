@@ -13,49 +13,50 @@ class CirclesOfCareSplitter(BaseCsvSplitter):
     def org_id(self) -> str:
         return "circles-of-care"
 
-    # The 31 canonical columns derived from the actual data structure.
+    # The 32 canonical columns derived from the actual data structure.
     # Columns 0-16:  demographic / visit header fields
-    # Columns 17-23: repeated IDs + question/answer block
-    # Columns 24-30: CPT, name, rate, referral source, age-group, diagnosis
+    # Columns 17-24: repeated IDs + question/answer block
+    # Columns 25-31: CPT, name, rate, referral source, age-group, diagnosis (repeated)
     CANONICAL_COLUMNS = [
-        "fake_client_ID",       # 0
-        "clientvisit_ID",       # 1
-        "Grade",                # 2
-        "Race_Desc",            # 3
-        "Ethnicity_Desc",       # 4
-        "sex",                  # 5
-        "marital_status",       # 6
-        "age_at_service",       # 7
-        "visittype",            # 8
-        "plan_id",              # 9
-        "service_date",         # 10
-        "episode_id",           # 11
-        "program_desc",         # 12
-        "admission_date",       # 13
-        "discharge_date",       # 14
-        "icd10_codes",          # 15
-        "problem_list_order",   # 16
-        "fake_client_ID2",      # 17  (repeated)
-        "clientvisit_id2",      # 18  (repeated)
-        "first_Referral",       # 19
-        "question_text",        # 20
-        "answer",               # 21
-        "Type",                 # 22
-        "episode_id2",          # 23  (repeated)
-        "cptcode",              # 24
-        "first_name",           # 25
-        "last_name",            # 26
-        "rate",                 # 27
-        "InitialAppt",          # 28  (may contain commas → comma-shift source)
-        "AGEGROUP",             # 29
-        "DiagnoseOnVisit",      # 30
+        "fake_client_ID",        # 0
+        "clientvisit_ID",        # 1
+        "Grade",                 # 2
+        "Race_Desc",             # 3
+        "Ethnicity_Desc",        # 4
+        "sex",                   # 5
+        "marital_status",        # 6
+        "age_at_service",        # 7
+        "visittype",             # 8
+        "plan_id",               # 9
+        "service_date",          # 10
+        "episode_id",            # 11
+        "program_desc",          # 12
+        "admission_date",        # 13
+        "discharge_date",        # 14
+        "icd10_codes",           # 15
+        "problem_list_order",    # 16
+        "DiagnoseOnVisit",       # 17  (repeat started on May 11 2026)
+        "fake_client_ID2",       # 18  (repeated)
+        "clientvisit_id2",       # 19  (repeated)
+        "first_Referral",        # 20
+        "question_text",         # 21
+        "answer",                # 22
+        "Type",                  # 23
+        "episode_id2",           # 24  (repeated)
+        "cptcode",               # 25
+        "first_name",            # 26
+        "last_name",             # 27
+        "rate",                  # 28
+        "InitialAppt",           # 29  (may contain commas → comma-shift source)
+        "AGEGROUP",              # 30
+        "DiagnoseOnVisit2",      # 31
     ]
 
     # Total number of canonical columns
-    NUM_COLUMNS = len(CANONICAL_COLUMNS)  # 31
+    NUM_COLUMNS = len(CANONICAL_COLUMNS)  # 32
 
     # Index of the field that suffers comma-shift (InitialAppt / referral source)
-    INITIAL_APPT_IDX = 28
+    INITIAL_APPT_IDX = 29
 
     # Whether to filter for Intake Screening visits only
     INTAKE_ONLY = True
@@ -119,7 +120,7 @@ class CirclesOfCareSplitter(BaseCsvSplitter):
         """
         Normalise a raw row to exactly NUM_COLUMNS columns.
 
-        The 'InitialAppt' field (index 28) occasionally contains unquoted
+        The 'InitialAppt' field (index 29) occasionally contains unquoted
         commas e.g. "Agency Referral (Hospital, LEO, School)".
 
         When NO comma-shift has occurred the row has exactly NUM_COLUMNS columns.
@@ -127,14 +128,14 @@ class CirclesOfCareSplitter(BaseCsvSplitter):
         beyond NUM_COLUMNS represents an extra comma inside the InitialAppt field.
 
         In both cases:
-          - Columns 0-27  are stable.
+          - Columns 0-28  are stable.
           - Column  -2    is AGEGROUP.
-          - Column  -1    is DiagnoseOnVisit.
-          - Everything in between (index 28 through -3 inclusive) belongs
+          - Column  -1    is DiagnoseOnVisit2.
+          - Everything in between (index 29 through -3 inclusive) belongs
             to InitialAppt and is rejoined with ", ".
         """
         n = len(row)
-        target = self.NUM_COLUMNS  # 31
+        target = self.NUM_COLUMNS  # 32
 
         if n < target:
             # Pad short rows
@@ -146,11 +147,11 @@ class CirclesOfCareSplitter(BaseCsvSplitter):
 
         # n > target — comma-shift occurred in InitialAppt field
         # Columns 0-27 are always stable
-        stable = list(row[:self.INITIAL_APPT_IDX])   # indices 0-27
+        stable = list(row[:self.INITIAL_APPT_IDX])   # indices 0-28
 
-        tail = row[self.INITIAL_APPT_IDX:]            # everything from index 28 onward
+        tail = row[self.INITIAL_APPT_IDX:]            # everything from index 29 onward
 
-        # Last two columns are always AGEGROUP and DiagnoseOnVisit
+        # Last two columns are always AGEGROUP and DiagnoseOnVisit2
         diagnose_on_visit = tail[-1].strip()
         age_group = tail[-2].strip()
 
