@@ -26,20 +26,12 @@ class CatholicCharitiesSplitter(BaseCsvSplitter):
 
     # Programs to include in validation
     ALLOWED_PROGRAMS = {
-        'Med Somatic Services',
-        'Free Standing Mental Health Clinic - Med Services',
-        'Free Standing Mental Health Clinic - Counseling',
-        'Counseling',
-        'Compass',
-        'Community Support',
-        'ACT',
+        'General Note',
+        'Outreach'
     }
 
     # Number of days in the past to include
     DAYS_AGO = 7
-
-    # CPT codes allowed through even when 25_Non_Billable == 'yes'
-    NON_BILLABLE_ALLOWED_CPT_CODES = {'NOTE', 'Outreach'}
 
     def split(self, csv_content: str, filename: str) -> List[Tuple[str, str]]:
         """
@@ -47,7 +39,7 @@ class CatholicCharitiesSplitter(BaseCsvSplitter):
 
         Filters rows by:
         - 24_Approved == 'no' (unapproved visits)
-        - 25_Non_Billable == 'no', OR 16_CPT_Code in NON_BILLABLE_ALLOWED_CPT_CODES
+        - 25_Non_Billable == 'no' (billable visits)
         - 7b_Program_Name in ALLOWED_PROGRAMS
         - 8_Service_Date within DAYS_AGO days
         """
@@ -61,12 +53,10 @@ class CatholicCharitiesSplitter(BaseCsvSplitter):
             if approved_status != 'no':
                 continue
 
-            # Filter: Billable visits, plus non-billable visits with allowed CPT codes
-            non_billable_status = row.get('25_Non_Billable', '').strip().lower()
-            if non_billable_status != 'no':
-                cpt_code = row.get('16_CPT_Code', '').strip()
-                if cpt_code not in self.NON_BILLABLE_ALLOWED_CPT_CODES:
-                    continue
+            # Filter: Only billable visits
+            #non_billable_status = row.get('25_Non_Billable', '').strip().lower()
+            #if non_billable_status != 'no':
+            #    continue
 
             # Filter: Only allowed programs
             program_name = row.get('7b_Program_Name', '').strip()

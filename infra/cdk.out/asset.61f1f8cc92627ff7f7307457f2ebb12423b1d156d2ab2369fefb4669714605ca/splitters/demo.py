@@ -1,5 +1,5 @@
 """
-Catholic Charities CSV Splitter.
+Demo CSV Splitter.
 
 Adapted from csv-parsers/cc_csv_parser.py.
 
@@ -17,12 +17,12 @@ from typing import List, Tuple
 from .base_splitter import BaseCsvSplitter
 
 
-class CatholicCharitiesSplitter(BaseCsvSplitter):
-    """Catholic Charities: 1 row = 1 chart, filtered by approval status."""
+class DemoSplitter(BaseCsvSplitter):
+    """Demo: 1 row = 1 chart, filtered by approval status."""
 
     @property
     def org_id(self) -> str:
-        return "catholic-charities-multi-org"
+        return "demo"
 
     # Programs to include in validation
     ALLOWED_PROGRAMS = {
@@ -38,16 +38,13 @@ class CatholicCharitiesSplitter(BaseCsvSplitter):
     # Number of days in the past to include
     DAYS_AGO = 7
 
-    # CPT codes allowed through even when 25_Non_Billable == 'yes'
-    NON_BILLABLE_ALLOWED_CPT_CODES = {'NOTE', 'Outreach'}
-
     def split(self, csv_content: str, filename: str) -> List[Tuple[str, str]]:
         """
         Split bulk CSV into individual chart CSVs.
 
         Filters rows by:
         - 24_Approved == 'no' (unapproved visits)
-        - 25_Non_Billable == 'no', OR 16_CPT_Code in NON_BILLABLE_ALLOWED_CPT_CODES
+        - 25_Non_Billable == 'no' (billable visits)
         - 7b_Program_Name in ALLOWED_PROGRAMS
         - 8_Service_Date within DAYS_AGO days
         """
@@ -56,27 +53,6 @@ class CatholicCharitiesSplitter(BaseCsvSplitter):
         results = []
 
         for row in reader:
-            # Filter: Only unapproved visits
-            approved_status = row.get('24_Approved', '').strip().lower()
-            if approved_status != 'no':
-                continue
-
-            # Filter: Billable visits, plus non-billable visits with allowed CPT codes
-            non_billable_status = row.get('25_Non_Billable', '').strip().lower()
-            if non_billable_status != 'no':
-                cpt_code = row.get('16_CPT_Code', '').strip()
-                if cpt_code not in self.NON_BILLABLE_ALLOWED_CPT_CODES:
-                    continue
-
-            # Filter: Only allowed programs
-            program_name = row.get('7b_Program_Name', '').strip()
-            if program_name not in self.ALLOWED_PROGRAMS:
-                continue
-
-            # Filter: Only recent service dates
-            service_date_str = row.get('8_Service_Date', '').strip()
-            if not self._is_within_recent_days(service_date_str):
-                continue
 
             # Get chart ID
             chart_id = row.get('1_Service_ID', '').strip()
