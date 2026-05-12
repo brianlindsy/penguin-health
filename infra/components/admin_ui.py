@@ -22,14 +22,16 @@ from aws_cdk.aws_apigatewayv2_authorizers import HttpJwtAuthorizer
 from constructs import Construct
 
 import config
-from components.bundler import CopyFileBundler, MultiFileBundler
+from components.bundler import CopyFileBundler, MultiFileBundler, DirectoryBundler
 
 
 class AdminUi(Construct):
 
     def __init__(self, scope: Construct, id: str, *,
                  org_config_table: dynamodb.ITable,
-                 validation_results_table: dynamodb.ITable) -> None:
+                 validation_results_table: dynamodb.ITable,
+                 analytics_reports_table: dynamodb.ITable,
+                 deep_jobs_table: dynamodb.ITable) -> None:
         super().__init__(scope, id)
 
         # ----- Cognito -----
@@ -83,12 +85,20 @@ class AdminUi(Construct):
             handler="admin_api.lambda_handler",
             code=_lambda.Code.from_asset(
                 lambda_api_dir,
-                exclude=["*", "!admin_api.py", "!permissions.py"],
+                exclude=[
+                    "*",
+                    "!admin_api.py",
+                    "!permissions.py",
+                    "!analytics_helpers.py",
+                    "!sqlparse/**",
+                ],
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
-                    local=MultiFileBundler([
-                        os.path.join(lambda_api_dir, "admin_api.py"),
-                        os.path.join(lambda_api_dir, "permissions.py"),
+                    local=DirectoryBundler([
+                        (os.path.join(lambda_api_dir, "admin_api.py"), None),
+                        (os.path.join(lambda_api_dir, "permissions.py"), None),
+                        (os.path.join(lambda_api_dir, "analytics_helpers.py"), None),
+                        (os.path.join(lambda_api_dir, "sqlparse"), None),
                     ]),
                 ),
             ),
@@ -97,6 +107,45 @@ class AdminUi(Construct):
             environment={
                 "DYNAMODB_TABLE": org_config_table.table_name,
                 "COGNITO_USER_POOL_ID": self.user_pool.user_pool_id,
+                "ANALYTICS_REPORTS_TABLE": analytics_reports_table.table_name,
+                "DEEP_JOBS_TABLE": deep_jobs_table.table_name,
+                "DEEP_WORKER_LAMBDA": f"{config.PROJECT_NAME}-deep-analytics-worker",
+            },
+        )
+
+        # ----- Deep Analytics Worker Lambda -----
+        # Same code bundle as the api function, but invoked async by the
+        # api lambda to do per-row Bedrock extraction without the 30s API
+        # Gateway HTTP API integration timeout.
+        self.deep_worker_function = _lambda.Function(self, "DeepAnalyticsWorkerFunction",
+            function_name=f"{config.PROJECT_NAME}-deep-analytics-worker",
+            runtime=_lambda.Runtime.PYTHON_3_14,
+            handler="admin_api.deep_worker_handler",
+            code=_lambda.Code.from_asset(
+                lambda_api_dir,
+                exclude=[
+                    "*",
+                    "!admin_api.py",
+                    "!permissions.py",
+                    "!analytics_helpers.py",
+                    "!sqlparse/**",
+                ],
+                bundling=BundlingOptions(
+                    image=_lambda.Runtime.PYTHON_3_14.bundling_image,
+                    local=DirectoryBundler([
+                        (os.path.join(lambda_api_dir, "admin_api.py"), None),
+                        (os.path.join(lambda_api_dir, "permissions.py"), None),
+                        (os.path.join(lambda_api_dir, "analytics_helpers.py"), None),
+                        (os.path.join(lambda_api_dir, "sqlparse"), None),
+                    ]),
+                ),
+            ),
+            # 200 rows * ~3s/row best case, plus overhead. 10 min gives us
+            # plenty of headroom without running unbounded jobs.
+            timeout=Duration.minutes(10),
+            memory_size=config.LAMBDA_DEFAULT_MEMORY_MB,
+            environment={
+                "DEEP_JOBS_TABLE": deep_jobs_table.table_name,
             },
         )
 
@@ -114,6 +163,10 @@ class AdminUi(Construct):
             resources=[f"{validation_results_table.table_arn}/index/*"],
         ))
 
+        analytics_reports_table.grant_read_write_data(self.api_function)
+        deep_jobs_table.grant_read_write_data(self.api_function)
+        deep_jobs_table.grant_read_write_data(self.deep_worker_function)
+
         # Bedrock permissions for LLM enhancement endpoints
         self.api_function.add_to_role_policy(iam.PolicyStatement(
             actions=["bedrock:InvokeModel"],
@@ -123,11 +176,66 @@ class AdminUi(Construct):
             ],
         ))
 
-        # Lambda invoke permission for triggering validation runs
+        # Worker also needs Bedrock (this is its only job).
+        self.deep_worker_function.add_to_role_policy(iam.PolicyStatement(
+            actions=["bedrock:InvokeModel"],
+            resources=[
+                "arn:aws:bedrock:*::foundation-model/anthropic.*",
+                "arn:aws:bedrock:*:*:inference-profile/*",
+            ],
+        ))
+
+        # Lambda invoke permissions: rules-engine for validation runs,
+        # plus the deep-analytics worker which the api function kicks off
+        # asynchronously when a deep-analysis job is requested.
         self.api_function.add_to_role_policy(iam.PolicyStatement(
             actions=["lambda:InvokeFunction"],
             resources=[
-                f"arn:aws:lambda:{config.AWS_REGION}:*:function:{config.PROJECT_NAME}-rules-engine-rag"
+                f"arn:aws:lambda:{config.AWS_REGION}:*:function:{config.PROJECT_NAME}-rules-engine-rag",
+                self.deep_worker_function.function_arn,
+            ],
+        ))
+
+        # Analytics: Athena query execution scoped to per-org workgroups.
+        self.api_function.add_to_role_policy(iam.PolicyStatement(
+            actions=[
+                "athena:StartQueryExecution",
+                "athena:GetQueryExecution",
+                "athena:GetQueryResults",
+                "athena:StopQueryExecution",
+            ],
+            resources=[
+                f"arn:aws:athena:{config.AWS_REGION}:*:workgroup/{config.PROJECT_NAME}-analytics-*"
+            ],
+        ))
+
+        # Analytics: Glue metadata reads for the analytics catalog.
+        self.api_function.add_to_role_policy(iam.PolicyStatement(
+            actions=[
+                "glue:GetDatabase",
+                "glue:GetTable",
+                "glue:GetTables",
+                "glue:GetPartitions",
+            ],
+            resources=[
+                f"arn:aws:glue:{config.AWS_REGION}:*:catalog",
+                f"arn:aws:glue:{config.AWS_REGION}:*:database/penguin_health_analytics",
+                f"arn:aws:glue:{config.AWS_REGION}:*:table/penguin_health_analytics/*",
+            ],
+        ))
+
+        # Analytics: S3 read on per-org data buckets + write to athena-results/ prefix.
+        self.api_function.add_to_role_policy(iam.PolicyStatement(
+            actions=[
+                "s3:GetObject",
+                "s3:GetBucketLocation",
+                "s3:ListBucket",
+                "s3:PutObject",
+                "s3:AbortMultipartUpload",
+            ],
+            resources=[
+                f"arn:aws:s3:::{config.PROJECT_NAME}-*",
+                f"arn:aws:s3:::{config.PROJECT_NAME}-*/*",
             ],
         ))
 
@@ -167,6 +275,13 @@ class AdminUi(Construct):
             ("PUT",  "/api/organizations/{orgId}/rules-config"),
             ("POST", "/api/organizations/{orgId}/rules/enhance-fields"),
             ("POST", "/api/organizations/{orgId}/rules/enhance-note"),
+            ("POST", "/api/organizations/{orgId}/analytics/nl-query"),
+            ("POST", "/api/organizations/{orgId}/analytics/nl-query/deep"),
+            ("GET",  "/api/organizations/{orgId}/analytics/nl-query/deep/{jobId}"),
+            ("POST", "/api/organizations/{orgId}/analytics/reports"),
+            ("GET",  "/api/organizations/{orgId}/analytics/reports"),
+            ("GET",  "/api/organizations/{orgId}/analytics/reports/{reportId}"),
+            ("DELETE", "/api/organizations/{orgId}/analytics/reports/{reportId}"),
             ("GET",  "/api/organizations/{orgId}/validation-runs"),
             ("POST", "/api/organizations/{orgId}/validation-runs"),
             ("GET",  "/api/organizations/{orgId}/validation-runs/{runId}"),

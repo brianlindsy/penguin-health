@@ -72,9 +72,11 @@ export function OrgWorkspaceLayout({ children }) {
         {
           key: 'staff-performance',
           label: 'Staff Performance',
-          to: `/organizations/${orgId}/staff-performance`,
+          to: `/organizations/${orgId}/analytics?tab=staff-performance`,
           icon: UsersIcon,
-          active: pathname === `/organizations/${orgId}/staff-performance`,
+          active:
+            pathname === `/organizations/${orgId}/analytics` &&
+            tab === 'staff-performance',
           visible: perms.canViewAnalytics('staff_performance'),
         },
         {
@@ -103,10 +105,22 @@ export function OrgWorkspaceLayout({ children }) {
         {
           key: 'revenue-analysis',
           label: 'Revenue Analysis',
-          to: `/organizations/${orgId}/revenue-analysis`,
+          to: `/organizations/${orgId}/analytics?tab=revenue-analysis`,
           icon: DollarIcon,
-          active: pathname === `/organizations/${orgId}/revenue-analysis`,
+          active:
+            pathname === `/organizations/${orgId}/analytics` &&
+            tab === 'revenue-analysis',
           visible: perms.canViewAnalytics('revenue_analysis'),
+        },
+        {
+          key: 'nl-analytics',
+          label: 'NL Explorer',
+          to: `/organizations/${orgId}/analytics?tab=nl-explorer`,
+          icon: SparkleIcon,
+          active:
+            pathname === `/organizations/${orgId}/analytics` &&
+            (!tab || tab === 'nl-explorer' || tab === 'reports'),
+          visible: perms.isSuperAdmin,
         },
       ],
     },
@@ -241,6 +255,14 @@ function BoltIcon({ className }) {
   return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+    </svg>
+  )
+}
+
+function SparkleIcon({ className }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.5 6L21 11l-5.5 2.5L13 19l-2.5-5.5L5 11l5.5-1.5z" />
     </svg>
   )
 }

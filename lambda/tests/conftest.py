@@ -134,6 +134,21 @@ def mock_dynamodb(aws_credentials):
             BillingMode='PAY_PER_REQUEST',
         )
 
+        # penguin-health-analytics-reports table
+        # Used by: admin_api.py for saved NL-analytics snapshots.
+        dynamodb.create_table(
+            TableName='penguin-health-analytics-reports',
+            KeySchema=[
+                {'AttributeName': 'pk', 'KeyType': 'HASH'},
+                {'AttributeName': 'sk', 'KeyType': 'RANGE'},
+            ],
+            AttributeDefinitions=[
+                {'AttributeName': 'pk', 'AttributeType': 'S'},
+                {'AttributeName': 'sk', 'AttributeType': 'S'},
+            ],
+            BillingMode='PAY_PER_REQUEST',
+        )
+
         yield dynamodb
 
 

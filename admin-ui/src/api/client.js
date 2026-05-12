@@ -11,6 +11,19 @@ export function setOnUnauthorized(fn) {
   onUnauthorizedFn = fn
 }
 
+// The analytics endpoints return structured failures: { error, code, sql }.
+// The plain Error type loses `code` and `sql`, which the UI needs to render
+// validation rejections nicely. Surface them via this subclass.
+export class ApiError extends Error {
+  constructor(message, { status, code, sql } = {}) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+    this.sql = sql
+  }
+}
+
 async function request(path, options = {}) {
   const headers = { 'Content-Type': 'application/json', ...options.headers }
 
@@ -40,7 +53,11 @@ async function request(path, options = {}) {
   const data = await res.json()
 
   if (!res.ok) {
-    throw new Error(data.error || `Request failed: ${res.status}`)
+    throw new ApiError(data.error || `Request failed: ${res.status}`, {
+      status: res.status,
+      code: data.code,
+      sql: data.sql,
+    })
   }
 
   return data
@@ -158,5 +175,41 @@ export const api = {
     request(`/api/organizations/${orgId}/validation-runs/${runId}/documents/${docId}/mark-incorrect`, {
       method: 'PUT',
       body: JSON.stringify({ rule_id: ruleId }),
+    }),
+
+  // Analytics: NL query
+  nlQuery: (orgId, question) =>
+    request(`/api/organizations/${orgId}/analytics/nl-query`, {
+      method: 'POST',
+      body: JSON.stringify({ question }),
+    }),
+
+  // Kicks off an async deep-analysis job. Returns { job_id, status:'running',
+  // total_rows, done_rows, sql }. Poll getDeepJob until status is terminal.
+  startDeepJob: (orgId, question, scopeSql) =>
+    request(`/api/organizations/${orgId}/analytics/nl-query/deep`, {
+      method: 'POST',
+      body: JSON.stringify({ question, scope_sql: scopeSql }),
+    }),
+
+  getDeepJob: (orgId, jobId) =>
+    request(`/api/organizations/${orgId}/analytics/nl-query/deep/${jobId}`),
+
+  // Analytics: Saved Reports
+  saveReport: (orgId, report) =>
+    request(`/api/organizations/${orgId}/analytics/reports`, {
+      method: 'POST',
+      body: JSON.stringify(report),
+    }),
+
+  listReports: (orgId) =>
+    request(`/api/organizations/${orgId}/analytics/reports`),
+
+  getReport: (orgId, reportId) =>
+    request(`/api/organizations/${orgId}/analytics/reports/${reportId}`),
+
+  deleteReport: (orgId, reportId) =>
+    request(`/api/organizations/${orgId}/analytics/reports/${reportId}`, {
+      method: 'DELETE',
     }),
 }

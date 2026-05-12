@@ -22,7 +22,7 @@
         "validateOnSynth": false,
         "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-deploy-role-${AWS::AccountId}-us-east-1",
         "cloudFormationExecutionRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-cfn-exec-role-${AWS::AccountId}-us-east-1",
-        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1/8b46b50caa4b5d9489f04abe14579321887b929fb20ed1c1991b26e8cca9d978.json",
+        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1/8bb21d881490d266ea54de7be7f388c5329abb003c6a91e7ca2aabb420e6b2db.json",
         "requiresBootstrapStackVersion": 6,
         "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/hnb659fds/version",
         "additionalDependencies": [
@@ -95,6 +95,34 @@
             "data": "DatabaseIrpTableD6F1FAEA"
           }
         ],
+        "/PenguinHealth/Database/AnalyticsReportsTable": [
+          {
+            "type": "aws:cdk:hasPhysicalName",
+            "data": {
+              "Ref": "DatabaseAnalyticsReportsTableCBA204D5"
+            }
+          }
+        ],
+        "/PenguinHealth/Database/AnalyticsReportsTable/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "DatabaseAnalyticsReportsTableCBA204D5"
+          }
+        ],
+        "/PenguinHealth/Database/AnalyticsDeepJobsTable": [
+          {
+            "type": "aws:cdk:hasPhysicalName",
+            "data": {
+              "Ref": "DatabaseAnalyticsDeepJobsTable5DC25284"
+            }
+          }
+        ],
+        "/PenguinHealth/Database/AnalyticsDeepJobsTable/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "DatabaseAnalyticsDeepJobsTable5DC25284"
+          }
+        ],
         "/PenguinHealth/Database/NotificationsTopic/Resource": [
           {
             "type": "aws:cdk:logicalId",
@@ -135,6 +163,24 @@
           {
             "type": "aws:cdk:logicalId",
             "data": "AdminUiAdminApiFunctionF9667708"
+          }
+        ],
+        "/PenguinHealth/AdminUi/DeepAnalyticsWorkerFunction/ServiceRole/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiDeepAnalyticsWorkerFunctionServiceRole952761DC"
+          }
+        ],
+        "/PenguinHealth/AdminUi/DeepAnalyticsWorkerFunction/ServiceRole/DefaultPolicy/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiDeepAnalyticsWorkerFunctionServiceRoleDefaultPolicy5F6D340E"
+          }
+        ],
+        "/PenguinHealth/AdminUi/DeepAnalyticsWorkerFunction/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiDeepAnalyticsWorkerFunction5BFEB93C"
           }
         ],
         "/PenguinHealth/AdminUi/AdminHttpApi/Resource": [
@@ -279,6 +325,90 @@
           {
             "type": "aws:cdk:logicalId",
             "data": "AdminUiAdminHttpApiPOSTapiorganizationsorgIdrulesenhancenoteE7631D2C"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--analytics--nl-query/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPOSTapiorganizationsorgIdanalyticsnlqueryAdminApiIntegrationPermissionF20CEF05"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--analytics--nl-query/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPOSTapiorganizationsorgIdanalyticsnlquery4940CC9F"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--analytics--nl-query--deep/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPOSTapiorganizationsorgIdanalyticsnlquerydeepAdminApiIntegrationPermissionCA871EDB"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--analytics--nl-query--deep/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPOSTapiorganizationsorgIdanalyticsnlquerydeep660159CF"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--analytics--nl-query--deep--{jobId}/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiGETapiorganizationsorgIdanalyticsnlquerydeepjobIdAdminApiIntegrationPermission90092023"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--analytics--nl-query--deep--{jobId}/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiGETapiorganizationsorgIdanalyticsnlquerydeepjobIdDD369556"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--analytics--reports/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPOSTapiorganizationsorgIdanalyticsreportsAdminApiIntegrationPermissionBC6C3D34"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/POST--api--organizations--{orgId}--analytics--reports/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiPOSTapiorganizationsorgIdanalyticsreports48E9995A"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--analytics--reports/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiGETapiorganizationsorgIdanalyticsreportsAdminApiIntegrationPermission3C83488F"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--analytics--reports/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiGETapiorganizationsorgIdanalyticsreports86E69A38"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--analytics--reports--{reportId}/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiGETapiorganizationsorgIdanalyticsreportsreportIdAdminApiIntegrationPermissionB471978F"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--analytics--reports--{reportId}/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiGETapiorganizationsorgIdanalyticsreportsreportId13720904"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/DELETE--api--organizations--{orgId}--analytics--reports--{reportId}/AdminApiIntegration-Permission": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiDELETEapiorganizationsorgIdanalyticsreportsreportIdAdminApiIntegrationPermission8F7A78A5"
+          }
+        ],
+        "/PenguinHealth/AdminUi/AdminHttpApi/DELETE--api--organizations--{orgId}--analytics--reports--{reportId}/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "AdminUiAdminHttpApiDELETEapiorganizationsorgIdanalyticsreportsreportId35C8FA2B"
           }
         ],
         "/PenguinHealth/AdminUi/AdminHttpApi/GET--api--organizations--{orgId}--validation-runs/AdminApiIntegration-Permission": [

@@ -9,11 +9,10 @@ import { OrganizationDetail } from './pages/OrganizationDetail.jsx'
 import { RuleEditor } from './pages/RuleEditor.jsx'
 import { RuleCreator } from './pages/RuleCreator.jsx'
 import { ValidationRunDetailPage } from './pages/ValidationRunDetailPage.jsx'
-import { StaffPerformancePage } from './pages/StaffPerformancePage.jsx'
 import { AuditRulesPage } from './pages/AuditRulesPage.jsx'
 import { AuditRuleDetailPage } from './pages/AuditRuleDetailPage.jsx'
 import { ValidationResultsPage } from './pages/ValidationResultsPage.jsx'
-import { RevenueAnalysisPage } from './pages/RevenueAnalysisPage.jsx'
+import { AnalyticsHubPage } from './pages/AnalyticsHubPage.jsx'
 import { DashboardPage } from './pages/DashboardPage.jsx'
 import { UsersPage } from './pages/UsersPage.jsx'
 import { setTokenProvider, setOnUnauthorized } from './api/client.js'
@@ -23,6 +22,18 @@ import { RoleGuard } from './auth/RoleGuard.jsx'
 function ValidationRunsRedirect() {
   const { orgId } = useParams()
   return <Navigate to={`/organizations/${orgId}?tab=validation`} replace />
+}
+
+// Old analytics URLs now live as tabs inside the Analytics hub. Preserve
+// bookmarks by redirecting to the hub with the right ?tab=.
+function AnalyticsTabRedirect({ tab }) {
+  const { orgId } = useParams()
+  return (
+    <Navigate
+      to={`/organizations/${orgId}/analytics?tab=${tab}`}
+      replace
+    />
+  )
 }
 
 function App() {
@@ -66,23 +77,19 @@ function App() {
         <Route path="/organizations/:orgId/validation-runs" element={<ValidationRunsRedirect />} />
         <Route path="/organizations/:orgId/validation-runs/:runId" element={<ValidationRunDetailPage />} />
         <Route
+          path="/organizations/:orgId/analytics"
+          element={<AnalyticsHubPage />}
+        />
+        <Route
           path="/organizations/:orgId/staff-performance"
-          element={
-            <RoleGuard requireAnalytics="staff_performance">
-              <StaffPerformancePage />
-            </RoleGuard>
-          }
+          element={<AnalyticsTabRedirect tab="staff-performance" />}
         />
         <Route path="/organizations/:orgId/audit-rules" element={<AuditRulesPage />} />
         <Route path="/organizations/:orgId/audit-rules/:ruleId" element={<AuditRuleDetailPage />} />
         <Route path="/organizations/:orgId/validation-results" element={<ValidationResultsPage />} />
         <Route
           path="/organizations/:orgId/revenue-analysis"
-          element={
-            <RoleGuard requireAnalytics="revenue_analysis">
-              <RevenueAnalysisPage />
-            </RoleGuard>
-          }
+          element={<AnalyticsTabRedirect tab="revenue-analysis" />}
         />
         <Route path="/organizations/:orgId/dashboard" element={<DashboardPage />} />
         <Route
