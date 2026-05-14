@@ -28,7 +28,7 @@ UPSTREAM_HEADER = [
     "icd10_codes", "problem_list_order", "DiagnosiOnService", "fake_client_ID", "clientvisit_id",
     "first_Referrral", "question_text", "answer", "Type", "episode_id",
     "cptcode", "first_name", "last_name", "rate", "InitialAppt",
-    "AGEGROUP", "DiagnoseOnVisit",
+    "AGEGROUP", "DiagnoseOnVisit ",
 ]
 HEADER_LINE = ",".join(UPSTREAM_HEADER)
 NUM_COLUMNS = len(UPSTREAM_HEADER)  # 32
