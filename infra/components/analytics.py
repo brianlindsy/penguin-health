@@ -48,8 +48,11 @@ import config
 
 ORG_TABLES = {
     "circles-of-care": {
-        # CANONICAL_COLUMNS from
-        # lambda/multi-org/csv-splitter/splitters/circles_of_care.py
+        # Column order matches the upstream CSV header read by
+        # lambda/multi-org/csv-splitter/splitters/circles_of_care.py.
+        # Glue/Athena names are normalized (lowercase snake_case, upstream
+        # typos and ad-hoc suffixes corrected). OpenCSVSerde reads
+        # positionally, so these names are independent of the source header.
         "chart_columns": [
             "fake_client_id",
             "clientvisit_id",
@@ -68,7 +71,7 @@ ORG_TABLES = {
             "discharge_date",
             "icd10_codes",
             "problem_list_order",
-            "diagnose_on_visit",
+            "diagnosis_on_service",
             "fake_client_id2",
             "clientvisit_id2",
             "first_referral",
@@ -82,7 +85,7 @@ ORG_TABLES = {
             "rate",
             "initial_appt",
             "agegroup",
-            "diagnose_on_visit2",
+            "diagnose_on_visit",
         ],
     },
     "catholic-charities-multi-org": {

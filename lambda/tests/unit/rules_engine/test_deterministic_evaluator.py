@@ -563,3 +563,272 @@ class TestTimeOperators:
 
         assert op_time_not_between(field_time, None, {'start': '9:00 AM', 'end': '5:00 PM'}) is True
         assert op_time_not_between(field_time, None, {'start': '7:00 AM', 'end': '9:00 AM'}) is False
+
+
+class TestDetoxBedDiagnosisRule:
+    """
+    End-to-end tests for the detox bed diagnosis rule.
+
+    Rule: if visittype == 'BedDay-Detox', DiagnosiOnService must be one of the
+    accepted SUD codes. Otherwise the rule does not apply (auto-pass).
+    F11.21 is excluded — it applies only to rehab, not detox.
+    """
+
+    RULE_CONFIG = {
+        'logic': 'conditional',
+        'conditionals': [
+            {
+                'if': [
+                    {
+                        'field': 'visittype',
+                        'operator': 'equals',
+                        'value': 'BedDay-Detox',
+                        'description': 'Visit is a detox bed day',
+                    }
+                ],
+                'then': [
+                    {
+                        'field': 'DiagnosiOnService',
+                        'operator': 'in',
+                        'value': [
+                            'F10.20',
+                            'F11.20',
+                            'F13.20',
+                            'F15.20',
+                            'F16.20',
+                            'F18.20',
+                        ],
+                        'description': 'Diagnosis is an accepted SUD code for detox',
+                    }
+                ],
+                'fail_message': 'Detox bed day requires diagnosis F10.20, F11.20, F13.20, F15.20, F16.20, or F18.20',
+            },
+            {
+                'if': [
+                    {
+                        'field': 'visittype',
+                        'operator': 'not_equals',
+                        'value': 'BedDay-Detox',
+                    }
+                ],
+                'then': 'pass',
+                'pass_message': 'Not a detox bed day — rule does not apply',
+            },
+        ],
+    }
+
+    @staticmethod
+    def _csv(visittype, diagnosis):
+        return f'visittype,DiagnosiOnService\n{visittype},{diagnosis}\n'
+
+    def test_detox_with_accepted_alcohol_code_passes(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('BedDay-Detox', 'F10.20')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'PASS', message
+
+    def test_detox_with_each_accepted_code_passes(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        for code in ['F10.20', 'F11.20', 'F13.20', 'F15.20', 'F16.20', 'F18.20']:
+            data = {'text': self._csv('BedDay-Detox', code)}
+            status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+            assert status == 'PASS', f'{code} should pass for detox: {message}'
+
+    def test_detox_with_rehab_only_code_fails(self):
+        """F11.21 is rehab-only — must fail for detox."""
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('BedDay-Detox', 'F11.21')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'FAIL', message
+        assert 'Detox bed day requires diagnosis' in message
+
+    def test_detox_with_unrelated_code_fails(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('BedDay-Detox', 'F33.1')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'FAIL', message
+
+    def test_non_detox_visit_auto_passes(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('BedDay-Rehab', 'F33.1')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'PASS', message
+        assert 'rule does not apply' in message
+
+    def test_non_detox_visit_with_unrelated_code_auto_passes(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('Outpatient', 'Z00.00')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'PASS', message
+
+    def test_case_sensitive_visittype_does_not_match(self):
+        """'equals' is case-sensitive — lowercase 'bedday-detox' should not trigger the rule."""
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('bedday-detox', 'F33.1')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'PASS', message
+
+
+class TestPsychBedDiagnosisRule:
+    """
+    End-to-end tests for the psych bed primary diagnosis rule.
+
+    Rule: if visittype == 'BedDay-Psych', DiagnosiOnService (primary) must be
+    one of the accepted codes. F34.81 requires age_at_service <= 18.
+    Non-psych visits auto-pass.
+    """
+
+    ACCEPTED_CODES = [
+        'F33.1', 'F33.2', 'F33.3', 'F32.2', 'F32.3', 'F32.1',
+        'F20.81', 'F25.0', 'F25.1', 'F20.9', 'F20.0',
+        'F30.13', 'F30.2', 'F31.0', 'F31.12', 'F31.13', 'F31.4',
+        'F31.5', 'F31.63', 'F31.64', 'F31.81', 'F31.2',
+        'F41.1', 'F43.12',
+        'F63.81', 'F90.2', 'F90.9', 'F91.1', 'F91.3', 'F43.0',
+    ]
+
+    RULE_CONFIG = {
+        'logic': 'conditional',
+        'fail_message': 'Psych bed primary diagnosis is not an accepted code',
+        'conditionals': [
+            {
+                'if': [
+                    {'field': 'visittype', 'operator': 'not_equals', 'value': 'BedDay-Psych'}
+                ],
+                'then': 'pass',
+                'pass_message': 'Not a psych bed day — rule does not apply',
+            },
+            {
+                'if': [
+                    {'field': 'visittype', 'operator': 'equals', 'value': 'BedDay-Psych'},
+                    {'field': 'DiagnosiOnService', 'operator': 'equals', 'value': 'F34.81'}
+                ],
+                'then': [
+                    {
+                        'field': 'age_at_service',
+                        'operator': 'lte',
+                        'value': 18,
+                        'description': 'Patient is 18 or under',
+                    }
+                ],
+                'fail_message': 'F34.81 (Disruptive Mood Dysregulation Disorder) is only acceptable when patient age_at_service <= 18',
+            },
+            {
+                'if': [
+                    {'field': 'visittype', 'operator': 'equals', 'value': 'BedDay-Psych'},
+                    {
+                        'field': 'DiagnosiOnService',
+                        'operator': 'in',
+                        'value': ACCEPTED_CODES,
+                    }
+                ],
+                'then': 'pass',
+                'pass_message': 'Psych bed with accepted primary diagnosis',
+            },
+        ],
+    }
+
+    @staticmethod
+    def _csv(visittype, diagnosis, age_at_service=''):
+        return (
+            'visittype,DiagnosiOnService,age_at_service\n'
+            f'{visittype},{diagnosis},{age_at_service}\n'
+        )
+
+    def test_psych_with_each_accepted_code_passes(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        for code in self.ACCEPTED_CODES:
+            data = {'text': self._csv('BedDay-Psych', code)}
+            status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+            assert status == 'PASS', f'{code} should pass for psych: {message}'
+
+    def test_psych_with_unaccepted_code_fails(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('BedDay-Psych', 'F10.20')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'FAIL', message
+        assert 'Psych bed primary diagnosis is not an accepted code' in message
+
+    def test_f34_81_with_age_under_18_passes(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('BedDay-Psych', 'F34.81', age_at_service='15')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'PASS', message
+
+    def test_f34_81_with_age_exactly_18_passes(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('BedDay-Psych', 'F34.81', age_at_service='18')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'PASS', message
+
+    def test_f34_81_with_age_19_fails(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('BedDay-Psych', 'F34.81', age_at_service='19')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'FAIL', message
+        assert 'F34.81' in message
+
+    def test_f34_81_with_age_well_over_18_fails(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('BedDay-Psych', 'F34.81', age_at_service='45')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'FAIL', message
+
+    def test_f20_0_passes_without_insurance_check(self):
+        """F20.0 is accepted for all psych visits (Medicare special case removed)."""
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('BedDay-Psych', 'F20.0')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'PASS', message
+
+    def test_non_psych_visit_auto_passes(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('BedDay-Detox', 'F10.20')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'PASS', message
+        assert 'rule does not apply' in message
+
+    def test_non_psych_visit_with_unaccepted_code_auto_passes(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('Outpatient', 'Z00.00')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'PASS', message
+
+    def test_case_sensitive_visittype_does_not_match(self):
+        """'equals' is case-sensitive — lowercase 'bedday-psych' should auto-pass via the not_equals branch."""
+        from deterministic_evaluator import evaluate_deterministic_rule
+
+        data = {'text': self._csv('bedday-psych', 'Z00.00')}
+        status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
+
+        assert status == 'PASS', message

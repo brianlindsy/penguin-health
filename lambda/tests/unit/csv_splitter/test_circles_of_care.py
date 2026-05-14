@@ -6,6 +6,7 @@ Tests the CSV parsing and grouping logic including:
 - Comma-shift handling in InitialAppt field
 - Row padding/normalization
 - Intake Screening filtering
+- Header-driven column lookup
 """
 
 import sys
@@ -17,6 +18,27 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', 'multi-org', 'csv-splitter'))
 
 
+# The exact upstream header for Circles of Care CSVs. Note the duplicate
+# column names (fake_client_ID, clientvisit_id, episode_id) and the
+# upstream typos (DiagnosiOnService, first_Referrral).
+UPSTREAM_HEADER = [
+    "fake_client_ID", "clientvisit_ID", "Grade", "Race_Desc", "Ethnicity_Desc",
+    "sex", "marital_status", "age_at_service", "visittype", "plan_id",
+    "service_date", "episode_id", "program_desc", "admission_date", "discharge_date",
+    "icd10_codes", "problem_list_order", "DiagnosiOnService", "fake_client_ID", "clientvisit_id",
+    "first_Referrral", "question_text", "answer", "Type", "episode_id",
+    "cptcode", "first_name", "last_name", "rate", "InitialAppt",
+    "AGEGROUP", "DiagnoseOnVisit",
+]
+HEADER_LINE = ",".join(UPSTREAM_HEADER)
+NUM_COLUMNS = len(UPSTREAM_HEADER)  # 32
+
+
+def _build_csv(data_rows: list) -> str:
+    """Prepend the upstream header to a list of comma-joined data rows."""
+    return "\n".join([HEADER_LINE] + data_rows)
+
+
 class TestCirclesOfCareSplitter:
     """Test Circles of Care CSV splitter logic."""
 
@@ -26,9 +48,8 @@ class TestCirclesOfCareSplitter:
         return CirclesOfCareSplitter()
 
     @pytest.fixture
-    def canonical_headers(self, splitter):
-        """Get the canonical column headers."""
-        return splitter.CANONICAL_COLUMNS
+    def indices(self, splitter):
+        return splitter._locate_columns(UPSTREAM_HEADER)
 
     def test_org_id_property(self, splitter):
         """Should return correct organization ID."""
@@ -49,79 +70,93 @@ class TestCirclesOfCareSplitter:
         assert splitter._is_valid_visit_id('') is False           # Empty
         assert splitter._is_valid_visit_id('12 345') is False     # Contains space
 
-    def test_fix_comma_shift_no_shift(self, splitter):
-        """Row with exactly 32 columns needs no fix."""
-        row = [''] * 32
+    def test_locate_columns_returns_first_occurrence(self, splitter, indices):
+        """Duplicate names in the header should resolve to their first index."""
+        # fake_client_ID appears at 0 and 18; we use the first.
+        assert UPSTREAM_HEADER[indices["visit_id"]] == "clientvisit_ID"
+        assert indices["visittype"] == 8
+        assert indices["initial_appt"] == 29
+        assert indices["agegroup"] == 30
+        assert indices["last"] == 31
+
+    def test_locate_columns_missing_raises(self, splitter):
+        """Missing required column should raise KeyError with the header echoed."""
+        bad_header = ["a", "b", "c"]
+        with pytest.raises(KeyError, match="clientvisit_ID"):
+            splitter._locate_columns(bad_header)
+
+    def test_fix_comma_shift_no_shift(self, splitter, indices):
+        """Row with exactly NUM_COLUMNS columns needs no fix."""
+        row = [''] * NUM_COLUMNS
         row[0] = 'client_001'
-        row[1] = '123456'
-        row[29] = 'Agency Referral'  # InitialAppt
-        row[30] = 'Adult'             # AGEGROUP
-        row[31] = 'F32.1'             # DiagnoseOnVisit2
+        row[indices["visit_id"]] = '123456'
+        row[indices["initial_appt"]] = 'Agency Referral'
+        row[indices["agegroup"]] = 'Adult'
+        row[indices["last"]] = 'F32.1'
 
-        fixed = splitter._fix_comma_shift(row)
+        fixed = splitter._fix_comma_shift(row, indices, NUM_COLUMNS)
 
-        assert len(fixed) == 32
-        assert fixed[29] == 'Agency Referral'
-        assert fixed[30] == 'Adult'
-        assert fixed[31] == 'F32.1'
+        assert len(fixed) == NUM_COLUMNS
+        assert fixed[indices["initial_appt"]] == 'Agency Referral'
+        assert fixed[indices["agegroup"]] == 'Adult'
+        assert fixed[indices["last"]] == 'F32.1'
 
-    def test_fix_comma_shift_with_one_extra_comma(self, splitter):
-        """Row with embedded comma in InitialAppt (33 columns total)."""
-        # Original: 32 columns, but InitialAppt has comma: "Hospital, LEO"
-        # This becomes: 33 columns
+    def test_fix_comma_shift_with_one_extra_comma(self, splitter, indices):
+        """Row with one embedded comma in InitialAppt (33 columns total)."""
         row = [''] * 29 + ['Agency Referral (Hospital', 'LEO)', 'Adult', 'F32.1']
-        assert len(row) == 33
+        assert len(row) == NUM_COLUMNS + 1
 
-        fixed = splitter._fix_comma_shift(row)
+        fixed = splitter._fix_comma_shift(row, indices, NUM_COLUMNS)
 
-        assert len(fixed) == 32
-        assert fixed[29] == 'Agency Referral (Hospital, LEO)'
-        assert fixed[30] == 'Adult'
-        assert fixed[31] == 'F32.1'
+        assert len(fixed) == NUM_COLUMNS
+        assert fixed[indices["initial_appt"]] == 'Agency Referral (Hospital, LEO)'
+        assert fixed[indices["agegroup"]] == 'Adult'
+        assert fixed[indices["last"]] == 'F32.1'
 
-    def test_fix_comma_shift_with_multiple_extra_commas(self, splitter):
+    def test_fix_comma_shift_with_multiple_extra_commas(self, splitter, indices):
         """Row with multiple embedded commas in InitialAppt (34 columns total)."""
-        # "Agency Referral (Hospital, LEO, School)" has 2 extra commas
         row = [''] * 29 + ['Agency Referral (Hospital', 'LEO', 'School)', 'Adult', 'F32.1']
-        assert len(row) == 34
+        assert len(row) == NUM_COLUMNS + 2
 
-        fixed = splitter._fix_comma_shift(row)
+        fixed = splitter._fix_comma_shift(row, indices, NUM_COLUMNS)
 
-        assert len(fixed) == 32
-        assert fixed[29] == 'Agency Referral (Hospital, LEO, School)'
-        assert fixed[30] == 'Adult'
-        assert fixed[31] == 'F32.1'
+        assert len(fixed) == NUM_COLUMNS
+        assert fixed[indices["initial_appt"]] == 'Agency Referral (Hospital, LEO, School)'
+        assert fixed[indices["agegroup"]] == 'Adult'
+        assert fixed[indices["last"]] == 'F32.1'
 
-    def test_fix_comma_shift_pads_short_rows(self, splitter):
-        """Short rows should be padded to 32 columns."""
+    def test_fix_comma_shift_pads_short_rows(self, splitter, indices):
+        """Short rows should be padded to NUM_COLUMNS."""
         row = [''] * 20
 
-        fixed = splitter._fix_comma_shift(row)
+        fixed = splitter._fix_comma_shift(row, indices, NUM_COLUMNS)
 
-        assert len(fixed) == 32
+        assert len(fixed) == NUM_COLUMNS
         assert fixed[20] == ''  # Padded columns are empty
 
-    def test_fix_comma_shift_preserves_stable_columns(self, splitter):
-        """Columns 0-28 should remain unchanged after fix."""
+    def test_fix_comma_shift_preserves_stable_columns(self, splitter, indices):
+        """Columns before InitialAppt should remain unchanged after fix."""
         row = [f'col{i}' for i in range(29)] + ['InitialAppt', 'Adult', 'F32.1']
-        assert len(row) == 32
+        assert len(row) == NUM_COLUMNS
 
-        fixed = splitter._fix_comma_shift(row)
+        fixed = splitter._fix_comma_shift(row, indices, NUM_COLUMNS)
 
-        # First 29 columns unchanged
         for i in range(29):
             assert fixed[i] == f'col{i}'
 
+    def _row_with(self, visit_id: str = '123456', visittype: str = 'Intake Screening') -> list:
+        """Build a NUM_COLUMNS-wide data row with the given visit ID and visittype."""
+        row = ['client1'] + [''] * (NUM_COLUMNS - 1)
+        row[1] = visit_id        # clientvisit_ID
+        row[8] = visittype       # visittype
+        return row
+
     def test_split_groups_by_visit_id(self, splitter):
         """Multiple rows with same visit ID should be grouped."""
-        # Create CSV with 2 rows for same visit ID
-        row1 = ['client1', '123456'] + [''] * 6 + ['Intake Screening'] + [''] * 23
-        row2 = ['client1', '123456'] + [''] * 6 + ['Intake Screening'] + [''] * 23
+        row1 = self._row_with(visit_id='123456')
+        row2 = self._row_with(visit_id='123456')
 
-        csv_content = '\n'.join([
-            ','.join(row1),
-            ','.join(row2),
-        ])
+        csv_content = _build_csv([','.join(row1), ','.join(row2)])
 
         results = splitter.split(csv_content, 'test.csv')
 
@@ -129,20 +164,15 @@ class TestCirclesOfCareSplitter:
         visit_id, content = results[0]
         assert visit_id == '123456'
 
-        # Count data rows (excluding header)
         lines = content.strip().split('\n')
         assert len(lines) == 3  # Header + 2 data rows
 
     def test_split_separates_different_visit_ids(self, splitter):
         """Rows with different visit IDs should be in separate results."""
-        # Visit ID is at index 1
-        row1 = ['client1', '123456'] + [''] * 6 + ['Intake Screening'] + [''] * 23
-        row2 = ['client2', '654321'] + [''] * 6 + ['Intake Screening'] + [''] * 23
+        row1 = self._row_with(visit_id='123456')
+        row2 = self._row_with(visit_id='654321')
 
-        csv_content = '\n'.join([
-            ','.join(row1),
-            ','.join(row2),
-        ])
+        csv_content = _build_csv([','.join(row1), ','.join(row2)])
 
         results = splitter.split(csv_content, 'test.csv')
 
@@ -153,10 +183,9 @@ class TestCirclesOfCareSplitter:
 
     def test_split_filters_non_intake_visits(self, splitter):
         """Should filter out non-Intake Screening visits when INTAKE_ONLY=True."""
-        # Row without "Intake Screening" in visittype (index 8)
-        row = ['client1', '123456'] + [''] * 6 + ['Regular Visit'] + [''] * 22
+        row = self._row_with(visit_id='123456', visittype='Regular Visit')
 
-        csv_content = ','.join(row)
+        csv_content = _build_csv([','.join(row)])
 
         results = splitter.split(csv_content, 'test.csv')
 
@@ -164,44 +193,53 @@ class TestCirclesOfCareSplitter:
 
     def test_split_accepts_intake_screening_visits(self, splitter):
         """Should accept Intake Screening visits."""
-        # Row with "Intake Screening" in visittype (index 8)
-        row = ['client1', '123456'] + [''] * 6 + ['Intake Screening'] + [''] * 23
+        row = self._row_with(visit_id='123456', visittype='Intake Screening')
 
-        csv_content = ','.join(row)
+        csv_content = _build_csv([','.join(row)])
 
         results = splitter.split(csv_content, 'test.csv')
 
         assert len(results) == 1
 
-    def test_split_output_includes_canonical_headers(self, splitter, canonical_headers):
-        """Output CSV should include canonical column headers."""
-        row = ['client1', '123456'] + [''] * 6 + ['Intake Screening'] + [''] * 23
+    def test_split_accepts_bedday_psych_visits(self, splitter):
+        """Should accept BedDay-Psych visits."""
+        row = self._row_with(visit_id='123456', visittype='BedDay-Psych')
 
-        csv_content = ','.join(row)
+        csv_content = _build_csv([','.join(row)])
+
+        results = splitter.split(csv_content, 'test.csv')
+
+        assert len(results) == 1
+
+    def test_split_accepts_bedday_detox_visits(self, splitter):
+        """Should accept BedDay-Detox visits."""
+        row = self._row_with(visit_id='123456', visittype='BedDay-Detox')
+
+        csv_content = _build_csv([','.join(row)])
+
+        results = splitter.split(csv_content, 'test.csv')
+
+        assert len(results) == 1
+
+    def test_split_output_uses_upstream_header(self, splitter):
+        """Output CSV should echo the upstream header verbatim."""
+        row = self._row_with(visit_id='123456')
+
+        csv_content = _build_csv([','.join(row)])
 
         results = splitter.split(csv_content, 'test.csv')
 
         assert len(results) == 1
         _, content = results[0]
 
-        lines = content.strip().split('\n')
-        header_line = lines[0]
-
-        # Check some canonical headers are present
-        assert 'fake_client_ID' in header_line
-        assert 'clientvisit_ID' in header_line
-        assert 'InitialAppt' in header_line
-        assert 'AGEGROUP' in header_line
+        lines = content.strip().splitlines()
+        assert lines[0] == HEADER_LINE
 
     def test_split_handles_empty_rows(self, splitter):
         """Should skip empty rows."""
-        row = ['client1', '123456'] + [''] * 6 + ['Intake Screening'] + [''] * 23
+        row = self._row_with(visit_id='123456')
 
-        csv_content = '\n'.join([
-            '',  # Empty row
-            ','.join(row),
-            '',  # Another empty row
-        ])
+        csv_content = _build_csv(['', ','.join(row), ''])
 
         results = splitter.split(csv_content, 'test.csv')
 
@@ -209,15 +247,11 @@ class TestCirclesOfCareSplitter:
 
     def test_split_continues_rows_until_new_visit_id(self, splitter):
         """Continuation rows (no valid visit ID) should be added to current group."""
-        # First row has valid visit ID
-        row1 = ['client1', '123456'] + [''] * 6 + ['Intake Screening'] + [''] * 23
-        # Second row doesn't have valid visit ID at index 1 (continuation)
-        row2 = ['', ''] + [''] * 6 + [''] + [''] * 23
+        row1 = self._row_with(visit_id='123456')
+        # Continuation row: no visit ID at clientvisit_ID column
+        row2 = [''] * NUM_COLUMNS
 
-        csv_content = '\n'.join([
-            ','.join(row1),
-            ','.join(row2),
-        ])
+        csv_content = _build_csv([','.join(row1), ','.join(row2)])
 
         results = splitter.split(csv_content, 'test.csv')
 
@@ -225,20 +259,15 @@ class TestCirclesOfCareSplitter:
         _, content = results[0]
 
         lines = content.strip().split('\n')
-        # Should have header + 2 data rows
+        # Header + 2 data rows
         assert len(lines) == 3
 
-    def test_num_columns_constant(self, splitter):
-        """NUM_COLUMNS should be 32."""
-        assert splitter.NUM_COLUMNS == 32
-        assert len(splitter.CANONICAL_COLUMNS) == 32
+    def test_split_empty_input_returns_empty(self, splitter):
+        """Empty CSV content should return an empty result list, not crash."""
+        assert splitter.split('', 'test.csv') == []
 
-    def test_initial_appt_idx_constant(self, splitter):
-        """InitialAppt should be at index 29."""
-        assert splitter.INITIAL_APPT_IDX == 29
-        assert splitter.CANONICAL_COLUMNS[29] == 'InitialAppt'
-
-    def test_visittype_idx_constant(self, splitter):
-        """visittype should be at index 8."""
-        assert splitter.VISITTYPE_IDX == 8
-        assert splitter.CANONICAL_COLUMNS[8] == 'visittype'
+    def test_split_raises_on_missing_required_column(self, splitter):
+        """A header that lacks a required column should raise KeyError."""
+        bad_csv = "a,b,c\n1,2,3\n"
+        with pytest.raises(KeyError):
+            splitter.split(bad_csv, 'test.csv')

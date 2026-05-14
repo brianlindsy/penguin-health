@@ -10,6 +10,7 @@ const FIELD_LABELS = {
   program: 'Program',
   service_type: 'Service Type',
   diagnosis_code: 'Diagnosis Code',
+  bed_day_diagnosis_code: 'Bed Day Diagnosis Code',
   cpt_code: 'CPT Code',
   rate: 'Rate',
   employee_name: 'Employee',
@@ -31,6 +32,26 @@ function sortRulesByStatus(rules) {
     const bv = STATUS_ORDER[b?.status] ?? 3
     return av - bv
   })
+}
+
+// TODO(brian): the whole "required fields" gate is tech debt — we're
+// hiding documents from the UI based on hardcoded field names
+// (diagnosis_code + employee_name) and then poking hardcoded service-type
+// escape hatches (BedDay-Psych, BedDay-Detox) when those fields are
+// legitimately absent. Every new service type that doesn't carry those
+// fields means another silent "why isn't this showing up?" bug and another
+// string added to this set.
+//
+// Replace this with a server-driven signal — e.g. the API tells us which
+// docs are renderable, or each doc declares its own required-field schema
+// per service type — so this file doesn't need to know which service
+// types are special. Until then, this list will drift.
+const BEDDAY_SERVICE_TYPES = new Set(['BedDay-Psych', 'BedDay-Detox'])
+function hasRequiredFields(doc) {
+  const fv = doc?.field_values
+  if (!fv) return false
+  if (BEDDAY_SERVICE_TYPES.has(fv.service_type)) return true
+  return Boolean(fv.diagnosis_code && fv.employee_name)
 }
 
 // Run IDs are emitted as YYYYMMDD-HHMMSS (e.g. "20260421-153039"), so we
@@ -93,9 +114,6 @@ export function ValidationRunDetailPage() {
   // This runs when data changes OR when docIdFromUrl changes
   useEffect(() => {
     if (!data?.documents) return
-
-    // Helper to check if document has required fields
-    const hasRequiredFields = (d) => d.field_values?.diagnosis_code && d.field_values?.employee_name
 
     // Priority 1: Select document from URL query param if present
     if (docIdFromUrl) {
@@ -170,8 +188,8 @@ export function ValidationRunDetailPage() {
     let revenueAtRisk = 0
 
     data.documents.forEach(doc => {
-      // Exclude documents without required fields (diagnosis_code and employee_name)
-      if (!doc.field_values?.diagnosis_code || !doc.field_values?.employee_name) {
+      // BedDay service types are exempt from the diagnosis_code/employee_name gate
+      if (!hasRequiredFields(doc)) {
         return
       }
 
@@ -293,8 +311,8 @@ export function ValidationRunDetailPage() {
     if (!runPassesDateFilter) return []
 
     return data.documents.filter(doc => {
-      // Exclude documents without required fields (diagnosis_code and employee_name)
-      if (!doc.field_values?.diagnosis_code || !doc.field_values?.employee_name) {
+      // BedDay service types are exempt from the diagnosis_code/employee_name gate
+      if (!hasRequiredFields(doc)) {
         return false
       }
 
@@ -949,6 +967,12 @@ function DocumentListItem({ doc, selected, onClick }) {
             <div className="flex items-center gap-1">
               <span className="text-gray-400">Dx:</span>
               <span className="text-gray-600">{fv.diagnosis_code}</span>
+            </div>
+          )}
+          {fv.bed_day_diagnosis_code && (
+            <div className="flex items-center gap-1">
+              <span className="text-gray-400">Bed Day Dx:</span>
+              <span className="text-gray-600">{fv.bed_day_diagnosis_code}</span>
             </div>
           )}
           {fv.rate && (

@@ -11,6 +11,7 @@ Configuration is set in the script below.
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 # Configuration
 ORG_ID = "catholic-charities-multi-org"
@@ -18,10 +19,20 @@ KEEP_RUN_ID = "20260422-145927"
 TABLE_NAME = "penguin-health-validation-results"
 DRY_RUN = False  # Set to False to actually delete
 
+# Athena/Glue cleanup
+# Each run writes a Parquet snapshot to the org's analytics bucket at:
+#   s3://penguin-health-{org_id}/analytics/validation_results/
+#       validation_date={YYYY-MM-DD}/run_id={run_id}/part-0.parquet
+# The Glue tables use partition projection (see infra/components/analytics.py),
+# so deleting the parquet objects is sufficient — no DROP PARTITION needed.
+ANALYTICS_BUCKET = f"penguin-health-{ORG_ID}"
+ANALYTICS_PREFIX = "analytics/validation_results"
+
 # Use us-east-1 region
 config = Config(region_name='us-east-1')
 dynamodb = boto3.resource('dynamodb', config=config)
 table = dynamodb.Table(TABLE_NAME)
+s3_client = boto3.client('s3', config=config)
 
 
 def get_all_run_ids_for_org(org_id):
@@ -88,6 +99,46 @@ def get_documents_for_run(run_id):
     return items
 
 
+def get_run_summary(org_id, run_id):
+    """Fetch the run summary item so we can read its timestamp."""
+    response = table.get_item(
+        Key={'pk': f"ORG#{org_id}", 'sk': f"RUN#{run_id}"}
+    )
+    return response.get('Item')
+
+
+def delete_parquet_for_run(run_id, validation_date):
+    """
+    Delete the run's Parquet snapshot from the analytics bucket.
+
+    Returns True if a delete was issued (or would be in dry run), False if the
+    object was missing or we couldn't determine the date.
+    """
+    if not validation_date:
+        print(f"  Skipping Parquet cleanup for {run_id}: no validation_date")
+        return False
+
+    key = (
+        f"{ANALYTICS_PREFIX}/"
+        f"validation_date={validation_date}/"
+        f"run_id={run_id}/part-0.parquet"
+    )
+
+    if DRY_RUN:
+        print(f"  [DRY RUN] Would delete s3://{ANALYTICS_BUCKET}/{key}")
+        return True
+
+    try:
+        s3_client.delete_object(Bucket=ANALYTICS_BUCKET, Key=key)
+        print(f"  Deleted s3://{ANALYTICS_BUCKET}/{key}")
+        return True
+    except ClientError as e:
+        # delete_object is idempotent on AWS, but bucket/permission errors
+        # still surface here — log and continue rather than aborting the run.
+        print(f"  Warning: failed to delete s3://{ANALYTICS_BUCKET}/{key}: {e}")
+        return False
+
+
 def delete_items(items_to_delete):
     """Delete items using batch write."""
     if not items_to_delete:
@@ -148,9 +199,17 @@ def main():
 
     total_docs_deleted = 0
     total_runs_deleted = 0
+    total_parquet_deleted = 0
 
     for run_id in runs_to_delete:
         print(f"\nProcessing run: {run_id}")
+
+        # Fetch the run summary first so we can read its timestamp.
+        # The Parquet file is partitioned by validation_date (YYYY-MM-DD),
+        # which comes from the run summary's `timestamp` field.
+        summary = get_run_summary(ORG_ID, run_id)
+        timestamp = summary.get('timestamp') if summary else None
+        validation_date = str(timestamp)[:10] if timestamp else None
 
         # Get all document validations for this run
         doc_items = get_documents_for_run(run_id)
@@ -161,6 +220,10 @@ def main():
             deleted = delete_items(doc_items)
             total_docs_deleted += deleted
             print(f"  Deleted {deleted} document validations")
+
+        # Delete the Athena/Glue Parquet snapshot for this run
+        if delete_parquet_for_run(run_id, validation_date):
+            total_parquet_deleted += 1
 
         # Delete the run summary item
         run_summary_item = {
@@ -180,6 +243,7 @@ def main():
     print("Summary:")
     print(f"  Runs deleted: {total_runs_deleted}")
     print(f"  Document validations deleted: {total_docs_deleted}")
+    print(f"  Parquet snapshots deleted: {total_parquet_deleted}")
 
     if DRY_RUN:
         print("\n*** DRY RUN - No actual deletions were made ***")
