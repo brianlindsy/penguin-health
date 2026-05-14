@@ -1044,7 +1044,6 @@ def _validate_dates(requested):
 
     Returns (dates_list, error_response). On success, error_response is None.
     """
-    from datetime import date as _date_type
     today = datetime.utcnow().date()
     cutover = datetime.strptime(CUTOVER_DATE, '%Y-%m-%d').date()
 

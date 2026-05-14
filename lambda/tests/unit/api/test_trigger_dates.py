@@ -10,7 +10,6 @@ import json
 import os
 import sys
 
-import pytest
 from freezegun import freeze_time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))

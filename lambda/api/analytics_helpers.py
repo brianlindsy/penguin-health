@@ -26,7 +26,7 @@ import boto3
 
 import sqlparse
 from sqlparse.sql import IdentifierList, Identifier
-from sqlparse.tokens import Keyword, DML, Punctuation
+from sqlparse.tokens import Keyword
 
 
 GLUE_DATABASE = "penguin_health_analytics"
