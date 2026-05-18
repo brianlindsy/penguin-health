@@ -25,13 +25,13 @@ UPSTREAM_HEADER = [
     "fake_client_ID", "clientvisit_ID", "Grade", "Race_Desc", "Ethnicity_Desc",
     "sex", "marital_status", "age_at_service", "visittype", "plan_id",
     "service_date", "episode_id", "program_desc", "admission_date", "discharge_date",
-    "icd10_codes", "problem_list_order", "DiagnosiOnService", "fake_client_ID", "clientvisit_id",
-    "first_Referrral", "question_text", "answer", "Type", "episode_id",
-    "cptcode", "first_name", "last_name", "rate", "InitialAppt",
-    "AGEGROUP", "DiagnoseOnVisit ",
+    "icd10_codes", "problem_list_order", "DiagnosiOnService", "payer_description", "fake_client_ID",
+    "clientvisit_id", "first_Referrral", "question_text", "answer", "Type",
+    "episode_id", "cptcode", "first_name", "last_name", "rate",
+    "InitialAppt", "AGEGROUP", "DiagnoseOnVisit ",
 ]
 HEADER_LINE = ",".join(UPSTREAM_HEADER)
-NUM_COLUMNS = len(UPSTREAM_HEADER)  # 32
+NUM_COLUMNS = len(UPSTREAM_HEADER)  # 33
 
 
 def _build_csv(data_rows: list) -> str:
@@ -72,12 +72,12 @@ class TestCirclesOfCareSplitter:
 
     def test_locate_columns_returns_first_occurrence(self, splitter, indices):
         """Duplicate names in the header should resolve to their first index."""
-        # fake_client_ID appears at 0 and 18; we use the first.
+        # fake_client_ID appears at 0 and 19; we use the first.
         assert UPSTREAM_HEADER[indices["visit_id"]] == "clientvisit_ID"
         assert indices["visittype"] == 8
-        assert indices["initial_appt"] == 29
-        assert indices["agegroup"] == 30
-        assert indices["last"] == 31
+        assert indices["initial_appt"] == 30
+        assert indices["agegroup"] == 31
+        assert indices["last"] == 32
 
     def test_locate_columns_missing_raises(self, splitter):
         """Missing required column should raise KeyError with the header echoed."""
@@ -102,8 +102,8 @@ class TestCirclesOfCareSplitter:
         assert fixed[indices["last"]] == 'F32.1'
 
     def test_fix_comma_shift_with_one_extra_comma(self, splitter, indices):
-        """Row with one embedded comma in InitialAppt (33 columns total)."""
-        row = [''] * 29 + ['Agency Referral (Hospital', 'LEO)', 'Adult', 'F32.1']
+        """Row with one embedded comma in InitialAppt (34 columns total)."""
+        row = [''] * 30 + ['Agency Referral (Hospital', 'LEO)', 'Adult', 'F32.1']
         assert len(row) == NUM_COLUMNS + 1
 
         fixed = splitter._fix_comma_shift(row, indices, NUM_COLUMNS)
@@ -114,8 +114,8 @@ class TestCirclesOfCareSplitter:
         assert fixed[indices["last"]] == 'F32.1'
 
     def test_fix_comma_shift_with_multiple_extra_commas(self, splitter, indices):
-        """Row with multiple embedded commas in InitialAppt (34 columns total)."""
-        row = [''] * 29 + ['Agency Referral (Hospital', 'LEO', 'School)', 'Adult', 'F32.1']
+        """Row with multiple embedded commas in InitialAppt (35 columns total)."""
+        row = [''] * 30 + ['Agency Referral (Hospital', 'LEO', 'School)', 'Adult', 'F32.1']
         assert len(row) == NUM_COLUMNS + 2
 
         fixed = splitter._fix_comma_shift(row, indices, NUM_COLUMNS)
@@ -136,12 +136,12 @@ class TestCirclesOfCareSplitter:
 
     def test_fix_comma_shift_preserves_stable_columns(self, splitter, indices):
         """Columns before InitialAppt should remain unchanged after fix."""
-        row = [f'col{i}' for i in range(29)] + ['InitialAppt', 'Adult', 'F32.1']
+        row = [f'col{i}' for i in range(30)] + ['InitialAppt', 'Adult', 'F32.1']
         assert len(row) == NUM_COLUMNS
 
         fixed = splitter._fix_comma_shift(row, indices, NUM_COLUMNS)
 
-        for i in range(29):
+        for i in range(30):
             assert fixed[i] == f'col{i}'
 
     def _row_with(self, visit_id: str = '123456', visittype: str = 'Intake Screening') -> list:

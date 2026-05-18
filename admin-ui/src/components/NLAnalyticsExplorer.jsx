@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import { api, ApiError } from '../api/client.js'
 import { ResultRenderer } from './ResultRenderer.jsx'
 
-// Poll cadence for deep-analysis job status. 1.5s keeps the live-progress
-// UI responsive without hammering the API for long jobs.
-const DEEP_JOB_POLL_INTERVAL_MS = 1500
+// Poll cadence for the agent job. 1.5s keeps the step-label UI responsive
+// without hammering the API for long runs.
+const JOB_POLL_INTERVAL_MS = 1500
 // Stop polling after this long even if the server keeps reporting running —
 // guards against a runaway worker hanging the UI. Matches worker Lambda
 // timeout (10 min) with a bit of headroom.
-const DEEP_JOB_POLL_TIMEOUT_MS = 11 * 60 * 1000
+const JOB_POLL_TIMEOUT_MS = 11 * 60 * 1000
 
 const EXAMPLE_QUESTIONS = [
   'How many visits per program in March 2025?',
@@ -27,14 +27,15 @@ const ERROR_MESSAGES = {
     "The generated query referenced a table outside this org's analytics dataset.",
   NO_TABLE: 'The generated query did not reference any analytics table.',
   ORG_NOT_PROVISIONED: 'Analytics is not provisioned for this organization yet.',
-  SCOPE_TOO_LARGE:
-    'Too many rows match for deep analysis. Tighten the filters and try again.',
   REPORT_TOO_LARGE:
     'This result is too large to save. Reduce the row or column count and re-run.',
   ATHENA_ERROR: 'Athena rejected the generated query. See SQL below.',
   LLM_ERROR: 'The AI model call failed. Try again.',
-  LLM_BAD_RESPONSE:
-    "The AI model returned an unexpected response. Try rephrasing the question.",
+  WORKER_START_FAILED: 'Could not start the analysis worker. Try again.',
+  AGENT_DID_NOT_CONVERGE:
+    'The agent ran out of steps without reaching a final answer. Try a tighter question.',
+  NO_FINAL_ANSWER:
+    'The agent finished without producing a final answer. Try rephrasing the question.',
 }
 
 function friendlyError(err) {
@@ -44,21 +45,39 @@ function friendlyError(err) {
   return err?.message || 'Something went wrong.'
 }
 
-function isApproximate(explanation) {
-  if (!explanation) return false
-  return /\bapproximate\b/i.test(explanation)
-}
-
-function SqlDetails({ sql, label = 'Show generated SQL' }) {
-  if (!sql) return null
+function TraceList({ trace }) {
+  if (!trace || trace.length === 0) return null
   return (
-    <details className="mb-3 text-sm">
+    <details className="mt-3 text-sm">
       <summary className="cursor-pointer text-gray-600 hover:text-gray-800">
-        {label}
+        Show agent steps ({trace.length})
       </summary>
-      <pre className="mt-2 bg-gray-50 border border-gray-200 rounded p-3 text-xs font-mono overflow-x-auto whitespace-pre-wrap">
-        {sql}
-      </pre>
+      <ol className="mt-2 space-y-1 text-xs font-mono bg-gray-50 border border-gray-200 rounded p-3">
+        {trace.map((t, i) => (
+          <li key={i} className="border-b border-gray-100 last:border-b-0 py-1">
+            <span className="text-gray-500">#{t.step}</span>{' '}
+            <span className="font-semibold text-gray-800">{t.tool}</span>
+            {t.status === 'error' && (
+              <span className="ml-2 text-red-700">error: {t.error}</span>
+            )}
+            {t.assistant_text && (
+              <div className="text-purple-700 italic whitespace-pre-wrap break-words">
+                thinking: {t.assistant_text}
+              </div>
+            )}
+            {t.input_summary && (
+              <div className="text-gray-700 whitespace-pre-wrap break-words">
+                in: {t.input_summary}
+              </div>
+            )}
+            {t.output_summary && (
+              <div className="text-gray-600 whitespace-pre-wrap break-words">
+                out: {t.output_summary}
+              </div>
+            )}
+          </li>
+        ))}
+      </ol>
     </details>
   )
 }
@@ -79,7 +98,7 @@ function SaveReportControl({ orgId, result, onSaved }) {
       await api.saveReport(orgId, {
         name: name.trim(),
         question: result.question,
-        sql: result.sql,
+        sql: '',
         viz_type: result.viz_type,
         mode: result.mode,
         explanation: result.explanation || '',
@@ -141,156 +160,66 @@ function SaveReportControl({ orgId, result, onSaved }) {
   )
 }
 
-function DeepConfirmCard({ pending, onConfirm, onCancel, running }) {
-  // pending: { reason, scope_sql, estimated_rows, question }
-  const estSeconds = Math.max(2, Math.round(pending.estimated_rows * 1.2))
-  return (
-    <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-      <h3 className="font-medium text-amber-900 mb-1">
-        This question needs AI analysis of narrative text
-      </h3>
-      {pending.reason && (
-        <p className="text-sm text-amber-800 mb-2">{pending.reason}</p>
-      )}
-      <p className="text-sm text-amber-800 mb-3">
-        To answer, I&apos;ll read narrative fields from{' '}
-        <strong>~{pending.estimated_rows}</strong> chart rows.
-        Estimated time: <strong>~{estSeconds} seconds</strong>.
-      </p>
-      <SqlDetails sql={pending.scope_sql} label="Show scoping SQL" />
-      <div className="flex items-center gap-2 mt-3">
-        <button
-          onClick={onConfirm}
-          disabled={running}
-          className="text-sm px-3 py-1.5 bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50"
-        >
-          {running ? `Running deep analysis (~${estSeconds}s)…` : 'Run deep analysis'}
-        </button>
-        <button
-          onClick={onCancel}
-          disabled={running}
-          className="text-sm px-3 py-1.5 bg-white border border-gray-300 text-gray-700 rounded hover:bg-gray-50 disabled:opacity-50"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  )
-}
-
 export function NLAnalyticsExplorer({ orgId, onReportSaved }) {
   const [question, setQuestion] = useState('')
-  const [loadingStage, setLoadingStage] = useState(null) // 'generating' | 'running' | null
+  const [running, setRunning] = useState(false)
+  const [progress, setProgress] = useState(null) // { step_count, current_step_label, trace }
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
-  const [pendingDeep, setPendingDeep] = useState(null)
-  const [deepRunning, setDeepRunning] = useState(false)
-  // Live partial state during a running deep-analysis job: the same
-  // shape as `result` but with some extracted_value cells still null.
-  const [deepPartial, setDeepPartial] = useState(null)
-  // Tracks whether the user cancelled the current poll loop. We can't
-  // cancel the server-side worker from the UI, but we can stop showing
-  // updates and free the controls.
   const cancelledRef = useRef(false)
 
-  // If the component unmounts mid-poll, suppress further state updates.
   useEffect(() => () => { cancelledRef.current = true }, [])
 
-  function resetResultStates() {
+  function reset() {
     setResult(null)
     setError(null)
-    setPendingDeep(null)
-    setDeepPartial(null)
+    setProgress(null)
   }
 
   async function handleSubmit() {
     const q = question.trim()
-    if (!q || loadingStage) return
-    resetResultStates()
-    setLoadingStage('generating')
-    try {
-      // Brief micro-delay to give the "Generating query…" label a chance to
-      // render before the next stage; mostly visual.
-      const respPromise = api.nlQuery(orgId, q)
-      setTimeout(() => setLoadingStage(s => s === 'generating' ? 'running' : s), 800)
-      const resp = await respPromise
-      if (resp.mode === 'needs_deep_analysis') {
-        setPendingDeep({
-          question: q,
-          reason: resp.reason,
-          scope_sql: resp.scope_sql,
-          estimated_rows: resp.estimated_rows,
-        })
-      } else {
-        setResult({ ...resp, question: q })
-      }
-    } catch (err) {
-      setError(err)
-    } finally {
-      setLoadingStage(null)
-    }
-  }
-
-  async function handleConfirmDeep() {
-    if (!pendingDeep) return
-    const question = pendingDeep.question
+    if (!q || running) return
+    reset()
     cancelledRef.current = false
-    setDeepRunning(true)
-    setError(null)
-    setDeepPartial(null)
+    setRunning(true)
     try {
-      const start = await api.startDeepJob(
-        orgId,
-        question,
-        pendingDeep.scope_sql,
-      )
-      // Seed the partial view from the kickoff response so the user sees
-      // a placeholder table while the first batch of extractions runs.
-      setDeepPartial({
-        question,
-        sql: start.sql,
-        total_rows: start.total_rows,
-        done_rows: 0,
-        columns: null,
-        rows: null,
-      })
+      const start = await api.nlQuery(orgId, q)
+      const jobId = start.job_id
+      setProgress({ step_count: 0, current_step_label: 'Starting agent…', trace: [] })
 
-      const deadline = Date.now() + DEEP_JOB_POLL_TIMEOUT_MS
+      const deadline = Date.now() + JOB_POLL_TIMEOUT_MS
       while (!cancelledRef.current) {
         if (Date.now() > deadline) {
           throw new ApiError(
-            'Deep analysis took too long. Try again with a tighter scope.',
+            'Agent run took too long. Try a tighter question.',
             { code: 'POLL_TIMEOUT' },
           )
         }
-        await new Promise(r => setTimeout(r, DEEP_JOB_POLL_INTERVAL_MS))
+        await new Promise(r => setTimeout(r, JOB_POLL_INTERVAL_MS))
         if (cancelledRef.current) return
-        const job = await api.getDeepJob(orgId, start.job_id)
+        const job = await api.getDeepJob(orgId, jobId)
         if (cancelledRef.current) return
 
         if (job.status === 'running') {
-          setDeepPartial({
-            question,
-            sql: job.sql,
-            total_rows: job.total_rows,
-            done_rows: job.done_rows,
-            columns: job.columns,
-            rows: job.rows,
+          setProgress({
+            step_count: job.step_count || 0,
+            current_step_label: job.current_step_label || 'Working…',
+            trace: job.trace || [],
           })
           continue
         }
         if (job.status === 'succeeded') {
-          setResult({ ...job, question })
-          setPendingDeep(null)
-          setDeepPartial(null)
+          setResult({ ...job, question: q })
+          setProgress(null)
           return
         }
         if (job.status === 'failed') {
-          throw new ApiError(job.error || 'Deep analysis failed.', {
+          const err = new ApiError(job.error || 'Agent run failed.', {
             code: job.code || 'WORKER_FAILED',
           })
+          err.trace = job.trace || []
+          throw err
         }
-        // Unknown status — bail rather than poll forever.
         throw new ApiError(`Unexpected job status: ${job.status}`, {
           code: 'UNKNOWN_STATUS',
         })
@@ -299,19 +228,17 @@ export function NLAnalyticsExplorer({ orgId, onReportSaved }) {
       if (!cancelledRef.current) setError(err)
     } finally {
       if (!cancelledRef.current) {
-        setDeepRunning(false)
-        setDeepPartial(null)
+        setRunning(false)
       }
     }
   }
 
-  function handleCancelDeep() {
+  function handleCancel() {
     // Stop polling on the client; the server-side worker will finish on
-    // its own (and the job row will TTL out in 24h).
+    // its own and the job row will TTL out.
     cancelledRef.current = true
-    setDeepRunning(false)
-    setDeepPartial(null)
-    setPendingDeep(null)
+    setRunning(false)
+    setProgress(null)
   }
 
   return (
@@ -326,24 +253,22 @@ export function NLAnalyticsExplorer({ orgId, onReportSaved }) {
           rows={3}
           placeholder="e.g. How many failed validations last week by rule?"
           className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          disabled={!!loadingStage || deepRunning}
+          disabled={running}
         />
         <div className="flex items-center gap-3 mt-2">
           <button
             onClick={handleSubmit}
-            disabled={!question.trim() || !!loadingStage || deepRunning}
+            disabled={!question.trim() || running}
             className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700 disabled:opacity-50"
           >
-            {loadingStage === 'generating' && 'Generating query…'}
-            {loadingStage === 'running' && 'Running on Athena…'}
-            {!loadingStage && 'Run'}
+            {running ? 'Running…' : 'Run'}
           </button>
           <div className="flex flex-wrap gap-2">
             {EXAMPLE_QUESTIONS.map(q => (
               <button
                 key={q}
                 onClick={() => setQuestion(q)}
-                disabled={!!loadingStage || deepRunning}
+                disabled={running}
                 className="text-xs px-2 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 disabled:opacity-50"
               >
                 {q}
@@ -356,75 +281,48 @@ export function NLAnalyticsExplorer({ orgId, onReportSaved }) {
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-3">
           <p className="text-sm text-red-800">{friendlyError(error)}</p>
-          {error.sql && <SqlDetails sql={error.sql} label="Show SQL that was rejected" />}
+          {error.sql && (
+            <details className="mt-2 text-sm">
+              <summary className="cursor-pointer text-gray-600 hover:text-gray-800">
+                Show SQL that was rejected
+              </summary>
+              <pre className="mt-2 bg-gray-50 border border-gray-200 rounded p-3 text-xs font-mono overflow-x-auto whitespace-pre-wrap">
+                {error.sql}
+              </pre>
+            </details>
+          )}
+          <TraceList trace={error.trace} />
         </div>
       )}
 
-      {pendingDeep && !result && (
-        <DeepConfirmCard
-          pending={pendingDeep}
-          onConfirm={handleConfirmDeep}
-          onCancel={handleCancelDeep}
-          running={deepRunning}
-        />
-      )}
-
-      {deepPartial && !result && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded p-3">
+      {progress && !result && (
+        <div className="bg-amber-50 border border-amber-200 rounded p-3 space-y-2">
+          <div className="flex items-center gap-3">
             <span className="inline-block text-xs px-2 py-0.5 bg-amber-100 text-amber-800 rounded">
-              Deep analysis — running
+              Agent — running
             </span>
             <span className="text-sm text-amber-900">
-              Extracted {deepPartial.done_rows} of {deepPartial.total_rows} rows…
+              Step {progress.step_count}: {progress.current_step_label}
             </span>
-            <div className="flex-1 h-2 bg-amber-100 rounded overflow-hidden">
-              <div
-                className="h-full bg-amber-500 transition-all"
-                style={{
-                  width: deepPartial.total_rows
-                    ? `${Math.min(100, (deepPartial.done_rows / deepPartial.total_rows) * 100)}%`
-                    : '0%',
-                }}
-              />
-            </div>
             <button
-              onClick={handleCancelDeep}
-              className="text-sm px-3 py-1 bg-white border border-gray-300 text-gray-700 rounded hover:bg-gray-50"
+              onClick={handleCancel}
+              className="ml-auto text-sm px-3 py-1 bg-white border border-gray-300 text-gray-700 rounded hover:bg-gray-50"
             >
               Cancel
             </button>
           </div>
-          {deepPartial.columns && deepPartial.rows && (
-            <>
-              <SqlDetails sql={deepPartial.sql} />
-              <ResultRenderer
-                viz_type="table"
-                columns={deepPartial.columns}
-                rows={deepPartial.rows}
-              />
-            </>
-          )}
+          <TraceList trace={progress.trace} />
         </div>
       )}
 
       {result && (
         <div className="space-y-3">
-          {result.mode === 'deep' && (
-            <span className="inline-block text-xs px-2 py-0.5 bg-amber-100 text-amber-800 rounded">
-              Deep analysis — AI-extracted
-            </span>
-          )}
+          <span className="inline-block text-xs px-2 py-0.5 bg-amber-100 text-amber-800 rounded">
+            Agent answer
+          </span>
           {result.explanation && (
             <p className="text-sm text-gray-700">{result.explanation}</p>
           )}
-          {result.mode === 'sql' && isApproximate(result.explanation) && (
-            <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-sm text-yellow-800">
-              ⚠️ Approximate result — based on free-text keyword matching.
-              Phrasing varies across narratives, so counts may be incomplete.
-            </div>
-          )}
-          <SqlDetails sql={result.sql} />
           <ResultRenderer
             viz_type={result.viz_type}
             columns={result.columns}
@@ -433,6 +331,7 @@ export function NLAnalyticsExplorer({ orgId, onReportSaved }) {
           <div className="text-xs text-gray-500">
             {result.row_count} {result.row_count === 1 ? 'row' : 'rows'}
           </div>
+          <TraceList trace={result.trace} />
           <SaveReportControl
             orgId={orgId}
             result={result}

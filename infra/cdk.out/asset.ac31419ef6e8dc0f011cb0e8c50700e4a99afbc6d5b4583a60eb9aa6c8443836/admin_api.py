@@ -1,0 +1,2779 @@
+"""
+Admin API Lambda - CRUD operations for organization configuration
+
+Handles API Gateway HTTP API v2 events with route-based dispatch.
+Reuses multi_org_config.py for DynamoDB reads where possible.
+Includes LLM-enhanced endpoints for rule field extraction and note enhancement.
+"""
+
+import json
+import os
+import re
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
+import boto3
+from botocore.config import Config as BotoConfig
+from datetime import datetime, timezone
+from decimal import Decimal
+from boto3.dynamodb.conditions import Key
+
+import permissions as perms_module
+import analytics_helpers
+import nl_agent
+import nl_agent_tools
+
+dynamodb = boto3.resource('dynamodb')
+s3_client = boto3.client('s3')
+lambda_client = boto3.client('lambda')
+table = dynamodb.Table('penguin-health-org-config')
+validation_results_table = dynamodb.Table('penguin-health-validation-results')
+analytics_reports_table = dynamodb.Table(
+    os.environ.get('ANALYTICS_REPORTS_TABLE', 'penguin-health-analytics-reports')
+)
+deep_jobs_table = dynamodb.Table(
+    os.environ.get('DEEP_JOBS_TABLE', 'penguin-health-analytics-deep-jobs')
+)
+
+# Bedrock client tuned for tool-use turns: read_timeout above the boto3
+# default of 60s because Claude can take longer to reason over chunky
+# tool_result content (large run_sql output, narrative extraction). The
+# worker Lambda has a 10-min ceiling; this just stops boto3 from giving
+# up prematurely inside a single turn. retries={} disables botocore's
+# legacy retry mode (we drive retries ourselves where wanted).
+_BEDROCK_BOTO_CONFIG = BotoConfig(
+    read_timeout=300,
+    connect_timeout=10,
+    retries={'max_attempts': 1, 'mode': 'standard'},
+)
+bedrock = boto3.client('bedrock-runtime', config=_BEDROCK_BOTO_CONFIG)
+
+RULES_ENGINE_LAMBDA = 'penguin-health-rules-engine-rag'
+DEEP_WORKER_LAMBDA = os.environ.get('DEEP_WORKER_LAMBDA', 'penguin-health-deep-analytics-worker')
+MODEL_ID = 'global.anthropic.claude-sonnet-4-5-20250929-v1:0'
+
+# Deep-job item retention (24h after creation). DynamoDB TTL is best-effort
+# and may run hours late, but is fine here — jobs are display-only.
+DEEP_JOB_TTL_SECONDS = 24 * 60 * 60
+
+
+# ---- Authorization Helpers ----
+
+def get_user_claims(event):
+    """
+    Extract user claims from JWT token in request context.
+
+    The JWT authorizer in API Gateway validates the token and populates
+    claims in event.requestContext.authorizer.jwt.claims.
+    """
+    request_context = event.get('requestContext', {})
+    authorizer = request_context.get('authorizer', {})
+    jwt_claims = authorizer.get('jwt', {}).get('claims', {})
+
+    # cognito:groups comes as a string like "[Admins]" or as a list
+    groups = jwt_claims.get('cognito:groups', [])
+    if isinstance(groups, str):
+        # Parse string format "[Admins, Users]" to list
+        groups = [g.strip() for g in groups.strip('[]').split(',') if g.strip()]
+
+    return {
+        'email': jwt_claims.get('email'),
+        'groups': groups,
+        'organization_id': jwt_claims.get('custom:organization_id'),
+    }
+
+
+def is_super_admin(claims):
+    """Check if user is in Admins group (super admin)."""
+    groups = claims.get('groups', [])
+    return 'Admins' in groups
+
+
+def can_access_org(claims, org_id):
+    """Check if user can access the specified organization."""
+    if is_super_admin(claims):
+        return True
+    return claims.get('organization_id') == org_id
+
+
+def authorize_request(event, org_id=None):
+    """
+    Authorize request based on JWT claims.
+
+    Args:
+        event: API Gateway event with JWT claims in requestContext
+        org_id: Optional org ID to check access for
+
+    Returns:
+        tuple: (claims_dict, error_response) - error_response is None if authorized
+    """
+    claims = get_user_claims(event)
+
+    # Check if we have a valid user identity (email or sub)
+    # The JWT authorizer already validated the token, so if we got here
+    # the request has a valid token. We just need to extract identity.
+    request_context = event.get('requestContext', {})
+    authorizer = request_context.get('authorizer', {})
+    jwt_claims = authorizer.get('jwt', {}).get('claims', {})
+
+    # Use email or sub as identity - sub is always present in valid JWT
+    user_identity = claims.get('email') or jwt_claims.get('sub')
+    if not user_identity:
+        return None, response(401, {'error': 'Unauthorized - no valid user claims'})
+
+    if org_id and not can_access_org(claims, org_id):
+        return None, response(403, {'error': 'Access denied to this organization'})
+
+    return claims, None
+
+
+def lambda_handler(event, context):
+    """Route API Gateway HTTP API v2 events to handlers"""
+    route_key = event.get('routeKey', '')
+    path_params = event.get('pathParameters', {}) or {}
+    body = event.get('body')
+
+    if body:
+        try:
+            body = json.loads(body)
+        except (json.JSONDecodeError, TypeError):
+            return response(400, {'error': 'Invalid JSON body'})
+
+    routes = {
+        'GET /api/organizations': list_organizations,
+        'GET /api/organizations/{orgId}': get_organization,
+        'GET /api/organizations/{orgId}/rules': list_rules,
+        'GET /api/organizations/{orgId}/rules/{ruleId}': get_rule,
+        'PUT /api/organizations/{orgId}/rules/{ruleId}': update_rule,
+        'POST /api/organizations/{orgId}/rules': create_rule,
+        'GET /api/organizations/{orgId}/rules-config': get_rules_config,
+        'PUT /api/organizations/{orgId}/rules-config': update_rules_config,
+        'POST /api/organizations/{orgId}/rules/enhance-fields': enhance_fields,
+        'POST /api/organizations/{orgId}/rules/enhance-note': enhance_note,
+        'POST /api/organizations/{orgId}/analytics/nl-query': nl_query,
+        'POST /api/organizations/{orgId}/analytics/nl-query/deep': nl_query_deep,
+        'GET /api/organizations/{orgId}/analytics/nl-query/deep/{jobId}': get_deep_job,
+        'POST /api/organizations/{orgId}/analytics/reports': save_report,
+        'GET /api/organizations/{orgId}/analytics/reports': list_reports,
+        'GET /api/organizations/{orgId}/analytics/reports/{reportId}': get_report,
+        'DELETE /api/organizations/{orgId}/analytics/reports/{reportId}': delete_report,
+        'GET /api/organizations/{orgId}/validation-runs': list_validation_runs,
+        'POST /api/organizations/{orgId}/validation-runs': trigger_validation_run,
+        'GET /api/organizations/{orgId}/validation-runs/{runId}': get_validation_run,
+        'GET /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}': get_validation_result,
+        'PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/confirm-finding': confirm_finding,
+        'PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-resolved': mark_resolved,
+        'PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-incorrect': mark_incorrect,
+        'GET /api/me/permissions': get_my_permissions,
+        'GET /api/organizations/{orgId}/users': list_org_users,
+        'GET /api/organizations/{orgId}/users/{email}': get_org_user,
+        'PUT /api/organizations/{orgId}/users/{email}': upsert_org_user,
+        'DELETE /api/organizations/{orgId}/users/{email}': delete_org_user,
+    }
+
+    handler = routes.get(route_key)
+    if not handler:
+        return response(404, {'error': f'Route not found: {route_key}'})
+
+    try:
+        return handler(event=event, path_params=path_params, body=body)
+    except Exception as e:
+        print(f"Error handling {route_key}: {str(e)}")
+        return response(500, {'error': str(e)})
+
+
+# ---- Organizations ----
+
+def list_organizations(event, **kwargs):
+    """List all organizations (filtered by user's org for non-super-admins)"""
+    claims, error = authorize_request(event)
+    if error:
+        return error
+
+    result = table.query(
+        IndexName='gsi1',
+        KeyConditionExpression=Key('gsi1pk').eq('ORG_METADATA')
+    )
+
+    orgs = []
+    for item in result.get('Items', []):
+        orgs.append({
+            'organization_id': item.get('organization_id'),
+            'organization_name': item.get('organization_name'),
+            'enabled': item.get('enabled', False),
+            's3_bucket_name': item.get('s3_bucket_name'),
+            'created_at': item.get('created_at'),
+            'updated_at': item.get('updated_at'),
+        })
+
+    # Filter organizations for non-super-admins
+    if not is_super_admin(claims):
+        user_org_id = claims.get('organization_id')
+        orgs = [o for o in orgs if o.get('organization_id') == user_org_id]
+
+    return response(200, {'organizations': orgs})
+
+def get_organization_by_id(org_id) -> tuple[dict | None, str | None]:
+    """Get organization metadata by ID. Returns (org_dict, error_message)."""
+    result = table.get_item(
+        Key={'pk': f'ORG#{org_id}', 'sk': 'METADATA'}
+    )
+
+    if 'Item' not in result:
+        return None, f'Organization not found: {org_id}'
+
+    item = result['Item']
+    return {
+        'organization_id': item.get('organization_id'),
+        'organization_name': item.get('organization_name'),
+        'display_name': item.get('display_name'),
+        'enabled': item.get('enabled', False),
+        's3_bucket_name': item.get('s3_bucket_name'),
+        'created_at': item.get('created_at'),
+        'updated_at': item.get('updated_at'),
+    }, None
+
+
+def get_organization(event, path_params, **kwargs):
+    """Get organization detail"""
+    org_id = path_params.get('orgId')
+
+    # Check authorization for this org
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    result = table.get_item(
+        Key={'pk': f'ORG#{org_id}', 'sk': 'METADATA'}
+    )
+
+    if 'Item' not in result:
+        return response(404, {'error': f'Organization not found: {org_id}'})
+
+    item = result['Item']
+    return response(200, {
+        'organization_id': item.get('organization_id'),
+        'organization_name': item.get('organization_name'),
+        'display_name': item.get('display_name'),
+        'enabled': item.get('enabled', False),
+        's3_bucket_name': item.get('s3_bucket_name'),
+        'created_at': item.get('created_at'),
+        'updated_at': item.get('updated_at'),
+    })
+
+
+# ---- Rules ----
+
+def list_rules(event, path_params, **kwargs):
+    """List all rules for an organization"""
+    org_id = path_params.get('orgId')
+
+    # Check authorization for this org
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    result = table.query(
+        KeyConditionExpression=Key('pk').eq(f'ORG#{org_id}') & Key('sk').begins_with('RULE#')
+    )
+
+    allowed = perms_module.viewable_categories(claims, org_id)
+    rules = []
+    for item in result.get('Items', []):
+        if item.get('category') not in allowed:
+            continue
+        rules.append(format_rule(item))
+
+    return response(200, {'rules': rules, 'count': len(rules)})
+
+
+def get_rule(event, path_params, **kwargs):
+    """Get a single rule"""
+    org_id = path_params.get('orgId')
+    rule_id = path_params.get('ruleId')
+
+    # Check authorization for this org
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    result = table.get_item(
+        Key={'pk': f'ORG#{org_id}', 'sk': f'RULE#{rule_id}'}
+    )
+
+    if 'Item' not in result:
+        return response(404, {'error': f'Rule not found: {rule_id}'})
+
+    item = result['Item']
+    if not perms_module.can_view_category(claims, org_id, item.get('category')):
+        return response(403, {'error': 'Access denied to this rule'})
+
+    return response(200, format_rule(item))
+
+
+def create_rule(event, path_params, body, **kwargs):
+    """Create a new rule"""
+    org_id = path_params.get('orgId')
+
+    # Check authorization for this org
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    if not perms_module.is_org_admin(claims, org_id):
+        return response(403, {'error': 'Org admin required to manage rules'})
+
+    if not body:
+        return response(400, {'error': 'Request body required'})
+
+    # Validate required fields (new flat schema - no llm_config)
+    # For deterministic rules, rule_text is optional
+    rule_type = body.get('type', 'llm')
+    if rule_type == 'deterministic':
+        required = ['id', 'name', 'category']
+    else:
+        required = ['id', 'name', 'category', 'rule_text']
+    missing = [f for f in required if f not in body]
+    if missing:
+        return response(400, {'error': f'Missing required fields: {missing}'})
+
+    if body['category'] not in perms_module.CATEGORIES:
+        return response(400, {
+            'error': f'Invalid category. Must be one of: {perms_module.CATEGORIES}'
+        })
+
+    rule_id = body['id']
+
+    # Check if rule already exists
+    existing = table.get_item(
+        Key={'pk': f'ORG#{org_id}', 'sk': f'RULE#{rule_id}'}
+    )
+    if 'Item' in existing:
+        return response(409, {'error': f'Rule {rule_id} already exists. Use PUT to update.'})
+
+    version = body.get('version', '1.0.0')
+    now = datetime.utcnow().isoformat() + 'Z'
+
+    # New flat schema - no llm_config, no GSI2
+    item = {
+        'pk': f'ORG#{org_id}',
+        'sk': f'RULE#{rule_id}',
+        'gsi1pk': 'RULE',
+        'gsi1sk': f'ORG#{org_id}#RULE#{rule_id}',
+        'rule_id': rule_id,
+        'name': body['name'],
+        'category': body['category'],
+        'description': body.get('description', ''),
+        'enabled': body.get('enabled', True),
+        'type': rule_type,
+        'version': version,
+        'rule_text': body.get('rule_text', ''),
+        'fields_to_extract': body.get('fields_to_extract', []),
+        'notes': body.get('notes', []),
+        # Deterministic rule fields
+        'conditions': body.get('conditions', []),
+        'conditionals': body.get('conditionals', []),
+        'logic': body.get('logic', 'all'),
+        'created_at': now,
+        'updated_at': now,
+    }
+
+    table.put_item(Item=item)
+    print(f"Created rule {rule_id} for {org_id}")
+
+    return response(201, format_rule(item))
+
+
+def update_rule(event, path_params, body, **kwargs):
+    """Update an existing rule"""
+    org_id = path_params.get('orgId')
+    rule_id = path_params.get('ruleId')
+
+    # Check authorization for this org
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    if not perms_module.is_org_admin(claims, org_id):
+        return response(403, {'error': 'Org admin required to manage rules'})
+
+    if not body:
+        return response(400, {'error': 'Request body required'})
+
+    if 'category' in body and body['category'] not in perms_module.CATEGORIES:
+        return response(400, {
+            'error': f'Invalid category. Must be one of: {perms_module.CATEGORIES}'
+        })
+
+    # Get existing rule
+    existing_result = table.get_item(
+        Key={'pk': f'ORG#{org_id}', 'sk': f'RULE#{rule_id}'}
+    )
+
+    if 'Item' not in existing_result:
+        return response(404, {'error': f'Rule not found: {rule_id}'})
+
+    existing = existing_result['Item']
+    version = body.get('version', existing.get('version', '1.0.0'))
+
+    # New flat schema - no llm_config, no GSI2
+    item = {
+        'pk': f'ORG#{org_id}',
+        'sk': f'RULE#{rule_id}',
+        'gsi1pk': 'RULE',
+        'gsi1sk': f'ORG#{org_id}#RULE#{rule_id}',
+        'rule_id': rule_id,
+        'name': body.get('name', existing.get('name')),
+        'category': body.get('category', existing.get('category')),
+        'description': body.get('description', existing.get('description', '')),
+        'enabled': body.get('enabled', existing.get('enabled', True)),
+        'type': body.get('type', existing.get('type', 'llm')),
+        'version': version,
+        'rule_text': body.get('rule_text', existing.get('rule_text', '')),
+        'fields_to_extract': body.get('fields_to_extract', existing.get('fields_to_extract', [])),
+        'notes': body.get('notes', existing.get('notes', [])),
+        # Deterministic rule fields
+        'conditions': body.get('conditions', existing.get('conditions', [])),
+        'conditionals': body.get('conditionals', existing.get('conditionals', [])),
+        'logic': body.get('logic', existing.get('logic', 'all')),
+        'fail_message': body.get('fail_message', existing.get('fail_message', '')),
+        'created_at': existing.get('created_at', datetime.utcnow().isoformat() + 'Z'),
+        'updated_at': datetime.utcnow().isoformat() + 'Z',
+    }
+
+    table.put_item(Item=item)
+    print(f"Updated rule {rule_id} for {org_id}")
+
+    return response(200, format_rule(item))
+
+
+# ---- Rules Config (field_mappings) ----
+
+def get_rules_config(event, path_params, **kwargs):
+    """Get rules config (field_mappings) for an organization"""
+    org_id = path_params.get('orgId')
+
+    # Check authorization for this org
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    result = table.get_item(
+        Key={'pk': f'ORG#{org_id}', 'sk': 'RULES_CONFIG'}
+    )
+
+    if 'Item' not in result:
+        return response(200, {
+            'organization_id': org_id,
+            'field_mappings': {},
+            'csv_column_mappings': {},
+        })
+
+    item = result['Item']
+    return response(200, {
+        'organization_id': item.get('organization_id'),
+        'field_mappings': item.get('field_mappings', {}),
+        'csv_column_mappings': item.get('csv_column_mappings', {}),
+        'version': item.get('version'),
+        'updated_at': item.get('updated_at'),
+    })
+
+
+def update_rules_config(event, path_params, body, **kwargs):
+    """Update rules config (field_mappings and csv_column_mappings) for an organization"""
+    org_id = path_params.get('orgId')
+
+    # Check authorization for this org
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    if not body:
+        return response(400, {'error': 'Request body required'})
+
+    # At least one of field_mappings or csv_column_mappings should be present
+    if 'field_mappings' not in body and 'csv_column_mappings' not in body:
+        return response(400, {'error': 'Request body must include field_mappings or csv_column_mappings'})
+
+    # Get existing config to preserve fields not being updated
+    existing_result = table.get_item(
+        Key={'pk': f'ORG#{org_id}', 'sk': 'RULES_CONFIG'}
+    )
+    existing = existing_result.get('Item', {})
+
+    item = {
+        'pk': f'ORG#{org_id}',
+        'sk': 'RULES_CONFIG',
+        'gsi1pk': 'RULES_CONFIG',
+        'gsi1sk': f'ORG#{org_id}',
+        'organization_id': org_id,
+        'field_mappings': body.get('field_mappings', existing.get('field_mappings', {})),
+        'csv_column_mappings': body.get('csv_column_mappings', existing.get('csv_column_mappings', {})),
+        'version': body.get('version', '1.0.0'),
+        'updated_at': datetime.utcnow().isoformat() + 'Z',
+    }
+
+    table.put_item(Item=item)
+    print(f"Updated rules config for {org_id}")
+
+    return response(200, {
+        'organization_id': org_id,
+        'field_mappings': item['field_mappings'],
+        'csv_column_mappings': item['csv_column_mappings'],
+        'version': item['version'],
+        'updated_at': item['updated_at'],
+    })
+
+
+# ---- Validation Results ----
+
+DETAILS_DEFAULT_LIMIT = 50
+DETAILS_MAX_LIMIT = 200
+DETAILS_FETCH_WORKERS = 10
+
+# Fields the analytics pages actually read off each rule and field_values blob.
+# Anything else (LLM reasoning, evidence, full clinical fields) is dropped from
+# the bulk response to keep us under API Gateway's 6 MB ceiling. The single-run
+# endpoint still returns the full payload for the drill-down detail page.
+SLIM_RULE_FIELDS = ('rule_id', 'rule_name', 'category', 'status')
+SLIM_FIELD_VALUE_KEYS = ('date', 'employee_name', 'program')
+
+
+def _fetch_run_documents(run_id, org_id, claims, allowed, slim=False):
+    """Fetch + RBAC-filter the documents for a single validation run.
+
+    Mirrors the per-document filtering in get_validation_run so the bulk
+    response stays consistent with the single-run endpoint. When slim=True,
+    projects to the subset of fields used by analytics pages.
+    """
+    result = validation_results_table.query(
+        IndexName='gsi2',
+        KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}'),
+    )
+    documents = []
+    for item in result.get('Items', []):
+        if item.get('organization_id') != org_id and not is_super_admin(claims):
+            continue
+        rules = [r for r in (item.get('rules') or []) if r.get('category') in allowed]
+        if not rules:
+            continue
+        if slim:
+            slim_rules = [{k: r.get(k) for k in SLIM_RULE_FIELDS} for r in rules]
+            fv = item.get('field_values') or {}
+            slim_fv = {k: fv.get(k) for k in SLIM_FIELD_VALUE_KEYS if k in fv}
+            documents.append({
+                'document_id': item.get('document_id'),
+                'validation_timestamp': item.get('validation_timestamp'),
+                'summary': convert_decimals(item.get('summary', {})),
+                'rules': convert_decimals(slim_rules),
+                'field_values': convert_decimals(slim_fv),
+            })
+        else:
+            documents.append({
+                'document_id': item.get('document_id'),
+                'validation_timestamp': item.get('validation_timestamp'),
+                'filename': item.get('filename'),
+                'summary': convert_decimals(item.get('summary', {})),
+                'rules': convert_decimals(rules),
+                'field_values': convert_decimals(item.get('field_values', {})),
+            })
+    return documents
+
+
+def list_validation_runs(event, path_params, **kwargs):
+    """
+    List validation runs for an organization.
+
+    Queries validation run summaries stored with pk=ORG#{org_id}, sk=RUN#{run_id}.
+    Returns runs sorted by timestamp descending (most recent first).
+
+    Optional query params:
+      - since, until: ISO-8601 timestamps; filter runs by their timestamp field.
+        ISO-8601 sorts lexicographically so string comparison is correct.
+      - include=details: embed each run's documents inline (replaces N+1
+        get_validation_run calls from the staff-performance page).
+      - slim=true: with include=details, project documents/rules/field_values
+        down to the fields the analytics pages actually consume — required to
+        stay under API Gateway's 6 MB response ceiling on real-sized runs.
+      - limit: cap the number of runs returned (default 50 when include=details,
+        unbounded otherwise; hard max 200 with details).
+    """
+    org_id = path_params.get('orgId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    qs = event.get('queryStringParameters') or {}
+    since = qs.get('since')
+    until = qs.get('until')
+    include_details = qs.get('include') == 'details'
+    slim = qs.get('slim', '').lower() == 'true'
+    try:
+        limit = int(qs['limit']) if 'limit' in qs else None
+    except (TypeError, ValueError):
+        return response(400, {'error': 'limit must be an integer'})
+
+    result = validation_results_table.query(
+        KeyConditionExpression=Key('pk').eq(f'ORG#{org_id}') & Key('sk').begins_with('RUN#'),
+        ScanIndexForward=False,  # Descending order (newest first)
+    )
+
+    allowed = perms_module.viewable_categories(claims, org_id)
+    runs = []
+    for item in result.get('Items', []):
+        ts = item.get('timestamp')
+        if since and (not ts or ts < since):
+            continue
+        if until and (not ts or ts > until):
+            continue
+        run_categories = item.get('categories') or []
+        # Legacy runs without a categories field are visible to org-admins only.
+        if run_categories:
+            if not (set(run_categories) & allowed):
+                continue
+        else:
+            if not perms_module.is_org_admin(claims, org_id):
+                continue
+        runs.append({
+            'validation_run_id': item.get('validation_run_id'),
+            'timestamp': ts,
+            'total_documents': convert_decimals(item.get('total_documents', 0)),
+            'passed': convert_decimals(item.get('passed', 0)),
+            'failed': convert_decimals(item.get('failed', 0)),
+            'skipped': convert_decimals(item.get('skipped', 0)),
+            'status': item.get('status', 'completed'),
+            'categories': run_categories,
+            'dates': item.get('dates') or [],
+        })
+
+    truncated = False
+    if include_details:
+        effective_limit = min(limit or DETAILS_DEFAULT_LIMIT, DETAILS_MAX_LIMIT)
+        if len(runs) > effective_limit:
+            runs = runs[:effective_limit]
+            truncated = True
+        # Fan out the per-run GSI2 queries in parallel — sequential 50× would
+        # blow past API Gateway's 30s timeout on a cold Lambda.
+        with ThreadPoolExecutor(max_workers=DETAILS_FETCH_WORKERS) as pool:
+            doc_lists = list(pool.map(
+                lambda r: _fetch_run_documents(r['validation_run_id'], org_id, claims, allowed, slim=slim),
+                runs,
+            ))
+        for run, docs in zip(runs, doc_lists):
+            run['documents'] = docs
+            run['total_count'] = len(docs)
+    elif limit is not None and len(runs) > limit:
+        runs = runs[:limit]
+        truncated = True
+
+    return response(200, {'runs': runs, 'count': len(runs), 'truncated': truncated})
+
+
+def get_validation_run(event, path_params, **kwargs):
+    """
+    Get all validation results for a specific run.
+
+    Queries GSI2 with gsi2pk=RUN#{run_id} to get all documents validated in the run.
+    """
+    org_id = path_params.get('orgId')
+    run_id = path_params.get('runId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    result = validation_results_table.query(
+        IndexName='gsi2',
+        KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}'),
+    )
+
+    allowed = perms_module.viewable_categories(claims, org_id)
+    documents = []
+    for item in result.get('Items', []):
+        # Filter by organization_id for RBAC (non-super-admins)
+        if item.get('organization_id') != org_id and not is_super_admin(claims):
+            continue
+
+        rules = [r for r in (item.get('rules') or []) if r.get('category') in allowed]
+        if not rules:
+            continue
+        documents.append({
+            'document_id': item.get('document_id'),
+            'validation_timestamp': item.get('validation_timestamp'),
+            'filename': item.get('filename'),
+            'summary': convert_decimals(item.get('summary', {})),
+            'rules': convert_decimals(rules),
+            'field_values': convert_decimals(item.get('field_values', {})),
+        })
+
+    return response(200, {
+        'validation_run_id': run_id,
+        'organization_id': org_id,
+        'documents': documents,
+        'total_count': len(documents),
+    })
+
+
+def get_validation_result(event, path_params, **kwargs):
+    """
+    Get detailed validation result for a single document.
+
+    Queries GSI2 with both partition and sort key to get a specific document.
+    """
+    org_id = path_params.get('orgId')
+    run_id = path_params.get('runId')
+    doc_id = path_params.get('docId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    result = validation_results_table.query(
+        IndexName='gsi2',
+        KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}') & Key('gsi2sk').eq(f'DOC#{doc_id}'),
+    )
+
+    if not result.get('Items'):
+        return response(404, {'error': f'Validation result not found for document {doc_id} in run {run_id}'})
+
+    item = result['Items'][0]
+
+    # RBAC check
+    if item.get('organization_id') != org_id and not is_super_admin(claims):
+        return response(403, {'error': 'Access denied to this validation result'})
+
+    allowed = perms_module.viewable_categories(claims, org_id)
+    rules = [r for r in (item.get('rules') or []) if r.get('category') in allowed]
+    if not rules:
+        return response(403, {'error': 'No viewable rules for this document'})
+
+    return response(200, {
+        'document_id': item.get('document_id'),
+        'validation_run_id': item.get('validation_run_id'),
+        'organization_id': item.get('organization_id'),
+        'validation_timestamp': item.get('validation_timestamp'),
+        'filename': item.get('filename'),
+        'summary': convert_decimals(item.get('summary', {})),
+        'rules': convert_decimals(rules),
+        'field_values': convert_decimals(item.get('field_values', {})),
+    })
+
+
+def confirm_finding(event, path_params, body, **kwargs):
+    """
+    Confirm a finding for a specific rule on a document validation.
+
+    Expects body with rule_id to identify which rule's finding is being confirmed.
+    Updates the specific rule within the document's rules array to set finding_confirmed=true.
+    """
+    org_id = path_params.get('orgId')
+    run_id = path_params.get('runId')
+    doc_id = path_params.get('docId')
+
+    if not body or 'rule_id' not in body:
+        return response(400, {'error': 'Request body must include rule_id'})
+
+    rule_id = body['rule_id']
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    # First, query using GSI2 to get the item's primary keys
+    result = validation_results_table.query(
+        IndexName='gsi2',
+        KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}') & Key('gsi2sk').eq(f'DOC#{doc_id}'),
+    )
+
+    if not result.get('Items'):
+        return response(404, {'error': f'Validation result not found for document {doc_id} in run {run_id}'})
+
+    item = result['Items'][0]
+
+    # RBAC check
+    if item.get('organization_id') != org_id and not is_super_admin(claims):
+        return response(403, {'error': 'Access denied to this validation result'})
+
+    # Get the primary key and sort key from the item
+    pk = item.get('pk')
+    sk = item.get('sk')
+
+    if not pk or not sk:
+        return response(500, {'error': 'Item missing primary key attributes'})
+
+    # Find the rule index in the rules array
+    rules = item.get('rules', [])
+    rule_index = None
+    rule_category = None
+    for idx, rule in enumerate(rules):
+        if rule.get('rule_id') == rule_id:
+            rule_index = idx
+            rule_category = rule.get('category')
+            break
+
+    if rule_index is None:
+        return response(404, {'error': f'Rule {rule_id} not found on document {doc_id}'})
+
+    if not perms_module.can_view_category(claims, org_id, rule_category):
+        return response(403, {'error': 'Access denied to this rule category'})
+
+    # Update the specific rule in the rules array to set finding_confirmed=true
+    try:
+        timestamp = datetime.utcnow().isoformat() + 'Z'
+        user = claims.get('email') or 'unknown'
+
+        validation_results_table.update_item(
+            Key={'pk': pk, 'sk': sk},
+            UpdateExpression=f'SET #rules[{rule_index}].finding_confirmed = :val, #rules[{rule_index}].finding_confirmed_at = :ts, #rules[{rule_index}].finding_confirmed_by = :user',
+            ExpressionAttributeNames={
+                '#rules': 'rules',
+            },
+            ExpressionAttributeValues={
+                ':val': True,
+                ':ts': timestamp,
+                ':user': user,
+            },
+        )
+        print(f"Confirmed finding for rule {rule_id} on document {doc_id} in run {run_id}")
+
+        return response(200, {
+            'message': 'Finding confirmed successfully',
+            'document_id': doc_id,
+            'validation_run_id': run_id,
+            'rule_id': rule_id,
+            'finding_confirmed': True,
+            'finding_confirmed_at': timestamp,
+            'finding_confirmed_by': user,
+        })
+
+    except Exception as e:
+        print(f"Error confirming finding: {e}")
+        return response(500, {'error': str(e)})
+
+
+def mark_resolved(event, path_params, body, **kwargs):
+    """
+    Mark a rule finding as resolved/fixed.
+
+    Expects body with rule_id to identify which rule is being resolved.
+    Sets fixed=true, fixed_at, fixed_by and removes finding_confirmed attributes.
+    """
+    org_id = path_params.get('orgId')
+    run_id = path_params.get('runId')
+    doc_id = path_params.get('docId')
+
+    if not body or 'rule_id' not in body:
+        return response(400, {'error': 'Request body must include rule_id'})
+
+    rule_id = body['rule_id']
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    # First, query using GSI2 to get the item's primary keys
+    result = validation_results_table.query(
+        IndexName='gsi2',
+        KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}') & Key('gsi2sk').eq(f'DOC#{doc_id}'),
+    )
+
+    if not result.get('Items'):
+        return response(404, {'error': f'Validation result not found for document {doc_id} in run {run_id}'})
+
+    item = result['Items'][0]
+
+    # RBAC check
+    if item.get('organization_id') != org_id and not is_super_admin(claims):
+        return response(403, {'error': 'Access denied to this validation result'})
+
+    # Get the primary key and sort key from the item
+    pk = item.get('pk')
+    sk = item.get('sk')
+
+    if not pk or not sk:
+        return response(500, {'error': 'Item missing primary key attributes'})
+
+    # Find the rule index in the rules array
+    rules = item.get('rules', [])
+    rule_index = None
+    rule_category = None
+    for idx, rule in enumerate(rules):
+        if rule.get('rule_id') == rule_id:
+            rule_index = idx
+            rule_category = rule.get('category')
+            break
+
+    if rule_index is None:
+        return response(404, {'error': f'Rule {rule_id} not found on document {doc_id}'})
+
+    if not perms_module.can_view_category(claims, org_id, rule_category):
+        return response(403, {'error': 'Access denied to this rule category'})
+
+    # Update the specific rule: set fixed=true and remove finding_confirmed
+    try:
+        timestamp = datetime.utcnow().isoformat() + 'Z'
+        user = claims.get('email') or 'unknown'
+
+        validation_results_table.update_item(
+            Key={'pk': pk, 'sk': sk},
+            UpdateExpression=f'SET #rules[{rule_index}].#fixed = :val, #rules[{rule_index}].fixed_at = :ts, #rules[{rule_index}].fixed_by = :user REMOVE #rules[{rule_index}].finding_confirmed, #rules[{rule_index}].finding_confirmed_at, #rules[{rule_index}].finding_confirmed_by',
+            ExpressionAttributeNames={
+                '#rules': 'rules',
+                '#fixed': 'fixed',
+            },
+            ExpressionAttributeValues={
+                ':val': True,
+                ':ts': timestamp,
+                ':user': user,
+            },
+        )
+        print(f"Marked rule {rule_id} as resolved on document {doc_id} in run {run_id}")
+
+        return response(200, {
+            'message': 'Rule marked as resolved successfully',
+            'document_id': doc_id,
+            'validation_run_id': run_id,
+            'rule_id': rule_id,
+            'fixed': True,
+            'fixed_at': timestamp,
+            'fixed_by': user,
+        })
+
+    except Exception as e:
+        print(f"Error marking rule as resolved: {e}")
+        return response(500, {'error': str(e)})
+
+
+def mark_incorrect(event, path_params, body, **kwargs):
+    """
+    Mark a rule finding as incorrect (false positive).
+
+    Sets feedback_given=true and changes status to PASS.
+    Expects body with rule_id.
+    """
+    org_id = path_params.get('orgId')
+    run_id = path_params.get('runId')
+    doc_id = path_params.get('docId')
+
+    if not body or 'rule_id' not in body:
+        return response(400, {'error': 'Request body must include rule_id'})
+
+    rule_id = body['rule_id']
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    # Query using GSI2 to get the item's primary keys
+    result = validation_results_table.query(
+        IndexName='gsi2',
+        KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}') & Key('gsi2sk').eq(f'DOC#{doc_id}'),
+    )
+
+    if not result.get('Items'):
+        return response(404, {'error': f'Validation result not found for document {doc_id} in run {run_id}'})
+
+    item = result['Items'][0]
+
+    # RBAC check
+    if item.get('organization_id') != org_id and not is_super_admin(claims):
+        return response(403, {'error': 'Access denied to this validation result'})
+
+    pk = item.get('pk')
+    sk = item.get('sk')
+
+    if not pk or not sk:
+        return response(500, {'error': 'Item missing primary key attributes'})
+
+    # Find the rule index
+    rules = item.get('rules', [])
+    rule_index = None
+    rule_category = None
+    for idx, rule in enumerate(rules):
+        if rule.get('rule_id') == rule_id:
+            rule_index = idx
+            rule_category = rule.get('category')
+            break
+
+    if rule_index is None:
+        return response(404, {'error': f'Rule {rule_id} not found on document {doc_id}'})
+
+    if not perms_module.can_view_category(claims, org_id, rule_category):
+        return response(403, {'error': 'Access denied to this rule category'})
+
+    # Update: set feedback_given=true, status=PASS
+    try:
+        timestamp = datetime.utcnow().isoformat() + 'Z'
+        user = claims.get('email') or 'unknown'
+
+        validation_results_table.update_item(
+            Key={'pk': pk, 'sk': sk},
+            UpdateExpression=f'SET #rules[{rule_index}].feedback_given = :fg, #rules[{rule_index}].feedback_given_at = :ts, #rules[{rule_index}].feedback_given_by = :user, #rules[{rule_index}].#status = :pass',
+            ExpressionAttributeNames={
+                '#rules': 'rules',
+                '#status': 'status',
+            },
+            ExpressionAttributeValues={
+                ':fg': True,
+                ':ts': timestamp,
+                ':user': user,
+                ':pass': 'PASS',
+            },
+        )
+        print(f"Marked rule {rule_id} as incorrect on document {doc_id} in run {run_id}")
+
+        return response(200, {
+            'message': 'Rule marked as incorrect successfully',
+            'document_id': doc_id,
+            'validation_run_id': run_id,
+            'rule_id': rule_id,
+            'feedback_given': True,
+            'feedback_given_at': timestamp,
+            'status': 'PASS',
+        })
+
+    except Exception as e:
+        print(f"Error marking rule as incorrect: {e}")
+        return response(500, {'error': str(e)})
+
+
+CUTOVER_DATE = '2026-05-01'
+DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+
+def _parse_iso_date(s):
+    """Parse YYYY-MM-DD; return a date or None if malformed."""
+    if not isinstance(s, str) or not DATE_RE.match(s):
+        return None
+    try:
+        return datetime.strptime(s, '%Y-%m-%d').date()
+    except ValueError:
+        return None
+
+
+def _validate_dates(requested):
+    """
+    Normalize and validate the `dates` body field.
+
+    Returns (dates_list, error_response). On success, error_response is None.
+    """
+    today = datetime.utcnow().date()
+    cutover = datetime.strptime(CUTOVER_DATE, '%Y-%m-%d').date()
+
+    if requested is None:
+        # Default to today (UTC) for callers that don't specify.
+        return [today.isoformat()], None
+
+    if not isinstance(requested, list) or not requested:
+        return None, response(400, {'error': 'dates must be a non-empty list'})
+
+    parsed = []
+    for s in requested:
+        d = _parse_iso_date(s)
+        if d is None:
+            return None, response(400, {'error': f'Malformed date: {s!r} (expected YYYY-MM-DD)'})
+        if d < cutover:
+            return None, response(400, {'error': f'Date {s} is before cutover {CUTOVER_DATE}'})
+        if d > today:
+            return None, response(400, {'error': f'Date {s} is in the future'})
+        parsed.append(d.isoformat())
+
+    # Deduplicate while preserving order (Python dict preserves insertion order).
+    return list(dict.fromkeys(parsed)), None
+
+
+def trigger_validation_run(event, path_params, body, **kwargs):
+    """
+    Trigger a validation run for an organization.
+
+    Body may include:
+      - `categories: [...]` to limit the run to specific rule categories.
+         Caller must have `run` permission on every requested category.
+         Defaults to every category the caller can run.
+      - `dates: ["YYYY-MM-DD", ...]` to limit the run to specific ingest
+         dates. Each date must be in [2026-05-01, today_utc].
+         Defaults to [today_utc].
+    """
+    org_id = path_params.get('orgId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    runnable = perms_module.runnable_categories(claims, org_id)
+    if not runnable:
+        return response(403, {'error': 'No runnable rule categories for this user'})
+
+    requested = (body or {}).get('categories')
+    if requested is None:
+        run_categories = sorted(runnable)
+    else:
+        if not isinstance(requested, list) or not requested:
+            return response(400, {'error': 'categories must be a non-empty list'})
+        unknown = [c for c in requested if c not in perms_module.CATEGORIES]
+        if unknown:
+            return response(400, {'error': f'Unknown categories: {unknown}'})
+        denied = [c for c in requested if c not in runnable]
+        if denied:
+            return response(403, {'error': f'Cannot run categories: {denied}'})
+        run_categories = list(requested)
+
+    dates, dates_err = _validate_dates((body or {}).get('dates'))
+    if dates_err:
+        return dates_err
+
+    # Verify organization exists
+    org, err = get_organization_by_id(org_id)
+    if err:
+        return response(404, {'error': err})
+
+    try:
+        # Generate validation_run_id upfront so retries use the same ID
+        from datetime import datetime, timezone
+        validation_run_id = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
+
+        # Invoke rules engine Lambda asynchronously
+        lambda_response = lambda_client.invoke(
+            FunctionName=RULES_ENGINE_LAMBDA,
+            InvocationType='Event',  # Async invocation
+            Payload=json.dumps({
+                'organization_id': org_id,
+                'validation_run_id': validation_run_id,
+                'categories': run_categories,
+                'dates': dates,
+            }),
+        )
+
+        status_code = lambda_response.get('StatusCode', 0)
+
+        if status_code == 202:  # Accepted for async invocation
+            print(f"Triggered validation run {validation_run_id} for {org_id} "
+                  f"categories={run_categories} dates={dates}")
+            return response(202, {
+                'message': 'Validation run triggered successfully',
+                'organization_id': org_id,
+                'validation_run_id': validation_run_id,
+                'categories': run_categories,
+                'dates': dates,
+                'status': 'processing',
+            })
+        else:
+            print(f"Unexpected status code from Lambda: {status_code}")
+            return response(500, {'error': f'Lambda invocation returned status {status_code}'})
+
+    except lambda_client.exceptions.ResourceNotFoundException:
+        return response(500, {'error': f'Rules engine Lambda not found: {RULES_ENGINE_LAMBDA}'})
+    except Exception as e:
+        print(f"Error triggering validation: {e}")
+        return response(500, {'error': str(e)})
+
+
+# ---- LLM Enhancement ----
+
+def _extract_complete_json(text: str) -> Optional[str]:
+    """
+    Extract a complete JSON object by properly matching braces.
+    Handles nested objects and strings containing braces.
+    """
+    start = text.find('{')
+    if start == -1:
+        return None
+
+    brace_count = 0
+    in_string = False
+    escape_next = False
+
+    for i in range(start, len(text)):
+        char = text[i]
+
+        if escape_next:
+            escape_next = False
+            continue
+
+        if char == '\\':
+            escape_next = True
+            continue
+
+        if char == '"':
+            in_string = not in_string
+            continue
+
+        if not in_string:
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    return text[start:i+1]
+
+    return None
+
+
+def extract_json_from_claude_response(response_body: dict) -> Optional[dict]:
+    """Extract JSON from a Bedrock Claude model response."""
+    content_list = response_body.get("content", [])
+    if not content_list:
+        print("No 'content' field found or it's empty in the model response.")
+        return None
+
+    all_text = " ".join(
+        block.get("text", "") for block in content_list if block.get("type") == "text"
+    )
+
+    # Try ```json``` code block first
+    match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", all_text)
+    if not match:
+        print("No JSON code block found. Trying raw extraction...")
+        json_str = _extract_complete_json(all_text)
+        if not json_str:
+            print("No valid JSON object found.")
+            return None
+
+        try:
+            parsed = json.loads(json_str)
+            print(f"Extracted JSON data: {json.dumps(parsed, indent=2)}")
+            return parsed
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON: {e}")
+            print(f"Raw JSON string: {json_str}")
+        return None
+
+    json_str = match.group(1)
+    try:
+        parsed = json.loads(json_str)
+        print(f"Extracted JSON data: {json.dumps(parsed, indent=2)}")
+        return parsed
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON: {e}")
+        print(f"Raw JSON string: {json_str}")
+        return None
+
+
+def invoke_claude_model(
+    inference_profile_id: str,
+    body: dict,
+    return_json_only: bool,
+    bedrock_client=None,
+    retries: int = 1,
+    raise_on_error: bool = True,
+    region_name: str = 'us-east-1',
+):
+    """Invoke Claude model via Bedrock with optional JSON extraction and retry logic.
+
+    The body dict is forwarded to Bedrock as-is, so callers can include tool-use
+    fields (`tools`, `tool_choice`) and multi-turn `messages` arrays. Tool-use
+    loops live in nl_agent.run_agent_loop; this function is single-turn.
+    """
+    if bedrock_client is None:
+        bedrock_client = boto3.client(
+            'bedrock-runtime',
+            region_name=region_name,
+            config=_BEDROCK_BOTO_CONFIG,
+        )
+
+    model_response = bedrock_client.invoke_model(
+        modelId=inference_profile_id,
+        body=json.dumps(body),
+        contentType='application/json',
+        accept='application/json',
+    )
+
+    response_body = json.loads(model_response['body'].read())
+
+    if not return_json_only:
+        return response_body
+
+    extracted_json = extract_json_from_claude_response(response_body)
+
+    if extracted_json is None:
+        if retries > 0:
+            return invoke_claude_model(
+                inference_profile_id=inference_profile_id,
+                body=body,
+                return_json_only=return_json_only,
+                bedrock_client=bedrock_client,
+                retries=retries - 1,
+                raise_on_error=raise_on_error,
+                region_name=region_name,
+            )
+        else:
+            if raise_on_error:
+                raise ValueError("No JSON found in Claude response")
+            return None
+
+    return extracted_json
+
+
+def enhance_fields(event, path_params, body, **kwargs):
+    """Use LLM to extract fields_to_extract from rule_text"""
+    org_id = path_params.get('orgId')
+
+    # Check authorization for this org
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    if not body or 'rule_text' not in body:
+        return response(400, {'error': 'Request body must include rule_text'})
+
+    rule_text = body['rule_text']
+
+    system_prompt = """You are an expert at analyzing medical chart validation rules.
+    Given a rule description, identify the key fields that need to be extracted from chart documents to evaluate this rule.
+
+    Return a JSON array of field objects. Each object must have:
+    - "name": A snake_case identifier for the field (e.g., "recipient", "service_location")
+    - "type": The data type - one of "string", "number", "boolean", "datetime"
+    - "description": A brief description of what this field represents in the chart
+
+    Only include fields that are explicitly or implicitly referenced in the rule.
+    Return ONLY the JSON array, no other text.
+
+    Here are examples:
+
+    Example 1:
+    Rule text: Determine if the 'Recipient' field is consistent with the 'Service Location' and the actual method of contact documented in the text.
+
+    Output:
+    [
+    {
+        "name": "recipient",
+        "type": "string",
+        "description": "The individual or entity receiving the service or communication"
+    },
+    {
+        "name": "service_location",
+        "type": "string",
+        "description": "The documented location where the service took place"
+    },
+    {
+        "name": "method_of_contact",
+        "type": "string",
+        "description": "The communication method used such as in-person, phone, or video"
+    }
+    ]
+
+    Example 2:
+    Rule text: Identify the modality (Physical In-Person, Audio/Phone, or Video/Telehealth).
+
+    Output:
+    [
+    {
+        "name": "modality",
+        "type": "string",
+        "description": "The communication modality: In-Person, Phone, or Video"
+    },
+    {
+        "name": "platform_or_phone",
+        "type": "string",
+        "description": "The video platform name or phone number, depending on modality"
+    }
+    ]
+    """
+
+    user_prompt = f"""Analyze this validation rule and identify the fields to extract:
+
+Rule text: {rule_text}
+
+Return a JSON array of fields to extract."""
+
+    try:
+        resp = bedrock.invoke_model(
+            modelId=MODEL_ID,
+            body=json.dumps({
+                'anthropic_version': 'bedrock-2023-05-31',
+                'max_tokens': 2048,
+                'system': system_prompt,
+                'messages': [{'role': 'user', 'content': user_prompt}],
+            }),
+        )
+        result = json.loads(resp['body'].read())
+        content = result['content'][0]['text']
+
+        # Parse the JSON array from the response
+        # Handle potential markdown code blocks
+        if '```json' in content:
+            content = content.split('```json')[1].split('```')[0].strip()
+        elif '```' in content:
+            content = content.split('```')[1].split('```')[0].strip()
+
+        fields = json.loads(content)
+        return response(200, {'fields_to_extract': fields})
+
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse LLM response as JSON: {e}")
+        return response(500, {'error': 'Failed to parse LLM response'})
+    except Exception as e:
+        print(f"Error in enhance_fields: {e}")
+        return response(500, {'error': str(e)})
+
+
+def enhance_note(event, path_params, body, **kwargs):
+    """Use LLM to enhance a note for better validation based on feedback"""
+    org_id = path_params.get('orgId')
+
+    # Check authorization for this org
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    if not body or 'note' not in body:
+        return response(400, {'error': 'Request body must include note'})
+
+    note = body['note']
+    rule_text = body.get('rule_text', '')
+    rule_id = body.get('rule_id')
+    document_id = body.get('document_id')
+    validation_run_id = body.get('validation_run_id')
+    notes = body.get('notes') or []
+
+    system_prompt = """
+    You are an expert medical chart validation assistant responsible for improving rule clarification notes used by an automated medical chart validation system.
+
+    Your role is to convert human reviewer feedback into reusable clarification guidance that will help the system make more accurate validation decisions in the future.
+
+    SYSTEM CONTEXT
+    The validation system operates as follows:
+    1. A medical chart is evaluated against a compliance rule.
+    2. The system produces a validation result (pass/fail or similar).
+    3. A human reviewer evaluates the result.
+    4. If the system made an incorrect or unclear decision, the human provides feedback.
+    5. Clarification notes are added to help the system interpret the rule more accurately in future validations.
+
+    You will receive the following inputs:
+    - The rule text
+    - The medical chart that was evaluated (optional)
+    - The system's previous validation result
+    - Human feedback explaining the mistake or clarification
+    - Existing clarification notes already associated with the rule
+
+    YOUR OBJECTIVE
+    Determine whether the human feedback reveals a reusable insight that should become a new clarification note for future validations.
+
+    If it does, write a concise clarification note that improves the system's ability to correctly interpret the rule.
+
+    If the feedback is already covered by existing notes, or does not add reusable guidance, do NOT create a new note.
+
+    HOW TO THINK ABOUT THE TASK
+    Internally reason through the following steps before producing your answer:
+
+    1. Understand the rule's intent.
+    2. Analyze how the chart relates to the rule.
+    3. Identify what the system likely misunderstood.
+    4. Interpret the human feedback to determine the correction.
+    5. Check whether existing notes already capture this guidance.
+    6. Decide whether a new clarification note would meaningfully improve future validation accuracy.
+
+    IMPORTANT: Perform this reasoning internally. Do NOT output your reasoning.
+
+    HOW TO WRITE A CLARIFICATION NOTE
+    If a new note is needed, it must follow these rules:
+
+    - Be concise but precise.
+    - Use a factual, instructional tone.
+    - Focus on how the rule should be interpreted when validating charts.
+    - Generalize the insight so it applies to future charts.
+    - Do NOT reference specific patients, documents, or this specific validation run.
+    - Avoid vague statements; provide clear guidance.
+    - Prefer concrete validation instructions or interpretation rules.
+    - Clarify edge cases or evidence requirements when relevant.
+
+    DUPLICATION RULE
+    You MUST check existing notes carefully.
+
+    If the same guidance already exists:
+    Return null.
+
+    If the feedback partially overlaps with an existing note:
+    Only create a new note if it adds meaningful clarification or resolves ambiguity.
+
+    OUTPUT FORMAT
+    Return ONLY valid JSON.
+
+    If a new clarification note should be added:
+
+    {
+    "new_clarification_note": "<clarification note text>"
+    }
+
+    If no new note is necessary:
+
+    {
+    "new_clarification_note": null
+    }
+
+    Do not include explanations, reasoning, markdown, or additional fields.
+    Return JSON only.
+    """
+
+    print(f"Rule ID: {rule_id}, Document ID: {document_id}, Validation Run ID: {validation_run_id}")
+    print(f"Previous notes: {notes}")
+    print(f"Organization ID: {org_id}")
+
+    # Fetch organization to get S3 bucket
+    org, err = get_organization_by_id(org_id)
+    if err:
+        return response(500, {'error': err})
+
+    print(f"Organization: {org}")
+
+    s3_bucket_name = org.get('s3_bucket_name')
+    if s3_bucket_name is None:
+        return response(500, {'error': 'Organization S3 bucket not found'})
+
+    # Query validation results table for the validation result via GSI
+    validation_result = None
+    if validation_run_id:
+        validation_query = validation_results_table.query(
+            IndexName='gsi2',
+            KeyConditionExpression='gsi2pk = :pk',
+            ExpressionAttributeValues={':pk': f'RUN#{validation_run_id}'},
+            Limit=1,
+        )
+        if validation_query.get('Items'):
+            validation_result = validation_query['Items'][0]
+            print(f"Validation result: {validation_result}")
+
+    user_prompt = f"""
+    Rule text: {rule_text}
+    Validation result: {validation_result}
+    Feedback on validation result: {note}
+    Existing clarification notes: {notes}
+    """
+
+    body_payload = {
+        'system': system_prompt,
+        'anthropic_version': 'bedrock-2023-05-31',
+        'max_tokens': 1024,
+        'temperature': 0.01,
+        'messages': [
+            {
+                'role': 'user',
+                'content': user_prompt
+            }
+        ]
+    }
+
+    try:
+        response_json = invoke_claude_model(
+            inference_profile_id=MODEL_ID,
+            body=body_payload,
+            return_json_only=True,
+            raise_on_error=True,
+            retries=1
+        )
+        print(f"Response JSON: {response_json}")
+
+        enhanced_note = response_json.get('new_clarification_note')
+
+        # If a new note was generated and rule_id is provided, save it to the rule
+        if enhanced_note and rule_id:
+            try:
+                # Append the new note to the rule's notes array
+                table.update_item(
+                    Key={'pk': f'ORG#{org_id}', 'sk': f'RULE#{rule_id}'},
+                    UpdateExpression='SET notes = list_append(if_not_exists(notes, :empty_list), :new_note), updated_at = :ts',
+                    ExpressionAttributeValues={
+                        ':new_note': [enhanced_note],
+                        ':empty_list': [],
+                        ':ts': datetime.utcnow().isoformat() + 'Z',
+                    },
+                )
+                print(f"Saved enhanced note to rule {rule_id}")
+            except Exception as save_err:
+                print(f"Error saving note to rule {rule_id}: {save_err}")
+                # Don't fail the request if saving fails, just log it
+
+        return response(200, {'enhanced_note': enhanced_note})
+    except Exception as e:
+        print(f"Error in enhance_note invoking Claude model: {e}")
+        return response(500, {'error': str(e)})
+
+
+# ---- User Permissions (RBAC) ----
+
+def get_my_permissions(event, **kwargs):
+    """Return the calling user's permission view (used by the frontend)."""
+    claims, error = authorize_request(event)
+    if error:
+        return error
+    return response(200, perms_module.serialize_for_me_endpoint(claims))
+
+
+def list_org_users(event, path_params, **kwargs):
+    """List all users with permissions in the given org. Super admin only."""
+    org_id = path_params.get('orgId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+    if not is_super_admin(claims):
+        return response(403, {'error': 'Super admin required'})
+
+    result = table.query(
+        IndexName='gsi1',
+        KeyConditionExpression=Key('gsi1pk').eq('USER_PERM') &
+                               Key('gsi1sk').begins_with(f'ORG#{org_id}#'),
+    )
+
+    users = [_format_user_perm(item) for item in result.get('Items', [])]
+    return response(200, {'users': users, 'count': len(users)})
+
+
+def get_org_user(event, path_params, **kwargs):
+    """Get a single user's permissions in an org. Super admin only."""
+    org_id = path_params.get('orgId')
+    email = path_params.get('email')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+    if not is_super_admin(claims):
+        return response(403, {'error': 'Super admin required'})
+
+    result = table.get_item(Key={'pk': f'USER#{email}', 'sk': f'ORG#{org_id}'})
+    if 'Item' not in result:
+        return response(404, {'error': f'No permissions found for {email} in {org_id}'})
+
+    return response(200, _format_user_perm(result['Item']))
+
+
+def upsert_org_user(event, path_params, body, **kwargs):
+    """Create or replace a user's permissions in an org. Super admin only."""
+    org_id = path_params.get('orgId')
+    email = path_params.get('email')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+    if not is_super_admin(claims):
+        return response(403, {'error': 'Super admin required'})
+
+    if not body:
+        return response(400, {'error': 'Request body required'})
+
+    existing_result = table.get_item(Key={'pk': f'USER#{email}', 'sk': f'ORG#{org_id}'})
+    existing = existing_result.get('Item')
+
+    try:
+        item = perms_module.build_user_perm_item(email, org_id, body, existing=existing)
+    except ValueError as e:
+        return response(400, {'error': str(e)})
+
+    table.put_item(Item=item)
+    perms_module.invalidate_cache(email=email, org_id=org_id)
+    print(f"Upserted permissions for {email} in {org_id} (role={item['role']})")
+
+    return response(200 if existing else 201, _format_user_perm(item))
+
+
+def delete_org_user(event, path_params, **kwargs):
+    """Revoke a user's permissions in an org. Super admin only."""
+    org_id = path_params.get('orgId')
+    email = path_params.get('email')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+    if not is_super_admin(claims):
+        return response(403, {'error': 'Super admin required'})
+
+    table.delete_item(Key={'pk': f'USER#{email}', 'sk': f'ORG#{org_id}'})
+    perms_module.invalidate_cache(email=email, org_id=org_id)
+    print(f"Deleted permissions for {email} in {org_id}")
+
+    return response(204, {})
+
+
+def _format_user_perm(item):
+    return {
+        'email': item.get('email'),
+        'organization_id': item.get('organization_id'),
+        'role': item.get('role', 'member'),
+        'report_permissions': item.get('report_permissions', {}),
+        'analytics_permissions': item.get('analytics_permissions', []),
+        'created_at': item.get('created_at'),
+        'updated_at': item.get('updated_at'),
+    }
+
+
+# ---- Helpers ----
+
+def format_rule(item):
+    """Format a DynamoDB rule item for API response (new flat schema)"""
+    return {
+        'rule_id': item.get('rule_id'),
+        'name': item.get('name'),
+        'category': item.get('category'),
+        'description': item.get('description', ''),
+        'enabled': item.get('enabled', True),
+        'type': item.get('type', 'llm'),
+        'version': item.get('version'),
+        'rule_text': item.get('rule_text', ''),
+        'fields_to_extract': convert_decimals(item.get('fields_to_extract', [])),
+        'notes': item.get('notes', []),
+        # Deterministic rule fields
+        'conditions': convert_decimals(item.get('conditions', [])),
+        'conditionals': convert_decimals(item.get('conditionals', [])),
+        'logic': item.get('logic', 'all'),
+        'fail_message': item.get('fail_message', ''),
+        'created_at': item.get('created_at'),
+        'updated_at': item.get('updated_at'),
+    }
+
+
+# ---- Analytics: Natural-Language Query ----
+
+def _build_nl_system_prompt(org_id: str) -> str:
+    schema = analytics_helpers.ORG_SCHEMAS[org_id]
+    suffix = analytics_helpers.table_suffix(org_id)
+
+    def fmt_col(c):
+        flag = " [narrative]" if c.get("narrative") else ""
+        notes = c.get("notes")
+        line = f"  - {c['name']} ({c['type']}){flag}"
+        if notes:
+            # Indent multi-line notes under the column for readability.
+            note_text = notes.replace("\n", " ")
+            line += f"\n      note: {note_text}"
+        return line
+
+    chart_lines = "\n".join(fmt_col(c) for c in schema["chart_columns"])
+    validation_lines = "\n".join(fmt_col(c) for c in schema["validation_columns"])
+    chart_partition_note = schema.get("chart_partition_notes", "")
+    validation_partition_note = schema.get("validation_partition_notes", "")
+
+    return f"""You are an analytics SQL assistant for the Penguin Health admin dashboard.
+You convert natural-language questions into safe AWS Athena SQL SELECT
+queries, OR you flag the question as one that requires deep narrative
+analysis when SQL alone cannot reliably answer it.
+
+Org: {org_id}
+Database: penguin_health_analytics
+Available tables (ONLY these — do not reference any others):
+
+1. charts_{suffix} — clinical chart rows.
+   All columns are stored as string regardless of semantic type. Cast
+   before arithmetic/comparison (use TRY_CAST for fields that may be
+   empty or non-numeric).
+   Columns:
+{chart_lines}
+   Columns marked [narrative] contain free-form prose. You MAY use them
+   in WHERE/LIKE for keyword filtering, but counts will be approximate
+   because phrasing varies.
+   Partition key: ingest_date (string, yyyy-MM-dd). {chart_partition_note}
+
+2. validation_results_{suffix} — rule validation outputs (one row per
+   rule per document).
+   Columns:
+{validation_lines}
+   Partition key: validation_date (string, yyyy-MM-dd). {validation_partition_note}
+
+Critical rules from auditing the live data:
+- Column values are case-sensitive. Use the EXACT casing shown in the
+  notes above (e.g. status='FAIL', not 'failed' or 'Failed').
+- Date/timestamp strings have varied formats — read the per-column
+  notes before using date_parse(); a wrong format produces silent
+  nulls and zero-row results, not an error.
+- When you don't know the value set of a free-form column (e.g.
+  category, field_program), prefer GROUP BY over guessing literal
+  values in WHERE clauses.
+- For numeric aggregation over chart string columns or field_rate, use
+  TRY_CAST and IS NOT NULL filters so non-numeric rows don't poison
+  the result.
+
+Decision rule:
+- If the question can be answered with structured columns OR with a
+  reasonable LIKE filter on a narrative column where false positives
+  are acceptable, respond with mode "sql".
+- If the question requires extracting a specific concept buried in
+  narrative prose (e.g. "where did the referral come from", "what was
+  the presenting concern", "what medication was prescribed"), respond
+  with mode "needs_deep_analysis" and provide a scoping query that
+  narrows to candidate rows (must include LIMIT <= 200).
+
+Constraints (both modes):
+- SELECT only. No DDL/DML. No multiple statements.
+- Always include LIMIT. Max 1000 for sql mode, max 200 for scoping.
+- Athena/Presto dialect.
+- Prefer partition filters (ingest_date / validation_date) when the
+  question implies a time range.
+
+Respond with ONLY one of these JSON shapes — no prose, no markdown:
+
+{{ "mode": "sql",
+   "sql": "...",
+   "viz_type": "bar" | "line" | "pie" | "table",
+   "explanation": "one sentence; mention if results are approximate" }}
+
+{{ "mode": "needs_deep_analysis",
+   "reason": "one sentence explaining why SQL alone can't answer this",
+   "scope_sql": "SELECT ... LIMIT 200" }}
+
+viz_type guidance:
+- "line" for time series with multiple date points
+- "bar" for categorical comparisons
+- "pie" for parts-of-whole with <= 8 slices
+- "table" for everything else"""
+
+
+_VALID_VIZ_TYPES = {"bar", "line", "pie", "table"}
+
+
+def nl_query(event, path_params, body, **kwargs):
+    """
+    Kick off an agent job to answer a natural-language question.
+
+    Returns 202 with a job_id; the client polls GET .../nl-query/deep/{jobId}
+    for live progress (`current_step_label`, `step_count`, `trace`) and
+    the final {columns, rows, viz_type} when the agent calls `finalize`.
+
+    All questions go through the agent — there's no longer a synchronous
+    SQL fast path. Pure-SQL questions typically resolve in 2 turns
+    (`run_sql` + `finalize`).
+    """
+    org_id = path_params.get('orgId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    if not body or not isinstance(body, dict) or not body.get('question'):
+        return response(400, {'error': 'Request body must include question'})
+
+    question = body['question']
+    if not isinstance(question, str) or len(question) > 1000:
+        return response(400, {'error': 'question must be a string <= 1000 chars'})
+
+    if org_id not in analytics_helpers.ORG_SCHEMAS:
+        return response(400, {
+            'error': f"Analytics is not provisioned for org '{org_id}'.",
+            'code': 'ORG_NOT_PROVISIONED',
+        })
+
+    job_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    created_at = now.isoformat()
+    ttl = int(now.timestamp()) + DEEP_JOB_TTL_SECONDS
+
+    item = {
+        'pk': _deep_job_pk(org_id),
+        'sk': _deep_job_sk(job_id),
+        'job_id': job_id,
+        'organization_id': org_id,
+        'status': 'running',
+        'agent_mode': True,
+        'question': question.strip(),
+        'step_count': 0,
+        'current_step_label': 'Starting agent…',
+        'trace': [],
+        'agent_columns': [],
+        'agent_rows': [],
+        'created_at': created_at,
+        'updated_at': created_at,
+        'created_by': claims.get('email') or 'unknown',
+        'ttl': ttl,
+    }
+    deep_jobs_table.put_item(Item=item)
+
+    try:
+        lambda_client.invoke(
+            FunctionName=DEEP_WORKER_LAMBDA,
+            InvocationType='Event',
+            Payload=json.dumps({'org_id': org_id, 'job_id': job_id}).encode('utf-8'),
+        )
+    except Exception as e:
+        print(f"nl_query: failed to invoke worker for job {job_id}: {e}")
+        deep_jobs_table.update_item(
+            Key={'pk': item['pk'], 'sk': item['sk']},
+            UpdateExpression='SET #s = :s, #err = :err, updated_at = :u',
+            ExpressionAttributeNames={'#s': 'status', '#err': 'error'},
+            ExpressionAttributeValues={
+                ':s': 'failed',
+                ':err': f'Failed to start worker: {e}',
+                ':u': datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return response(502, {
+            'error': 'Failed to start agent worker.',
+            'code': 'WORKER_START_FAILED',
+        })
+
+    return response(202, {
+        'job_id': job_id,
+        'status': 'running',
+        'agent_mode': True,
+    })
+
+
+def _deep_extract_for_row(question: str, row_payload: dict) -> str:
+    """
+    Call Claude to extract a single answer string from one row's narrative
+    fields. Returns 'unknown' on any error so a single bad row doesn't kill
+    the whole batch.
+    """
+    system = (
+        "You extract one short answer from a chart record's narrative fields. "
+        "Respond with ONLY a JSON object: {\"value\": \"<short answer or 'unknown'>\"}."
+    )
+    user = (
+        f"Original question: {question}\n\n"
+        f"Row data:\n{json.dumps(row_payload, default=str)}\n\n"
+        f"Extract the answer as a short string. If the answer cannot be "
+        f"determined from this row, respond with \"unknown\"."
+    )
+    try:
+        resp = invoke_claude_model(
+            inference_profile_id=MODEL_ID,
+            body={
+                'anthropic_version': 'bedrock-2023-05-31',
+                'max_tokens': 200,
+                'system': system,
+                'messages': [{'role': 'user', 'content': user}],
+            },
+            return_json_only=True,
+            retries=0,
+            raise_on_error=False,
+            bedrock_client=bedrock,
+        )
+        if isinstance(resp, dict) and isinstance(resp.get('value'), str):
+            return resp['value'].strip() or 'unknown'
+    except Exception as e:
+        print(f"deep_extract row error: {e}")
+    return 'unknown'
+
+
+def _deep_job_pk(org_id: str) -> str:
+    return f'ORG#{org_id}'
+
+
+def _deep_job_sk(job_id: str) -> str:
+    return f'JOB#{job_id}'
+
+
+def nl_query_deep(event, path_params, body, **kwargs):
+    """
+    Kick off an async deep-analysis job: validate the scope SQL, run the
+    fast scope Athena query inline (well under the 30s API GW ceiling),
+    persist the job, and async-invoke the worker Lambda to do the per-row
+    Claude extraction. Returns 202 with a job_id the client can poll.
+    """
+    org_id = path_params.get('orgId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    if not body or not isinstance(body, dict):
+        return response(400, {'error': 'Request body must include question and scope_sql'})
+    question = body.get('question')
+    scope_sql_raw = body.get('scope_sql')
+    if not isinstance(question, str) or not question.strip():
+        return response(400, {'error': 'question is required'})
+    if not isinstance(scope_sql_raw, str) or not scope_sql_raw.strip():
+        return response(400, {'error': 'scope_sql is required'})
+
+    if org_id not in analytics_helpers.ORG_SCHEMAS:
+        return response(400, {
+            'error': f"Analytics is not provisioned for org '{org_id}'.",
+            'code': 'ORG_NOT_PROVISIONED',
+        })
+
+    try:
+        scope_sql = analytics_helpers.validate_athena_sql(
+            scope_sql_raw,
+            org_id,
+            max_limit=analytics_helpers.MAX_DEEP_SCOPE_LIMIT,
+        )
+    except analytics_helpers.SqlValidationError as e:
+        return response(400, {
+            'error': e.message,
+            'code': e.code,
+            'sql': scope_sql_raw,
+        })
+
+    try:
+        scope_result = analytics_helpers.run_athena_query(scope_sql, org_id)
+    except analytics_helpers.AthenaQueryError as e:
+        return response(400, {
+            'error': e.message,
+            'code': 'ATHENA_ERROR',
+            'sql': scope_sql,
+        })
+
+    columns = scope_result['columns']
+    rows = scope_result['rows']
+    if len(rows) > analytics_helpers.MAX_DEEP_SCOPE_LIMIT:
+        return response(400, {
+            'error': (
+                f"Scope query returned {len(rows)} rows; deep analysis is "
+                f"capped at {analytics_helpers.MAX_DEEP_SCOPE_LIMIT}. "
+                f"Tighten the scope filters."
+            ),
+            'code': 'SCOPE_TOO_LARGE',
+            'sql': scope_sql,
+        })
+
+    job_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    created_at = now.isoformat()
+    ttl = int(now.timestamp()) + DEEP_JOB_TTL_SECONDS
+
+    item = {
+        'pk': _deep_job_pk(org_id),
+        'sk': _deep_job_sk(job_id),
+        'job_id': job_id,
+        'organization_id': org_id,
+        'status': 'running',
+        'question': question.strip(),
+        'scope_sql': scope_sql,
+        'columns': columns,
+        'rows': rows,
+        'total_rows': len(rows),
+        'done_rows': 0,
+        'extracted': [None] * len(rows),
+        'created_at': created_at,
+        'updated_at': created_at,
+        'created_by': claims.get('email') or 'unknown',
+        'ttl': ttl,
+    }
+    deep_jobs_table.put_item(Item=item)
+
+    try:
+        lambda_client.invoke(
+            FunctionName=DEEP_WORKER_LAMBDA,
+            InvocationType='Event',
+            Payload=json.dumps({'org_id': org_id, 'job_id': job_id}).encode('utf-8'),
+        )
+    except Exception as e:
+        print(f"nl_query_deep: failed to invoke worker for job {job_id}: {e}")
+        deep_jobs_table.update_item(
+            Key={'pk': item['pk'], 'sk': item['sk']},
+            UpdateExpression='SET #s = :s, #err = :err, updated_at = :u',
+            ExpressionAttributeNames={'#s': 'status', '#err': 'error'},
+            ExpressionAttributeValues={
+                ':s': 'failed',
+                ':err': f'Failed to start worker: {e}',
+                ':u': datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return response(502, {
+            'error': 'Failed to start deep analysis worker.',
+            'code': 'WORKER_START_FAILED',
+        })
+
+    return response(202, {
+        'job_id': job_id,
+        'status': 'running',
+        'total_rows': len(rows),
+        'done_rows': 0,
+        'sql': scope_sql,
+    })
+
+
+def get_deep_job(event, path_params, **kwargs):
+    """
+    Return current state of an async deep-analysis job. While running,
+    returns progress + the partial extracted column so the UI can render
+    live updates. On completion, returns the same shape the previous
+    synchronous endpoint returned.
+    """
+    org_id = path_params.get('orgId')
+    job_id = path_params.get('jobId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    result = deep_jobs_table.get_item(Key={
+        'pk': _deep_job_pk(org_id),
+        'sk': _deep_job_sk(job_id),
+    })
+    item = result.get('Item')
+    if item is None:
+        return response(404, {'error': f'Deep analysis job not found: {job_id}'})
+
+    item = convert_decimals(item)
+    status = item.get('status')
+
+    if item.get('agent_mode'):
+        # Agent jobs don't have a per-row `extracted` list — the agent
+        # shapes the final result itself via the finalize tool. Return
+        # the final {columns, rows} when succeeded; while running, return
+        # only the current step label so the UI can render progress.
+        agent_columns = item.get('agent_columns') or []
+        agent_rows = item.get('agent_rows') or []
+        payload = {
+            'job_id': job_id,
+            'status': status,
+            'question': item.get('question'),
+            'columns': agent_columns,
+            'rows': agent_rows,
+            'row_count': len(agent_rows),
+            'agent_mode': True,
+            'step_count': item.get('step_count', 0),
+            'current_step_label': item.get('current_step_label', ''),
+            'trace': item.get('trace') or [],
+        }
+        if status == 'succeeded':
+            payload['mode'] = 'agent'
+            payload['viz_type'] = item.get('viz_type', 'table')
+            payload['explanation'] = item.get('explanation', '')
+        elif status == 'failed':
+            payload['error'] = item.get('error') or 'Agent run failed.'
+            payload['code'] = item.get('error_code') or 'WORKER_FAILED'
+        return response(200, payload)
+
+    columns = item.get('columns') or []
+    rows = item.get('rows') or []
+    extracted = item.get('extracted') or []
+    scope_sql = item.get('scope_sql')
+    total = item.get('total_rows', len(rows))
+    done = item.get('done_rows', 0)
+
+    # Build a "view" of the result that's valid at any progress level: the
+    # extracted column has either the value or null for not-yet-done rows.
+    out_columns = list(columns) + [{'name': 'extracted_value', 'type': 'string'}]
+    out_rows = [r + [extracted[i] if i < len(extracted) else None]
+                for i, r in enumerate(rows)]
+
+    payload = {
+        'job_id': job_id,
+        'status': status,
+        'sql': scope_sql,
+        'question': item.get('question'),
+        'columns': out_columns,
+        'rows': out_rows,
+        'row_count': len(out_rows),
+        'total_rows': total,
+        'done_rows': done,
+    }
+
+    if status == 'succeeded':
+        payload['mode'] = 'deep'
+        payload['viz_type'] = item.get('viz_type', 'bar')
+        payload['explanation'] = item.get('explanation', '')
+    elif status == 'failed':
+        payload['error'] = item.get('error') or 'Deep analysis failed.'
+        payload['code'] = item.get('error_code') or 'WORKER_FAILED'
+
+    return response(200, payload)
+
+
+def _deep_job_progress_update(org_id: str, job_id: str, extracted: list, done: int):
+    """Persist incremental progress so the polling client can render live updates."""
+    deep_jobs_table.update_item(
+        Key={'pk': _deep_job_pk(org_id), 'sk': _deep_job_sk(job_id)},
+        UpdateExpression='SET extracted = :e, done_rows = :d, updated_at = :u',
+        ExpressionAttributeValues={
+            ':e': extracted,
+            ':d': done,
+            ':u': datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
+# ---- Analytics: agent loop execution path ----
+
+AGENT_MAX_STEPS = int(os.environ.get('AGENT_MAX_STEPS', '20'))
+
+
+def _build_agent_system_prompt(org_id: str) -> str:
+    """System prompt for the agent loop. Lists the tools, the org's tables,
+    and the contract for finishing (must call `finalize`). Schema details
+    are also retrievable on demand via the `inspect_schema` tool so the
+    agent can refresh them mid-run.
+    """
+    schema = analytics_helpers.ORG_SCHEMAS[org_id]
+    suffix = analytics_helpers.table_suffix(org_id)
+    narrative_names = sorted(analytics_helpers.narrative_columns_for_org(org_id))
+
+    return f"""You are an analytics agent for the Penguin Health admin dashboard.
+You answer the user's question by orchestrating tool calls — you do not
+respond with prose; instead, you call tools and ultimately call `finalize`
+with the final answer columns/rows.
+
+Org: {org_id}
+Database: penguin_health_analytics
+Tables: charts_{suffix}, validation_results_{suffix}
+Narrative columns (free-text prose, read these via extract_from_rows when
+the answer is buried in narrative): {", ".join(narrative_names) or "(none)"}
+
+Tools available:
+- inspect_schema(): full schema + per-column notes
+- run_sql(sql): execute a SELECT (auto-LIMIT applied). Returns
+  {{run_id, columns, preview_rows, row_count, sql}}. The FULL rows live
+  server-side under run_id; you only see a small preview. Pass
+  `from_run_id` to downstream tools — do NOT copy rows into their inputs.
+- extract_from_rows(from_run_id, question): per-row Claude extraction
+  of a short string from narrative fields. Cap 200 rows per call.
+  Returns {{run_id, row_count, preview_results}}. The output rows
+  PRESERVE every source-row field (e.g. clientvisit_id, answer) AND
+  add `extracted_value`. You do NOT need to merge the extraction back
+  to the source — it's already merged.
+- aggregate(from_run_id, group_by, agg, sum_field?, order_by?):
+  in-memory GROUP BY on the rows behind a run_id. Returns
+  {{run_id, columns, rows, row_count}} in positional shape.
+- select_columns(from_run_id, columns, computed?): pick a subset of
+  columns from a run_id and optionally add a conditional column via
+  computed[col] = {{case_when: {{field, op, value, then, else}}}}.
+  `then`/`else` may be literals OR source-column names (auto-resolved).
+  Use this to shape the final output before finalize, especially for
+  conditional columns like "show answer only when extracted_value
+  == 'UNKNOWN'".
+- finalize(columns, rows, viz_type?, explanation?): emit final answer
+  and end the loop. `rows` is POSITIONAL (parallel to columns), same
+  shape aggregate / select_columns return — pass their columns + rows
+  straight in. You MUST call finalize exactly once when done.
+
+Canonical patterns:
+
+A) "Count <thing> extracted from narrative":
+  1. run_sql → run_id "sql-001".
+  2. extract_from_rows(from_run_id="sql-001", question=<what to pull out>)
+     → run_id "extract-002".
+  3. aggregate(from_run_id="extract-002", group_by=["extracted_value"],
+     agg="count") → {{columns, rows, ...}}.
+  4. finalize(columns=<from step 3>, rows=<from step 3>, viz_type="bar").
+
+B) "Per-row extracted value + identifier column" (e.g. clientvisit_id +
+   referral agency, with answer shown when agency is UNKNOWN):
+  1. run_sql SELECT clientvisit_id, answer → run_id "sql-001".
+  2. extract_from_rows(from_run_id="sql-001", question="extract agency")
+     → run_id "extract-002" whose rows are
+     {{row_index, clientvisit_id, answer, extracted_value}}.
+  3. select_columns(
+       from_run_id="extract-002",
+       columns=["clientvisit_id", "extracted_value", "answer_if_unknown"],
+       computed={{
+         "answer_if_unknown": {{"case_when": {{
+           "field": "extracted_value", "op": "==", "value": "UNKNOWN",
+           "then": "answer", "else": ""
+         }}}}
+       }}
+     ) → {{columns, rows, ...}}.
+  4. finalize(columns=<from step 3>, rows=<from step 3>, viz_type="table").
+
+Critical rules:
+- Always include partition filters (ingest_date / validation_date) when
+  the question implies a time range.
+- Column values are case-sensitive. Use exact casing from inspect_schema notes.
+- ALWAYS use `from_run_id` to pass rows between tools. Do not try to
+  copy rows from one tool's output into another tool's input — pass the
+  run_id and the server will load the rows.
+- NEVER try to encode a join, merge, or conditional column inside an
+  extract_from_rows prompt. extract_from_rows already preserves source
+  columns; for conditional output use select_columns.computed.
+- finalize.rows should be the FINAL shape shown to the user. Do not
+  include intermediate columns the user didn't ask for.
+- If a tool returns an error, READ THE ERROR MESSAGE CAREFULLY before
+  retrying. Do not repeat the same call with the same shape.
+- Once you have the data you need, call finalize IMMEDIATELY.
+- Stop after at most {AGENT_MAX_STEPS} tool-use turns; running over is
+  an error.
+"""
+
+
+def _agent_worker_run(org_id: str, job_id: str, item: dict) -> dict:
+    """Execute the agent loop for a job. Persists progress + final result
+    on the job item. Returns {ok: bool} for the Lambda invoke contract.
+
+    Intermediate payloads spill into the org's own bucket under
+    `agent-io/{job_id}/...` — same compliance boundary as Athena's
+    `athena-results/` output, never a shared cross-org bucket.
+    """
+    question = item.get('question') or ''
+    bucket = nl_agent_tools.org_data_bucket(org_id)
+    spill = nl_agent_tools.make_s3_spill(s3_client, bucket, job_id)
+    job_started_at = time.monotonic()
+    print(json.dumps({
+        'agent_event': 'job_start',
+        'job_id': job_id,
+        'org_id': org_id,
+        'question_chars': len(question),
+    }))
+
+    def extractor(q: str, row_payload: dict) -> str:
+        return _deep_extract_for_row(q, row_payload)
+
+    # Shared scratch cache for tool-to-tool row handoffs. Lives only for
+    # this one worker invocation; freed when the function returns.
+    run_cache = nl_agent_tools.RunCache()
+    raw_handlers = nl_agent_tools.make_tool_handlers(
+        org_id=org_id,
+        extractor=extractor,
+        cache=run_cache,
+        spill=spill,
+    )
+
+    # Wrap each tool handler with a timing + structured-log shim so every
+    # call shows up in CloudWatch as one JSON line. Filterable by job_id,
+    # tool, or status. The `finalize` tool isn't in raw_handlers (the
+    # loop captures it directly), so it's logged via on_step instead.
+    def _wrap_handler(tool_name, fn):
+        def wrapped(tu_input):
+            t0 = time.monotonic()
+            err = None
+            output = None
+            try:
+                output = fn(tu_input)
+                return output
+            except Exception as e:
+                err = f"{type(e).__name__}: {e}"
+                raise
+            finally:
+                ms = int((time.monotonic() - t0) * 1000)
+                status = 'error' if err else 'ok'
+                # If the handler returned a dict with an error code (e.g.
+                # SQL validation rejection), surface that as the status so
+                # log filters catch it without crashing the loop.
+                if err is None and isinstance(output, dict) and output.get('code'):
+                    status = f"error:{output['code']}"
+                print(json.dumps({
+                    'agent_event': 'tool_call',
+                    'job_id': job_id,
+                    'org_id': org_id,
+                    'tool': tool_name,
+                    'status': status,
+                    'ms': ms,
+                    'error': err,
+                }, default=str))
+        return wrapped
+
+    handlers = {name: _wrap_handler(name, fn) for name, fn in raw_handlers.items()}
+
+    def invoke(messages, tools, system):
+        # Single-turn Bedrock call; the agent loop manages multi-turn state.
+        # Pass the module-level `bedrock` client so we reuse its tuned
+        # read_timeout (300s) and HTTP connection pool across all turns
+        # in one worker invocation.
+        return invoke_claude_model(
+            inference_profile_id=MODEL_ID,
+            body={
+                'anthropic_version': 'bedrock-2023-05-31',
+                'max_tokens': 4096,
+                'system': system,
+                'tools': tools,
+                'messages': messages,
+            },
+            return_json_only=False,
+            retries=0,
+            raise_on_error=True,
+            bedrock_client=bedrock,
+        )
+
+    def on_step(step_info):
+        # Persist a lightweight progress marker + the trace-so-far. Fired
+        # twice per agent step: once before the Bedrock turn (pre-step,
+        # "thinking" label) and once after the turn's tool calls resolve
+        # (post-step, includes the new trace entries). Writing the trace
+        # on every fire means the polling UI sees the agent's history
+        # live, and a worker that dies mid-run still leaves a partial
+        # record in DynamoDB.
+        try:
+            deep_jobs_table.update_item(
+                Key={'pk': _deep_job_pk(org_id), 'sk': _deep_job_sk(job_id)},
+                UpdateExpression=(
+                    'SET step_count = :n, current_step_label = :l, '
+                    'trace = :t, updated_at = :u'
+                ),
+                ExpressionAttributeValues={
+                    ':n': step_info['step'],
+                    ':l': step_info.get('label', ''),
+                    ':t': list(step_info.get('trace') or []),
+                    ':u': datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        except Exception as e:
+            # Don't crash the agent loop on a transient DynamoDB hiccup —
+            # just log. The next flush will include this step too since
+            # we send the full trace each time.
+            print(f"agent_worker: progress update failed: {e}")
+
+    system_prompt = _build_agent_system_prompt(org_id)
+
+    try:
+        result = nl_agent.run_agent_loop(
+            system=system_prompt,
+            initial_user=question,
+            tools=nl_agent_tools.ALL_TOOL_SCHEMAS,
+            tool_handlers=handlers,
+            invoke_fn=invoke,
+            max_steps=AGENT_MAX_STEPS,
+            on_step=on_step,
+        )
+    except nl_agent.AgentError as e:
+        print(json.dumps({
+            'agent_event': 'job_fail',
+            'job_id': job_id,
+            'org_id': org_id,
+            'code': e.code,
+            'message': e.message,
+            'ms': int((time.monotonic() - job_started_at) * 1000),
+            'steps': len(e.trace),
+        }))
+        deep_jobs_table.update_item(
+            Key={'pk': _deep_job_pk(org_id), 'sk': _deep_job_sk(job_id)},
+            UpdateExpression=(
+                'SET #s = :s, #err = :err, error_code = :ec, '
+                'trace = :t, updated_at = :u'
+            ),
+            ExpressionAttributeNames={'#s': 'status', '#err': 'error'},
+            ExpressionAttributeValues={
+                ':s': 'failed',
+                ':err': e.message,
+                ':ec': e.code,
+                ':t': e.trace,
+                ':u': datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return {'ok': False}
+    except Exception as e:
+        print(json.dumps({
+            'agent_event': 'job_fail',
+            'job_id': job_id,
+            'org_id': org_id,
+            'code': 'UNEXPECTED',
+            'message': f'{type(e).__name__}: {e}',
+            'ms': int((time.monotonic() - job_started_at) * 1000),
+        }))
+        deep_jobs_table.update_item(
+            Key={'pk': _deep_job_pk(org_id), 'sk': _deep_job_sk(job_id)},
+            UpdateExpression='SET #s = :s, #err = :err, updated_at = :u',
+            ExpressionAttributeNames={'#s': 'status', '#err': 'error'},
+            ExpressionAttributeValues={
+                ':s': 'failed',
+                ':err': f'{type(e).__name__}: {e}',
+                ':u': datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return {'ok': False}
+
+    final = result['final']
+    final_columns = final.get('columns') or []
+    final_rows = final.get('rows') or []
+    viz_type = final.get('viz_type') or 'table'
+    if viz_type not in _VALID_VIZ_TYPES:
+        viz_type = 'table'
+    explanation = final.get('explanation') or ''
+
+    deep_jobs_table.update_item(
+        Key={'pk': _deep_job_pk(org_id), 'sk': _deep_job_sk(job_id)},
+        UpdateExpression=(
+            'SET #s = :s, agent_columns = :c, agent_rows = :r, '
+            'viz_type = :v, explanation = :x, trace = :t, '
+            'step_count = :n, current_step_label = :l, updated_at = :u'
+        ),
+        ExpressionAttributeNames={'#s': 'status'},
+        ExpressionAttributeValues={
+            ':s': 'succeeded',
+            ':c': final_columns,
+            ':r': final_rows,
+            ':v': viz_type,
+            ':x': explanation,
+            ':t': result['trace'],
+            ':n': result['steps'],
+            ':l': 'done',
+            ':u': datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    print(json.dumps({
+        'agent_event': 'job_done',
+        'job_id': job_id,
+        'org_id': org_id,
+        'steps': result['steps'],
+        'final_rows': len(final_rows),
+        'ms': int((time.monotonic() - job_started_at) * 1000),
+    }))
+    return {'ok': True}
+
+
+def deep_worker_handler(event, context):
+    """
+    Worker Lambda entry point. Two execution paths:
+
+    - Legacy deep-extraction (item.agent_mode falsy): loads the scoped
+      rows from the job item and fans out per-row Claude extraction with
+      bounded concurrency. Kept for in-flight jobs created before the
+      agentic path landed; new traffic shouldn't hit this branch.
+
+    - Agent loop (item.agent_mode truthy): runs nl_agent.run_agent_loop
+      with the registered tools so Claude orchestrates schema probes,
+      SQL queries, narrative extraction, aggregation, and the final
+      result shape itself. Output stamped via the `finalize` tool.
+    """
+    org_id = event.get('org_id')
+    job_id = event.get('job_id')
+    if not org_id or not job_id:
+        print(f"deep_worker: missing org_id/job_id in event: {event}")
+        return {'ok': False}
+
+    result = deep_jobs_table.get_item(Key={
+        'pk': _deep_job_pk(org_id),
+        'sk': _deep_job_sk(job_id),
+    })
+    item = result.get('Item')
+    if item is None:
+        print(f"deep_worker: job not found {org_id}/{job_id}")
+        return {'ok': False}
+
+    item = convert_decimals(item)
+
+    if item.get('agent_mode'):
+        return _agent_worker_run(org_id, job_id, item)
+
+    question = item['question']
+    columns = item.get('columns') or []
+    rows = item.get('rows') or []
+    col_names = [c['name'] for c in columns]
+    narrative_cols = analytics_helpers.narrative_columns_for_org(org_id)
+
+    def row_to_payload(row):
+        payload = {}
+        for name, value in zip(col_names, row):
+            if name in narrative_cols or value is not None:
+                payload[name] = value
+        return payload
+
+    extracted = list(item.get('extracted') or [None] * len(rows))
+    PROGRESS_BATCH = 10
+
+    try:
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            futures = {
+                pool.submit(_deep_extract_for_row, question, row_to_payload(r)): i
+                for i, r in enumerate(rows)
+                if extracted[i] is None
+            }
+            since_flush = 0
+            for fut in futures:
+                idx = futures[fut]
+                try:
+                    extracted[idx] = fut.result()
+                except Exception as e:
+                    print(f"deep_worker: row {idx} failed: {e}")
+                    extracted[idx] = 'unknown'
+                since_flush += 1
+                if since_flush >= PROGRESS_BATCH:
+                    done = sum(1 for v in extracted if v is not None)
+                    _deep_job_progress_update(org_id, job_id, extracted, done)
+                    since_flush = 0
+
+        distinct_values = {v for v in extracted if v and v != 'unknown'}
+        viz_type = 'pie' if 0 < len(distinct_values) <= 8 else 'bar'
+        explanation = (
+            f'Deep analysis: extracted answers from {len(rows)} chart rows '
+            f'using AI narrative analysis.'
+        )
+        deep_jobs_table.update_item(
+            Key={'pk': _deep_job_pk(org_id), 'sk': _deep_job_sk(job_id)},
+            UpdateExpression=(
+                'SET extracted = :e, done_rows = :d, #s = :s, '
+                'viz_type = :v, explanation = :x, updated_at = :u'
+            ),
+            ExpressionAttributeNames={'#s': 'status'},
+            ExpressionAttributeValues={
+                ':e': extracted,
+                ':d': len(rows),
+                ':s': 'succeeded',
+                ':v': viz_type,
+                ':x': explanation,
+                ':u': datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except Exception as e:
+        print(f"deep_worker: job {job_id} failed: {e}")
+        deep_jobs_table.update_item(
+            Key={'pk': _deep_job_pk(org_id), 'sk': _deep_job_sk(job_id)},
+            UpdateExpression='SET #s = :s, #err = :err, updated_at = :u',
+            ExpressionAttributeNames={'#s': 'status', '#err': 'error'},
+            ExpressionAttributeValues={
+                ':s': 'failed',
+                ':err': str(e),
+                ':u': datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return {'ok': False}
+
+    return {'ok': True}
+
+
+# ---- Analytics: Saved Reports ----
+
+_REPORT_MAX_PAYLOAD_BYTES = 380_000  # DynamoDB item limit is 400KB; leave headroom.
+
+
+def _report_pk(org_id: str) -> str:
+    return f'ORG#{org_id}'
+
+
+def _report_sk(created_at: str, report_id: str) -> str:
+    return f'REPORT#{created_at}#{report_id}'
+
+
+def _strip_report_keys(item: dict) -> dict:
+    """Drop DynamoDB-specific keys before returning to client."""
+    out = {k: v for k, v in item.items() if k not in ('pk', 'sk')}
+    return convert_decimals(out)
+
+
+def save_report(event, path_params, body, **kwargs):
+    """Persist a snapshot of a successful NL-analytics result."""
+    org_id = path_params.get('orgId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    if not body or not isinstance(body, dict):
+        return response(400, {'error': 'Request body must include report fields'})
+
+    name = body.get('name')
+    if not isinstance(name, str) or not name.strip():
+        return response(400, {'error': 'name is required'})
+
+    required = ('question', 'sql', 'viz_type', 'mode', 'columns', 'rows')
+    missing = [f for f in required if f not in body]
+    if missing:
+        return response(400, {'error': f'Missing required fields: {missing}'})
+
+    report_id = str(uuid.uuid4())
+    created_at = datetime.now(timezone.utc).isoformat()
+    created_by = claims.get('email') or 'unknown'
+
+    item = {
+        'pk': _report_pk(org_id),
+        'sk': _report_sk(created_at, report_id),
+        'report_id': report_id,
+        'organization_id': org_id,
+        'name': name.strip(),
+        'question': body['question'],
+        'sql': body['sql'],
+        'viz_type': body['viz_type'],
+        'mode': body['mode'],
+        'explanation': body.get('explanation', ''),
+        'columns': body['columns'],
+        'rows': body['rows'],
+        'row_count': body.get('row_count', len(body['rows']) if isinstance(body['rows'], list) else 0),
+        'created_at': created_at,
+        'created_by': created_by,
+    }
+
+    # Reject oversized payloads up front rather than letting DynamoDB do it.
+    payload_size = len(json.dumps(item, default=str).encode('utf-8'))
+    if payload_size > _REPORT_MAX_PAYLOAD_BYTES:
+        return response(400, {
+            'error': (
+                f'Report payload is {payload_size} bytes, over the '
+                f'{_REPORT_MAX_PAYLOAD_BYTES}-byte cap. Tighten the query '
+                f'(fewer rows or columns) and try again.'
+            ),
+            'code': 'REPORT_TOO_LARGE',
+        })
+
+    analytics_reports_table.put_item(Item=item)
+    return response(201, _strip_report_keys(item))
+
+
+def list_reports(event, path_params, **kwargs):
+    """List report metadata for the org (newest first)."""
+    org_id = path_params.get('orgId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    result = analytics_reports_table.query(
+        KeyConditionExpression=(
+            Key('pk').eq(_report_pk(org_id)) & Key('sk').begins_with('REPORT#')
+        ),
+        ScanIndexForward=False,
+    )
+
+    reports = []
+    for item in result.get('Items', []):
+        reports.append(convert_decimals({
+            'report_id': item.get('report_id'),
+            'name': item.get('name'),
+            'created_at': item.get('created_at'),
+            'created_by': item.get('created_by'),
+            'mode': item.get('mode'),
+            'viz_type': item.get('viz_type'),
+            'row_count': item.get('row_count'),
+        }))
+
+    return response(200, {'reports': reports, 'count': len(reports)})
+
+
+def _find_report_item(org_id: str, report_id: str) -> Optional[dict]:
+    """
+    Look up a single report by report_id. sk includes a timestamp, so we
+    query the org's partition and filter on report_id rather than doing a
+    full Scan. Reports per org are bounded — this is fine in practice.
+    """
+    result = analytics_reports_table.query(
+        KeyConditionExpression=(
+            Key('pk').eq(_report_pk(org_id)) & Key('sk').begins_with('REPORT#')
+        ),
+    )
+    for item in result.get('Items', []):
+        if item.get('report_id') == report_id:
+            return item
+    return None
+
+
+def get_report(event, path_params, **kwargs):
+    """Return a single saved report including columns/rows."""
+    org_id = path_params.get('orgId')
+    report_id = path_params.get('reportId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    item = _find_report_item(org_id, report_id)
+    if item is None:
+        return response(404, {'error': f'Report not found: {report_id}'})
+
+    return response(200, _strip_report_keys(item))
+
+
+def delete_report(event, path_params, **kwargs):
+    """Delete a saved report."""
+    org_id = path_params.get('orgId')
+    report_id = path_params.get('reportId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    item = _find_report_item(org_id, report_id)
+    if item is None:
+        return response(404, {'error': f'Report not found: {report_id}'})
+
+    analytics_reports_table.delete_item(Key={'pk': item['pk'], 'sk': item['sk']})
+    return response(200, {'deleted': report_id})
+
+
+def convert_decimals(obj):
+    """Convert Decimal types from DynamoDB to int/float for JSON serialization"""
+    if isinstance(obj, Decimal):
+        return int(obj) if obj % 1 == 0 else float(obj)
+    if isinstance(obj, dict):
+        return {k: convert_decimals(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [convert_decimals(i) for i in obj]
+    return obj
+
+
+def response(status_code, body):
+    """Build API Gateway HTTP API response"""
+    return {
+        'statusCode': status_code,
+        'headers': {
+            'Content-Type': 'application/json',
+        },
+        'body': json.dumps(body, default=str),
+    }

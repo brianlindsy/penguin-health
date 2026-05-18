@@ -17,6 +17,25 @@ const FIELD_LABELS = {
   document_id: 'Document ID',
 }
 
+// Fields rendered in the card header (name + link) and therefore skipped
+// when iterating over the rest of field_values for the body grid.
+const CARD_HEADER_FIELDS = new Set(['employee_name', 'service_id', 'document_id'])
+
+// field_values fields that get dedicated multi-select checkbox filters with
+// URL persistence. Anything in this list is excluded from the generic
+// single-select per-field chip loop so users see one chip per field, not two.
+const MULTI_FILTER_FIELDS = ['program', 'service_type', 'payer_description']
+
+// Fall back to a humanized version of the raw key when an org emits a field
+// not in FIELD_LABELS — keeps unknown fields from rendering as e.g.
+// "payer_description:" verbatim.
+function fieldLabel(key) {
+  if (FIELD_LABELS[key]) return FIELD_LABELS[key]
+  return key
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase())
+}
+
 // Generate link to Credible BH for a document ID
 const getCredibleLink = (documentId) =>
   `https://www.cbh3.crediblebh.com/visit/clientvisit_view.asp?clientvisit_id=${documentId}&provportal=0`
@@ -68,7 +87,7 @@ function parseRunIdTimestamp(runId) {
 
 export function ValidationRunDetailPage() {
   const { orgId, runId } = useParams()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const docIdFromUrl = searchParams.get('doc')
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -84,8 +103,19 @@ export function ValidationRunDetailPage() {
   const [markingIncorrectRuleId, setMarkingIncorrectRuleId] = useState(null)
   const [incorrectFeedbackText, setIncorrectFeedbackText] = useState('')
   const [submittingIncorrect, setSubmittingIncorrect] = useState(false)
-  const [programFilter, setProgramFilter] = useState('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
+  // Multi-select filters for specific field_values fields. Each entry is a Set
+  // of allowed values (OR semantics); an empty set means "no filter". Hydrated
+  // from the URL on mount, and written back to the URL on change so links are
+  // shareable. URL keys use the full field name (e.g. ?payer_description=A,B).
+  const [multiFilters, setMultiFilters] = useState(() => {
+    const init = {}
+    for (const name of MULTI_FILTER_FIELDS) {
+      const raw = searchParams.get(name)
+      init[name] = new Set(raw ? raw.split(',').filter(Boolean) : [])
+    }
+    return init
+  })
   // "Validation report date" — filters by the run.timestamp. Because every
   // doc on this page belongs to the same run, this ends up all-or-nothing.
   const [dateFilter, setDateFilter] = useState('all')
@@ -95,9 +125,27 @@ export function ValidationRunDetailPage() {
   const [serviceDateFilter, setServiceDateFilter] = useState('all')
   const [serviceCustomStartDate, setServiceCustomStartDate] = useState('')
   const [serviceCustomEndDate, setServiceCustomEndDate] = useState('')
+  // Per-field_values filter map: { fieldName: selectedValue }. A field is
+  // considered active when its entry exists and isn't 'all'. We use a single
+  // map rather than per-field useState because the field list is org-driven
+  // and only known after data loads.
+  const [fieldFilters, setFieldFilters] = useState({})
   // The detail endpoint doesn't echo a run timestamp, so grab it from the
   // runs-list endpoint (same source the Validation Results tab uses).
   const [runTimestamp, setRunTimestamp] = useState(null)
+
+  // Update one multi-select filter and sync to the URL. Empty set removes the
+  // query param entirely so a "no filters" state has a clean URL. Other query
+  // params (e.g. ?doc=...) are preserved.
+  const updateMultiFilter = (field, nextSet) => {
+    setMultiFilters(prev => ({ ...prev, [field]: nextSet }))
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (nextSet.size === 0) next.delete(field)
+      else next.set(field, Array.from(nextSet).join(','))
+      return next
+    }, { replace: true })
+  }
 
   // Load validation run data - only depends on orgId and runId
   useEffect(() => {
@@ -187,10 +235,20 @@ export function ValidationRunDetailPage() {
     let confirmed = 0
     let revenueAtRisk = 0
 
+    // Drop duplicate documents sharing a service_id (keep first occurrence)
+    // so they don't double-count in the summary cards.
+    const seenServiceIds = new Set()
+
     data.documents.forEach(doc => {
       // BedDay service types are exempt from the diagnosis_code/employee_name gate
       if (!hasRequiredFields(doc)) {
         return
+      }
+
+      const sid = doc.field_values?.service_id
+      if (sid != null && sid !== '') {
+        if (seenServiceIds.has(sid)) return
+        seenServiceIds.add(sid)
       }
 
       const failedRules = doc.rules?.filter(r => r.status === 'FAIL') || []
@@ -217,18 +275,14 @@ export function ValidationRunDetailPage() {
     return { needsAction, awaitingStaff, confirmed, revenueAtRisk }
   }, [data])
 
-  // Get unique programs, categories, and rules for filters
-  const { programs, categories, rules } = useMemo(() => {
-    if (!data?.documents) return { programs: [], categories: [], rules: [] }
+  // Get unique categories and rules for filters
+  const { categories, rules } = useMemo(() => {
+    if (!data?.documents) return { categories: [], rules: [] }
 
-    const programSet = new Set()
     const categorySet = new Set()
     const ruleSet = new Set()
 
     data.documents.forEach(doc => {
-      const program = doc.field_values?.program
-      if (program) programSet.add(program)
-
       doc.rules?.forEach(rule => {
         if (rule.category) categorySet.add(rule.category)
         const name = rule.rule_name || rule.rule_id
@@ -237,11 +291,57 @@ export function ValidationRunDetailPage() {
     })
 
     return {
-      programs: Array.from(programSet).sort(),
       categories: Array.from(categorySet).sort(),
       rules: Array.from(ruleSet).sort(),
     }
   }, [data])
+
+  // Distinct values for each multi-select field, drawn from this run's docs.
+  // Keys absent from any doc end up with an empty array → the chip auto-hides.
+  const multiFilterOptions = useMemo(() => {
+    const out = {}
+    for (const field of MULTI_FILTER_FIELDS) out[field] = new Set()
+    if (!data?.documents) return Object.fromEntries(MULTI_FILTER_FIELDS.map(f => [f, []]))
+    data.documents.forEach(doc => {
+      const fv = doc.field_values
+      if (!fv) return
+      for (const field of MULTI_FILTER_FIELDS) {
+        const v = fv[field]
+        if (v != null && v !== '') out[field].add(String(v))
+      }
+    })
+    return Object.fromEntries(
+      MULTI_FILTER_FIELDS.map(f => [f, Array.from(out[f]).sort()])
+    )
+  }, [data])
+
+  // Per-field_values dropdowns are generated from whatever field names show up
+  // in the run's documents — different orgs emit different schemas. Skip the
+  // fields that already have dedicated filters (the MULTI_FILTER_FIELDS multi-
+  // selects, plus service date) and document_id (high-cardinality, covered by
+  // free-text search).
+  const FIELD_FILTER_EXCLUDE = useMemo(
+    () => new Set([...MULTI_FILTER_FIELDS, 'date', 'document_id']),
+    []
+  )
+  const fieldValueOptions = useMemo(() => {
+    if (!data?.documents) return []
+    const byField = new Map()
+    data.documents.forEach(doc => {
+      const fv = doc.field_values
+      if (!fv) return
+      Object.entries(fv).forEach(([name, value]) => {
+        if (FIELD_FILTER_EXCLUDE.has(name)) return
+        if (value == null || value === '') return
+        const str = String(value)
+        if (!byField.has(name)) byField.set(name, new Set())
+        byField.get(name).add(str)
+      })
+    })
+    return Array.from(byField.entries())
+      .map(([name, values]) => ({ name, values: Array.from(values).sort() }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [data, FIELD_FILTER_EXCLUDE])
 
   // Filter documents
   const filteredDocs = useMemo(() => {
@@ -310,7 +410,18 @@ export function ValidationRunDetailPage() {
     // docs from this run are shown.
     if (!runPassesDateFilter) return []
 
-    return data.documents.filter(doc => {
+    // Drop duplicate documents that share a service_id, keeping the first
+    // occurrence. Docs without a service_id are always kept.
+    const seenServiceIds = new Set()
+    const dedupedDocs = data.documents.filter(doc => {
+      const sid = doc.field_values?.service_id
+      if (sid == null || sid === '') return true
+      if (seenServiceIds.has(sid)) return false
+      seenServiceIds.add(sid)
+      return true
+    })
+
+    return dedupedDocs.filter(doc => {
       // BedDay service types are exempt from the diagnosis_code/employee_name gate
       if (!hasRequiredFields(doc)) {
         return false
@@ -370,8 +481,21 @@ export function ValidationRunDetailPage() {
         if (!hasMatchingRule) return false
       }
 
-      // Program filter
-      if (programFilter !== 'all' && doc.field_values?.program !== programFilter) return false
+      // Multi-select filters (program, service_type, payer_description). OR
+      // semantics within a field, AND across fields. Empty set = no filter.
+      for (const field of MULTI_FILTER_FIELDS) {
+        const set = multiFilters[field]
+        if (!set || set.size === 0) continue
+        const raw = doc.field_values?.[field]
+        if (raw == null || !set.has(String(raw))) return false
+      }
+
+      // Dynamic per-field_values filters (single-select for everything else).
+      for (const [name, selected] of Object.entries(fieldFilters)) {
+        if (!selected || selected === 'all') continue
+        const raw = doc.field_values?.[name]
+        if (raw == null || String(raw) !== selected) return false
+      }
 
       // Category filter (document has at least one rule in category)
       if (categoryFilter !== 'all') {
@@ -383,7 +507,7 @@ export function ValidationRunDetailPage() {
 
       return true
     })
-  }, [data, runId, runTimestamp, searchTerm, statusFilter, ruleFilter, programFilter, categoryFilter, dateFilter, customStartDate, customEndDate, serviceDateFilter, serviceCustomStartDate, serviceCustomEndDate])
+  }, [data, runId, runTimestamp, searchTerm, statusFilter, ruleFilter, multiFilters, categoryFilter, dateFilter, customStartDate, customEndDate, serviceDateFilter, serviceCustomStartDate, serviceCustomEndDate, fieldFilters])
 
   // Track if this is the first render to skip the statusFilter effect on mount
   const isFirstRender = useRef(true)
@@ -485,15 +609,20 @@ export function ValidationRunDetailPage() {
           {rules.map(r => <option key={r} value={r}>{r}</option>)}
         </FilterChip>
 
-        <FilterChip
-          active={programFilter !== 'all'}
-          iconPath="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"
-          value={programFilter}
-          onChange={setProgramFilter}
-        >
-          <option value="all">All programs</option>
-          {programs.map(p => <option key={p} value={p}>{p}</option>)}
-        </FilterChip>
+        {MULTI_FILTER_FIELDS.map(field => {
+          const options = multiFilterOptions[field] || []
+          if (options.length === 0) return null
+          return (
+            <MultiSelectFilterChip
+              key={`multi-${field}`}
+              label={FIELD_LABELS[field] || fieldLabel(field)}
+              iconPath="M5 13l4 4L19 7"
+              options={options}
+              selected={multiFilters[field]}
+              onChange={(next) => updateMultiFilter(field, next)}
+            />
+          )
+        })}
 
         <FilterChip
           active={categoryFilter !== 'all'}
@@ -504,6 +633,24 @@ export function ValidationRunDetailPage() {
           <option value="all">All categories</option>
           {categories.map(c => <option key={c} value={c}>{c}</option>)}
         </FilterChip>
+
+        {fieldValueOptions.map(({ name, values }) => {
+          const label = FIELD_LABELS[name] || name
+          const selected = fieldFilters[name] || 'all'
+          return (
+            <FilterChip
+              key={`fv-${name}`}
+              active={selected !== 'all'}
+              iconPath="M4 6h16M4 12h8m-8 6h16"
+              value={selected}
+              onChange={(v) => setFieldFilters(prev => ({ ...prev, [name]: v }))}
+              label={label}
+            >
+              <option value="all">All</option>
+              {values.map(v => <option key={v} value={v}>{v}</option>)}
+            </FilterChip>
+          )
+        })}
 
         <FilterChip
           active={dateFilter !== 'all'}
@@ -802,6 +949,132 @@ function FilterChip({ active, iconPath, value, onChange, children, maxSelectWidt
   )
 }
 
+// Multi-select chip: pill that opens a popover with checkbox list. Used for
+// field_values fields where users want OR semantics ("Aetna or Medicare").
+// `selected` is a Set; `onChange` receives a new Set. Search box auto-shows
+// when option count exceeds 30 (keeps long payer lists scannable without
+// adding ceremony for short ones).
+function MultiSelectFilterChip({ label, iconPath, options, selected, onChange }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const rootRef = useRef(null)
+  const searchable = options.length > 30
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false)
+    }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const active = selected.size > 0
+  const summary = selected.size === 0
+    ? `All ${label.toLowerCase()}`
+    : selected.size === 1
+      ? Array.from(selected)[0]
+      : `${selected.size} selected`
+
+  const filtered = query
+    ? options.filter(o => o.toLowerCase().includes(query.toLowerCase()))
+    : options
+
+  const toggle = (value) => {
+    const next = new Set(selected)
+    if (next.has(value)) next.delete(value)
+    else next.add(value)
+    onChange(next)
+  }
+
+  return (
+    <div ref={rootRef} className="relative inline-block">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className={`inline-flex items-center gap-1.5 rounded-full pl-3 pr-3 py-1 border shadow-sm transition-colors ${
+          active
+            ? 'bg-blue-50 border-blue-200 text-blue-700'
+            : 'bg-white border-gray-200 hover:border-gray-300 text-gray-700'
+        }`}
+      >
+        <svg
+          className={`w-3.5 h-3.5 ${active ? 'text-blue-500' : 'text-gray-400'}`}
+          fill="none" stroke="currentColor" viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={iconPath} />
+        </svg>
+        <span className="text-[10px] font-semibold uppercase tracking-wider">
+          {label}
+        </span>
+        <span className="text-xs font-medium truncate max-w-[160px]">
+          {summary}
+        </span>
+        <svg
+          className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''} ${active ? 'text-blue-500' : 'text-gray-400'}`}
+          fill="none" stroke="currentColor" viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute z-20 mt-1 left-0 w-64 bg-white border border-gray-200 rounded-lg shadow-lg">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-gray-100">
+            <button
+              type="button"
+              onClick={() => onChange(new Set(options))}
+              className="text-xs text-blue-600 hover:text-blue-800"
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              onClick={() => onChange(new Set())}
+              className="text-xs text-gray-500 hover:text-gray-700"
+            >
+              Clear
+            </button>
+          </div>
+          {searchable && (
+            <div className="px-2 py-2 border-b border-gray-100">
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search..."
+                className="w-full px-2 py-1 border border-gray-200 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+          )}
+          <div className="max-h-64 overflow-y-auto py-1">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-gray-400">No matches</div>
+            ) : filtered.map(opt => (
+              <label
+                key={opt}
+                className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.has(opt)}
+                  onChange={() => toggle(opt)}
+                  className="rounded text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-xs text-gray-700 truncate">{opt}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function CustomDateRange({ label, start, onStartChange, end, onEndChange, onClear }) {
   return (
     <div className="flex items-end gap-3 flex-wrap">
@@ -927,62 +1200,18 @@ function DocumentListItem({ doc, selected, onClick }) {
         </div>
       </div>
 
-      {/* Field values grid */}
+      {/* Field values — render every key present on the doc. employee_name,
+          service_id, document_id are rendered in the header above and skipped
+          here to avoid duplication. */}
       <div className="text-xs text-gray-500 space-y-1">
-        {/* Program */}
-        {fv.program && (
-          <div className="flex items-center gap-1">
-            <span className="text-gray-400">Program:</span>
-            <span className="text-gray-600">{fv.program}</span>
-          </div>
-        )}
-
-        {/* Service type */}
-        {fv.service_type && (
-          <div className="flex items-center gap-1">
-            <span className="text-gray-400">Type:</span>
-            <span className="text-gray-600">{fv.service_type}</span>
-          </div>
-        )}
-
-        {/* Date and CPT on same row */}
-        <div className="flex items-center gap-3">
-          {fv.date && (
-            <div className="flex items-center gap-1">
-              <span className="text-gray-400">Date:</span>
-              <span className="text-gray-600">{fv.date}</span>
+        {Object.entries(fv)
+          .filter(([k, v]) => v != null && v !== '' && !CARD_HEADER_FIELDS.has(k))
+          .map(([k, v]) => (
+            <div key={k} className="flex items-center gap-1">
+              <span className="text-gray-400">{fieldLabel(k)}:</span>
+              <span className="text-gray-600">{k === 'rate' ? `$${v}` : String(v)}</span>
             </div>
-          )}
-          {fv.cpt_code && (
-            <div className="flex items-center gap-1">
-              <span className="text-gray-400">CPT:</span>
-              <span className="text-gray-600">{fv.cpt_code}</span>
-            </div>
-          )}
-        </div>
-
-        {/* Diagnosis and Rate on same row */}
-        <div className="flex items-center gap-3">
-          {fv.diagnosis_code && (
-            <div className="flex items-center gap-1">
-              <span className="text-gray-400">Dx:</span>
-              <span className="text-gray-600">{fv.diagnosis_code}</span>
-            </div>
-          )}
-          {fv.bed_day_diagnosis_code && (
-            <div className="flex items-center gap-1">
-              <span className="text-gray-400">Bed Day Dx:</span>
-              <span className="text-gray-600">{fv.bed_day_diagnosis_code}</span>
-            </div>
-          )}
-          {fv.rate && (
-            <div className="flex items-center gap-1">
-              <span className="text-gray-400">Rate:</span>
-              <span className="text-gray-600">${fv.rate}</span>
-            </div>
-          )}
-        </div>
-
+          ))}
       </div>
 
       {/* Rule status indicators — sorted FAIL → PASS → SKIP */}

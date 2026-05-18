@@ -90,6 +90,8 @@ class AdminUi(Construct):
                     "!admin_api.py",
                     "!permissions.py",
                     "!analytics_helpers.py",
+                    "!nl_agent.py",
+                    "!nl_agent_tools.py",
                     "!sqlparse/**",
                 ],
                 bundling=BundlingOptions(
@@ -98,6 +100,8 @@ class AdminUi(Construct):
                         (os.path.join(lambda_api_dir, "admin_api.py"), None),
                         (os.path.join(lambda_api_dir, "permissions.py"), None),
                         (os.path.join(lambda_api_dir, "analytics_helpers.py"), None),
+                        (os.path.join(lambda_api_dir, "nl_agent.py"), None),
+                        (os.path.join(lambda_api_dir, "nl_agent_tools.py"), None),
                         (os.path.join(lambda_api_dir, "sqlparse"), None),
                     ]),
                 ),
@@ -113,10 +117,18 @@ class AdminUi(Construct):
             },
         )
 
+        # Agent intermediate payloads spill into each org's own bucket
+        # (`penguin-health-{org_id}`) under the `agent-io/` prefix —
+        # same compliance boundary as Athena's `athena-results/` output,
+        # never a shared cross-org bucket. Operators should apply a 1-day
+        # S3 lifecycle rule on `agent-io/` per org bucket to match the
+        # DynamoDB job-item TTL. The worker IAM grant for `s3:PutObject`
+        # on `penguin-health-*` (further below) already covers this path.
+
         # ----- Deep Analytics Worker Lambda -----
         # Same code bundle as the api function, but invoked async by the
-        # api lambda to do per-row Bedrock extraction without the 30s API
-        # Gateway HTTP API integration timeout.
+        # api lambda to drive the agent loop without the 30s API Gateway
+        # HTTP API integration timeout.
         self.deep_worker_function = _lambda.Function(self, "DeepAnalyticsWorkerFunction",
             function_name=f"{config.PROJECT_NAME}-deep-analytics-worker",
             runtime=_lambda.Runtime.PYTHON_3_14,
@@ -128,6 +140,8 @@ class AdminUi(Construct):
                     "!admin_api.py",
                     "!permissions.py",
                     "!analytics_helpers.py",
+                    "!nl_agent.py",
+                    "!nl_agent_tools.py",
                     "!sqlparse/**",
                 ],
                 bundling=BundlingOptions(
@@ -136,12 +150,14 @@ class AdminUi(Construct):
                         (os.path.join(lambda_api_dir, "admin_api.py"), None),
                         (os.path.join(lambda_api_dir, "permissions.py"), None),
                         (os.path.join(lambda_api_dir, "analytics_helpers.py"), None),
+                        (os.path.join(lambda_api_dir, "nl_agent.py"), None),
+                        (os.path.join(lambda_api_dir, "nl_agent_tools.py"), None),
                         (os.path.join(lambda_api_dir, "sqlparse"), None),
                     ]),
                 ),
             ),
-            # 200 rows * ~3s/row best case, plus overhead. 10 min gives us
-            # plenty of headroom without running unbounded jobs.
+            # An agent run is ~5-10 Bedrock turns plus per-row extraction
+            # batches; 10 min keeps headroom for the longest extraction.
             timeout=Duration.minutes(10),
             memory_size=config.LAMBDA_DEFAULT_MEMORY_MB,
             environment={
@@ -176,12 +192,57 @@ class AdminUi(Construct):
             ],
         ))
 
-        # Worker also needs Bedrock (this is its only job).
+        # Worker needs Bedrock (driving the agent loop + per-row extraction).
         self.deep_worker_function.add_to_role_policy(iam.PolicyStatement(
             actions=["bedrock:InvokeModel"],
             resources=[
                 "arn:aws:bedrock:*::foundation-model/anthropic.*",
                 "arn:aws:bedrock:*:*:inference-profile/*",
+            ],
+        ))
+
+        # Worker runs Athena via the run_sql tool — same scope as the api
+        # function so per-org workgroup isolation is preserved.
+        self.deep_worker_function.add_to_role_policy(iam.PolicyStatement(
+            actions=[
+                "athena:StartQueryExecution",
+                "athena:GetQueryExecution",
+                "athena:GetQueryResults",
+                "athena:StopQueryExecution",
+            ],
+            resources=[
+                f"arn:aws:athena:{config.AWS_REGION}:*:workgroup/{config.PROJECT_NAME}-analytics-*"
+            ],
+        ))
+        self.deep_worker_function.add_to_role_policy(iam.PolicyStatement(
+            actions=[
+                "glue:GetDatabase",
+                "glue:GetTable",
+                "glue:GetTables",
+                "glue:GetPartitions",
+            ],
+            resources=[
+                f"arn:aws:glue:{config.AWS_REGION}:*:catalog",
+                f"arn:aws:glue:{config.AWS_REGION}:*:database/penguin_health_analytics",
+                f"arn:aws:glue:{config.AWS_REGION}:*:table/penguin_health_analytics/*",
+            ],
+        ))
+        # Worker also reads per-org data buckets (Athena needs s3:GetObject
+        # on the source data), writes Athena results to athena-results/,
+        # and spills agent intermediate payloads to agent-io/ in the SAME
+        # org bucket. Wildcard ARN keeps all of those paths under one
+        # compliance-bounded grant.
+        self.deep_worker_function.add_to_role_policy(iam.PolicyStatement(
+            actions=[
+                "s3:GetObject",
+                "s3:GetBucketLocation",
+                "s3:ListBucket",
+                "s3:PutObject",
+                "s3:AbortMultipartUpload",
+            ],
+            resources=[
+                f"arn:aws:s3:::{config.PROJECT_NAME}-*",
+                f"arn:aws:s3:::{config.PROJECT_NAME}-*/*",
             ],
         ))
 

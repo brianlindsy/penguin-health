@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Script to delete all validation runs and associated document validations
-for an organization, except for a specific validation run to keep.
+Script to delete validation runs and associated document validations
+for an organization. Deletes any run whose ID date is on or before
+CUTOFF_DATE, plus any IDs listed in EXTRA_RUN_IDS.
 
 Usage:
     python scripts/cleanup_validation_runs.py
@@ -14,8 +15,13 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 # Configuration
-ORG_ID = "catholic-charities-multi-org"
-KEEP_RUN_ID = "20260422-145927"
+ORG_ID = "circles-of-care"
+# Delete all runs on or before this date (inclusive). Run IDs are
+# formatted as YYYYMMDD-HHMMSS, so the date prefix is the first 8 chars.
+CUTOFF_DATE = "20260422"
+EXTRA_RUN_IDS = {
+    "20260514-205110"
+}
 TABLE_NAME = "penguin-health-validation-results"
 DRY_RUN = False  # Set to False to actually delete
 
@@ -173,9 +179,19 @@ def delete_items(items_to_delete):
     return deleted_count
 
 
+def should_delete(run_id):
+    """A run is targeted for deletion if its date prefix is <= CUTOFF_DATE
+    or it appears in EXTRA_RUN_IDS."""
+    if run_id in EXTRA_RUN_IDS:
+        return True
+    date_prefix = run_id.split("-", 1)[0]
+    return len(date_prefix) == 8 and date_prefix.isdigit() and date_prefix <= CUTOFF_DATE
+
+
 def main():
     print(f"Cleanup Validation Runs for {ORG_ID}")
-    print(f"Keeping run: {KEEP_RUN_ID}")
+    print(f"Cutoff date (inclusive): {CUTOFF_DATE}")
+    print(f"Extra run IDs to delete: {sorted(EXTRA_RUN_IDS)}")
     print(f"Table: {TABLE_NAME}")
     print(f"DRY RUN: {DRY_RUN}")
     print("-" * 60)
@@ -184,15 +200,13 @@ def main():
     all_run_ids = get_all_run_ids_for_org(ORG_ID)
     print(f"Found {len(all_run_ids)} validation runs for {ORG_ID}")
 
-    # Filter out the run to keep
-    runs_to_delete = [r for r in all_run_ids if r != KEEP_RUN_ID]
+    runs_to_delete = [r for r in all_run_ids if should_delete(r)]
     print(f"Runs to delete: {len(runs_to_delete)}")
-    print(f"Run to keep: {KEEP_RUN_ID}")
 
-    if KEEP_RUN_ID not in all_run_ids:
-        print(f"\nWARNING: Run {KEEP_RUN_ID} not found in the list of runs!")
-        print("Available runs:")
-        for run_id in sorted(all_run_ids):
+    missing_extras = EXTRA_RUN_IDS - set(all_run_ids)
+    if missing_extras:
+        print(f"\nWARNING: these EXTRA_RUN_IDS were not found for {ORG_ID}:")
+        for run_id in sorted(missing_extras):
             print(f"  - {run_id}")
 
     print("-" * 60)

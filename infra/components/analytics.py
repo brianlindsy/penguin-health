@@ -72,6 +72,7 @@ ORG_TABLES = {
             "icd10_codes",
             "problem_list_order",
             "diagnosis_on_service",
+            "payer_description",
             "fake_client_id2",
             "clientvisit_id2",
             "first_referral",
