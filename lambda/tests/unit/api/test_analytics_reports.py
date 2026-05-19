@@ -310,3 +310,84 @@ class TestAuthz:
         )
         resp = lambda_handler(evt, None)
         assert resp['statusCode'] == 403
+
+    def test_org_user_can_get_report_in_own_org_without_sql(
+        self, mock_dynamodb, super_admin_event, org_user_event,
+    ):
+        """Same-org non-admin members can read the report, but `sql` is stripped
+        and a `redacted: true` flag is set. Rows remain so the UI can render."""
+        from admin_api import lambda_handler
+
+        save_resp = lambda_handler(_make_event(
+            super_admin_event,
+            'POST /api/organizations/{orgId}/analytics/reports',
+            'test-org',
+            body=_good_report_body(),
+        ), None)
+        report_id = json.loads(save_resp['body'])['report_id']
+
+        resp = lambda_handler(_make_event(
+            org_user_event,
+            'GET /api/organizations/{orgId}/analytics/reports/{reportId}',
+            'test-org',
+            report_id=report_id,
+        ), None)
+        assert resp['statusCode'] == 200
+        body = json.loads(resp['body'])
+        assert body['redacted'] is True
+        assert 'sql' not in body
+        # Rows + columns remain so the frontend can render a table view.
+        assert body['rows'] == [['42']]
+        assert body['columns'] == [{'name': '_col0', 'type': 'bigint'}]
+
+    def test_super_admin_get_report_includes_sql_and_no_redacted_flag(
+        self, mock_dynamodb, super_admin_event,
+    ):
+        from admin_api import lambda_handler
+        save_resp = lambda_handler(_make_event(
+            super_admin_event,
+            'POST /api/organizations/{orgId}/analytics/reports',
+            'test-org',
+            body=_good_report_body(),
+        ), None)
+        report_id = json.loads(save_resp['body'])['report_id']
+
+        resp = lambda_handler(_make_event(
+            super_admin_event,
+            'GET /api/organizations/{orgId}/analytics/reports/{reportId}',
+            'test-org',
+            report_id=report_id,
+        ), None)
+        body = json.loads(resp['body'])
+        assert 'sql' in body and body['sql']
+        assert 'redacted' not in body
+
+    def test_org_user_cannot_delete_report_in_own_org(
+        self, mock_dynamodb, super_admin_event, org_user_event,
+    ):
+        """Even within their own org, non-super-admin members cannot delete."""
+        from admin_api import lambda_handler
+        save_resp = lambda_handler(_make_event(
+            super_admin_event,
+            'POST /api/organizations/{orgId}/analytics/reports',
+            'test-org',
+            body=_good_report_body(),
+        ), None)
+        report_id = json.loads(save_resp['body'])['report_id']
+
+        resp = lambda_handler(_make_event(
+            org_user_event,
+            'DELETE /api/organizations/{orgId}/analytics/reports/{reportId}',
+            'test-org',
+            report_id=report_id,
+        ), None)
+        assert resp['statusCode'] == 403
+
+        # And the report is still there.
+        get_resp = lambda_handler(_make_event(
+            super_admin_event,
+            'GET /api/organizations/{orgId}/analytics/reports/{reportId}',
+            'test-org',
+            report_id=report_id,
+        ), None)
+        assert get_resp['statusCode'] == 200

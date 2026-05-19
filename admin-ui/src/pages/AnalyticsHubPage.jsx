@@ -13,7 +13,7 @@ function useVisibleTabs() {
   const perms = usePermissions()
   return [
     perms.isSuperAdmin && { key: 'nl-explorer', label: 'NL Explorer' },
-    perms.isSuperAdmin && { key: 'reports', label: 'Saved Reports' },
+    { key: 'reports', label: 'Saved Reports' },
     perms.canViewAnalytics('staff_performance') && {
       key: 'staff-performance', label: 'Staff Performance',
     },
@@ -87,9 +87,7 @@ export function AnalyticsHubPage() {
         </RoleGuard>
       )}
       {activeTab === 'reports' && (
-        <RoleGuard requireSuperAdmin>
-          <SavedReportsTab orgId={orgId} refreshKey={reportsRefreshKey} />
-        </RoleGuard>
+        <SavedReportsTab orgId={orgId} refreshKey={reportsRefreshKey} />
       )}
       {activeTab === 'staff-performance' && (
         <RoleGuard requireAnalytics="staff_performance">

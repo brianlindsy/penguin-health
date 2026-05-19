@@ -13,6 +13,7 @@ import { AuditRulesPage } from './pages/AuditRulesPage.jsx'
 import { AuditRuleDetailPage } from './pages/AuditRuleDetailPage.jsx'
 import { ValidationResultsPage } from './pages/ValidationResultsPage.jsx'
 import { AnalyticsHubPage } from './pages/AnalyticsHubPage.jsx'
+import { SavedReportPage } from './pages/SavedReportPage.jsx'
 import { DashboardPage } from './pages/DashboardPage.jsx'
 import { UsersPage } from './pages/UsersPage.jsx'
 import { setTokenProvider, setOnUnauthorized } from './api/client.js'
@@ -79,6 +80,10 @@ function App() {
         <Route
           path="/organizations/:orgId/analytics"
           element={<AnalyticsHubPage />}
+        />
+        <Route
+          path="/organizations/:orgId/analytics/reports/:reportId"
+          element={<SavedReportPage />}
         />
         <Route
           path="/organizations/:orgId/staff-performance"
