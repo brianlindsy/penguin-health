@@ -52,3 +52,11 @@ test-events/
 config/
 
 infra/config.py
+
+# CDK synth output — regenerated on every `cdk synth`; never commit
+cdk.out/
+
+# Local environment files — only .env.example should be tracked
+.env
+.env.local
+.env.*.local

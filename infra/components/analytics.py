@@ -256,6 +256,29 @@ VALIDATION_RESULT_COLUMNS = [
 ]
 
 
+# FHIR Encounter Parquet schema — one row per encounter materialized by the
+# fhir-encounter-materializer Lambda. Must match `project_encounter` in
+# lambda/multi-org/fhir/fhir_projections.py. The canonical raw resource lives
+# at `ndjson_s3_key` line `ndjson_line_no` under `data/fhir/encounter/`.
+FHIR_ENCOUNTER_COLUMNS = [
+    ("encounter_id", "string"),
+    ("status", "string"),
+    ("class_code", "string"),
+    ("class_system", "string"),
+    ("period_start", "string"),
+    ("period_end", "string"),
+    ("subject_reference", "string"),
+    ("service_provider_reference", "string"),
+    ("reason_codes_json", "string"),
+    ("type_codes_json", "string"),
+    ("participant_refs_json", "string"),
+    ("ndjson_s3_key", "string"),
+    ("ndjson_line_no", "bigint"),
+    ("fetched_at", "string"),
+    ("fhir_lookup_status", "string"),
+]
+
+
 GLUE_DATABASE_NAME = "penguin_health_analytics"
 
 
@@ -455,3 +478,65 @@ class Analytics(Construct):
             ),
         )
         validation_table.add_dependency(self.database)
+
+        # FHIR encounters table — one per org. Materialized by the
+        # fhir-encounter-materializer Lambda from each org's FHIR API. The
+        # LOCATION is rooted in this org's bucket: per-org isolation is
+        # identical to the validation_results table above. Each Parquet row
+        # carries an `ndjson_s3_key` + `ndjson_line_no` pointer back to the
+        # canonical raw FHIR resource under `data/fhir/encounter/`.
+        fhir_encounters_table = glue.CfnTable(
+            self, f"FhirEncountersTable_{suffix}",
+            catalog_id=account,
+            database_name=GLUE_DATABASE_NAME,
+            table_input=glue.CfnTable.TableInputProperty(
+                name=f"fhir_encounters_{suffix}",
+                description=(
+                    f"Materialized FHIR Encounter resources for {org_id}, "
+                    f"fetched on demand after each daily SFTP ingest. The "
+                    f"raw FHIR JSON is at data/fhir/encounter/...ndjson; "
+                    f"this Parquet is the projected, queryable surface."
+                ),
+                table_type="EXTERNAL_TABLE",
+                parameters={
+                    "classification": "parquet",
+                    "projection.enabled": "true",
+                    "projection.ingest_date.type": "date",
+                    "projection.ingest_date.format": "yyyy-MM-dd",
+                    "projection.ingest_date.range": "2026-05-01,NOW",
+                    "projection.ingest_date.interval": "1",
+                    "projection.ingest_date.interval.unit": "DAYS",
+                    "storage.location.template": (
+                        f"s3://{bucket}/analytics/fhir/encounter/"
+                        f"ingest_date=${{ingest_date}}/"
+                    ),
+                },
+                partition_keys=[
+                    glue.CfnTable.ColumnProperty(
+                        name="ingest_date", type="string"
+                    ),
+                ],
+                storage_descriptor=glue.CfnTable.StorageDescriptorProperty(
+                    location=f"s3://{bucket}/analytics/fhir/encounter/",
+                    input_format=(
+                        "org.apache.hadoop.hive.ql.io.parquet."
+                        "MapredParquetInputFormat"
+                    ),
+                    output_format=(
+                        "org.apache.hadoop.hive.ql.io.parquet."
+                        "MapredParquetOutputFormat"
+                    ),
+                    serde_info=glue.CfnTable.SerdeInfoProperty(
+                        serialization_library=(
+                            "org.apache.hadoop.hive.ql.io.parquet.serde."
+                            "ParquetHiveSerDe"
+                        ),
+                    ),
+                    columns=[
+                        glue.CfnTable.ColumnProperty(name=name, type=type_)
+                        for name, type_ in FHIR_ENCOUNTER_COLUMNS
+                    ],
+                ),
+            ),
+        )
+        fhir_encounters_table.add_dependency(self.database)

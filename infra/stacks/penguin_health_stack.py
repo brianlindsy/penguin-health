@@ -19,6 +19,7 @@ from components.database import Database
 from components.admin_ui import AdminUi
 from components.audit_engine import AuditEngine
 from components.analytics import Analytics
+from components.jwks_hosting import JwksHosting
 
 
 class PenguinHealthStack(Stack):
@@ -51,6 +52,18 @@ class PenguinHealthStack(Stack):
 
         # ----- Analytics (Athena + Glue) -----
         analytics = Analytics(self, "Analytics")
+
+        # ----- JWKS hosting for FHIR private_key_jwt -----
+        # The S3 bucket holds per-org JWK Set files; CloudFront fronts it.
+        # The URLs handed to FHIR vendors look like:
+        #     {public_base_url}/{org_id}/jwks.json
+        # If JWKS_DOMAIN/JWKS_CERT_ARN are unset, this deploys with a
+        # cloudfront.net URL (fine for testing, not for vendor registration
+        # because the hostname is then tied to this distribution).
+        jwks = JwksHosting(self, "JwksHosting",
+            jwks_domain=config.JWKS_DOMAIN,
+            cert_arn=config.JWKS_CERT_ARN,
+        )
 
         # ----- Outputs: Admin UI -----
         CfnOutput(self, "UserPoolId",
@@ -109,3 +122,17 @@ class PenguinHealthStack(Stack):
                 value=wg.name,
                 description=f"Athena workgroup for {org_id}",
             )
+
+        # ----- Outputs: JWKS -----
+        CfnOutput(self, "JwksBucketName",
+            value=jwks.bucket.bucket_name,
+            description="S3 bucket where provision_fhir_keypair.py uploads JWK Sets",
+        )
+        CfnOutput(self, "JwksBaseUrl",
+            value=jwks.public_base_url,
+            description="Public base URL for FHIR JWKS — give vendors {base}/{org_id}/jwks.json",
+        )
+        CfnOutput(self, "JwksDistributionId",
+            value=jwks.distribution.distribution_id,
+            description="CloudFront Distribution ID (for JWKS cache invalidation on key rotation)",
+        )

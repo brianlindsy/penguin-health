@@ -49,16 +49,27 @@ class PipInstallBundler:
     """
 
     def __init__(self, source_paths: list[str], requirements: list[str],
-                 python_version: str = "3.13"):
+                 python_version: str = "3.13",
+                 source_dirs: list[tuple[str, str | None]] | None = None):
         self._source_paths = source_paths
         self._requirements = requirements
         self._python_version = python_version
+        # Optional sibling directories to copy in alongside the source files.
+        # Each entry is (source_path, dest_name). dest_name=None reuses the
+        # directory's basename, which is the typical case for shared Python
+        # packages.
+        self._source_dirs = source_dirs or []
 
     def try_bundle(self, output_dir: str, options) -> bool:
+        import os
         import subprocess
 
         for path in self._source_paths:
             shutil.copy2(path, output_dir)
+
+        for source_path, dest_name in self._source_dirs:
+            dest = os.path.join(output_dir, dest_name or os.path.basename(source_path))
+            shutil.copytree(source_path, dest)
 
         if self._requirements:
             cmd = [

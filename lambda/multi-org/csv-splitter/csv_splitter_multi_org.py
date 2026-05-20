@@ -9,6 +9,7 @@ dates and re-run them at will. Older versions of this Lambda wrote to
 csv-staging/, which is no longer read by anything.
 """
 
+import json
 from datetime import datetime, timezone
 
 import boto3
@@ -22,6 +23,11 @@ from splitters.circles_of_care import CirclesOfCareSplitter
 from splitters.demo import DemoSplitter
 
 s3_client = boto3.client('s3')
+events_client = boto3.client('events')
+
+
+SFTP_INGEST_COMPLETE_SOURCE = 'penguin-health.csv-splitter'
+SFTP_INGEST_COMPLETE_DETAIL_TYPE = 'SftpIngestComplete'
 
 # Registry of org-specific splitters
 SPLITTER_REGISTRY = {}
@@ -60,6 +66,7 @@ def lambda_handler(event, context):
     """
     processed_count = 0
     chart_count = 0
+    ingests_completed = set()  # (org_id, ingest_date) — dedup events within an invocation
 
     for record in event.get('Records', []):
         bucket = record['s3']['bucket']['name']
@@ -148,6 +155,13 @@ def lambda_handler(event, context):
             print(f"ERROR archiving original CSV: {e}")
 
         processed_count += 1
+        ingests_completed.add((org_id, ingest_date))
+
+    # Fire one EventBridge event per (org, ingest_date) so followers (e.g. the
+    # FHIR materializer) can fan out. Best-effort: a failure to publish must
+    # not fail the ingest itself.
+    for org_id, ingest_date in ingests_completed:
+        _emit_ingest_complete(org_id, ingest_date)
 
     return {
         'statusCode': 200,
@@ -157,3 +171,22 @@ def lambda_handler(event, context):
             'charts_staged': chart_count,
         }
     }
+
+
+def _emit_ingest_complete(org_id, ingest_date):
+    detail = {
+        'organization_id': org_id,
+        'ingest_date': ingest_date,
+    }
+    try:
+        events_client.put_events(Entries=[{
+            'Source': SFTP_INGEST_COMPLETE_SOURCE,
+            'DetailType': SFTP_INGEST_COMPLETE_DETAIL_TYPE,
+            'Detail': json.dumps(detail),
+        }])
+        print(f"Emitted SftpIngestComplete for org={org_id} ingest_date={ingest_date}")
+    except Exception as e:
+        print(
+            f"WARN: failed to emit SftpIngestComplete for org={org_id} "
+            f"ingest_date={ingest_date}: {e}"
+        )
