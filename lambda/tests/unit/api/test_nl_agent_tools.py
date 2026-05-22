@@ -18,6 +18,63 @@ import nl_agent_tools
 
 
 CIRCLES = "circles-of-care"
+CC = "catholic-charities-multi-org"
+
+
+# ----------------------------------------------------------------------
+# inspect_schema handler — verifies audited metadata reaches the wire
+# ----------------------------------------------------------------------
+
+class TestInspectSchemaHandler:
+    """The schema payload is the highest-leverage context the agent
+    receives — every other tool depends on what it sees here. Bugs that
+    silently drop role/values/do_not_use_for/groups would degrade the
+    agent invisibly. These tests guard the wire contract."""
+
+    def test_payload_includes_audited_per_column_fields(self):
+        handler = nl_agent_tools.make_inspect_schema_handler(CC)
+        out = handler({})
+        chart = out["tables"]["charts_catholic_charities_multi_org"]
+        cols = {c["name"]: c for c in chart["columns"]}
+        # The flagship "misleading name" case must reach the agent intact:
+        # role, notes, AND do_not_use_for all present.
+        g = cols["plan_goals_only_47b"]
+        assert g["role"] == "narrative_prose"
+        assert "do_not_use_for" in g
+        # And boolean flags carry their observed values inline.
+        assert set(cols["approved_24"]["values"]) == {"Yes", "No"}
+
+    def test_payload_includes_row_grain_and_groups(self):
+        handler = nl_agent_tools.make_inspect_schema_handler(CC)
+        out = handler({})
+        assert out["row_grain"] == "visit"
+        names = {g["name"] for g in out["column_groups"]}
+        assert "plan_content" in names
+        assert "visit_times" in names
+
+    def test_payload_includes_join_keys_in_athena_form(self):
+        handler = nl_agent_tools.make_inspect_schema_handler(CC)
+        out = handler({})
+        assert "consumer_name_2" in out["join_keys"]["patient_grain"]
+        assert "service_id_1" in out["join_keys"]["visit_grain"]
+
+    def test_orgs_without_audit_omit_metadata_fields(self):
+        # circles-of-care has no audit JSON. The payload should still be
+        # well-formed, just without the metadata blocks.
+        handler = nl_agent_tools.make_inspect_schema_handler(CIRCLES)
+        out = handler({})
+        assert "row_grain" not in out
+        # column_groups is omitted when empty so the agent's prompt stays tight.
+        assert "column_groups" not in out
+
+    def test_empty_fields_skipped_to_keep_payload_tight(self):
+        # Columns without any audited extras should not carry empty
+        # role/values/do_not_use_for keys — they'd be noise in the prompt.
+        handler = nl_agent_tools.make_inspect_schema_handler(CIRCLES)
+        out = handler({})
+        for c in out["tables"]["charts_circles_of_care"]["columns"]:
+            assert c.get("role", "<absent>") != ""
+            assert c.get("do_not_use_for", "<absent>") != ""
 
 
 # ----------------------------------------------------------------------
@@ -479,6 +536,162 @@ class TestSelectColumnsHandler:
             },
         })
         assert out["code"] == "BAD_COMPUTED"
+
+
+# ----------------------------------------------------------------------
+# filter_rows handler — drop rows from a cached run by a column predicate
+# ----------------------------------------------------------------------
+
+class TestFilterRowsHandler:
+    def _seed(self, cache):
+        return cache.put(
+            "extract",
+            columns=[
+                {"name": "row_index", "type": "number"},
+                {"name": "clientvisit_id", "type": "string"},
+                {"name": "answer", "type": "string"},
+                {"name": "extracted_value", "type": "string"},
+            ],
+            rows=[
+                {"row_index": 0, "clientvisit_id": "v1",
+                 "answer": "Brought in by Melbourne PD", "extracted_value": "YES"},
+                {"row_index": 1, "clientvisit_id": "v2",
+                 "answer": "Voluntary walk-in", "extracted_value": "NO"},
+                {"row_index": 2, "clientvisit_id": "v3",
+                 "answer": "Sent by HRMC", "extracted_value": "YES"},
+                {"row_index": 3, "clientvisit_id": "v4",
+                 "answer": "", "extracted_value": ""},
+            ],
+            meta={},
+        )
+
+    def test_eq_keeps_matching_rows(self):
+        # The flagship case: keep only the "YES" rows from an extract.
+        cache = nl_agent_tools.RunCache()
+        run_id = self._seed(cache)
+        handler = nl_agent_tools.make_filter_rows_handler(cache)
+
+        out = handler({
+            "from_run_id": run_id,
+            "field": "extracted_value",
+            "op": "==",
+            "value": "YES",
+        })
+        assert out["row_count"] == 2
+        # Columns must be preserved verbatim so downstream tools (aggregate,
+        # select_columns, finalize) see the same shape.
+        assert [c["name"] for c in out["columns"]] == [
+            "row_index", "clientvisit_id", "answer", "extracted_value",
+        ]
+        # And the cached rows are usable as input to the next tool.
+        cached = cache.get(out["run_id"])
+        assert {r["clientvisit_id"] for r in cached["rows"]} == {"v1", "v3"}
+        assert out["run_id"].startswith("filter-")
+
+    def test_ne_drops_matching_rows(self):
+        cache = nl_agent_tools.RunCache()
+        run_id = self._seed(cache)
+        handler = nl_agent_tools.make_filter_rows_handler(cache)
+
+        out = handler({
+            "from_run_id": run_id, "field": "extracted_value",
+            "op": "!=", "value": "YES",
+        })
+        cached = cache.get(out["run_id"])
+        assert {r["clientvisit_id"] for r in cached["rows"]} == {"v2", "v4"}
+
+    def test_is_not_null_drops_blank_string_too(self):
+        # Athena string columns frequently return "" rather than None; the
+        # filter must treat both as null so the agent doesn't have to chain
+        # two filters.
+        cache = nl_agent_tools.RunCache()
+        run_id = self._seed(cache)
+        handler = nl_agent_tools.make_filter_rows_handler(cache)
+
+        out = handler({
+            "from_run_id": run_id, "field": "extracted_value",
+            "op": "is_not_null",
+        })
+        cached = cache.get(out["run_id"])
+        assert {r["clientvisit_id"] for r in cached["rows"]} == {"v1", "v2", "v3"}
+
+    def test_in_keeps_only_listed_values(self):
+        cache = nl_agent_tools.RunCache()
+        run_id = self._seed(cache)
+        handler = nl_agent_tools.make_filter_rows_handler(cache)
+
+        out = handler({
+            "from_run_id": run_id, "field": "clientvisit_id",
+            "op": "in", "values": ["v1", "v3"],
+        })
+        cached = cache.get(out["run_id"])
+        assert {r["clientvisit_id"] for r in cached["rows"]} == {"v1", "v3"}
+
+    def test_unknown_run_id_returns_error(self):
+        cache = nl_agent_tools.RunCache()
+        handler = nl_agent_tools.make_filter_rows_handler(cache)
+        out = handler({
+            "from_run_id": "extract-missing", "field": "x", "op": "==", "value": "y",
+        })
+        assert out["code"] == "UNKNOWN_RUN_ID"
+
+    def test_unknown_field_returns_error_listing_available(self):
+        cache = nl_agent_tools.RunCache()
+        run_id = self._seed(cache)
+        handler = nl_agent_tools.make_filter_rows_handler(cache)
+        out = handler({
+            "from_run_id": run_id, "field": "not_a_real_column",
+            "op": "==", "value": "y",
+        })
+        assert out["code"] == "UNKNOWN_COLUMN"
+        # Error must list known fields so the agent can self-correct.
+        assert "extracted_value" in out["error"]
+
+    def test_bad_op_rejected(self):
+        cache = nl_agent_tools.RunCache()
+        run_id = self._seed(cache)
+        handler = nl_agent_tools.make_filter_rows_handler(cache)
+        out = handler({
+            "from_run_id": run_id, "field": "extracted_value",
+            "op": ">=", "value": "Y",
+        })
+        assert out["code"] == "BAD_INPUT"
+
+    def test_in_without_values_rejected(self):
+        cache = nl_agent_tools.RunCache()
+        run_id = self._seed(cache)
+        handler = nl_agent_tools.make_filter_rows_handler(cache)
+        out = handler({
+            "from_run_id": run_id, "field": "extracted_value", "op": "in",
+        })
+        assert out["code"] == "BAD_INPUT"
+
+    def test_eq_without_value_rejected(self):
+        cache = nl_agent_tools.RunCache()
+        run_id = self._seed(cache)
+        handler = nl_agent_tools.make_filter_rows_handler(cache)
+        out = handler({
+            "from_run_id": run_id, "field": "extracted_value", "op": "==",
+        })
+        assert out["code"] == "BAD_INPUT"
+
+    def test_filter_result_feeds_aggregate(self):
+        # End-to-end sanity: the canonical extract → filter → aggregate flow.
+        cache = nl_agent_tools.RunCache()
+        run_id = self._seed(cache)
+        filter_handler = nl_agent_tools.make_filter_rows_handler(cache)
+        agg_handler = nl_agent_tools.make_aggregate_handler(cache)
+
+        filtered = filter_handler({
+            "from_run_id": run_id, "field": "extracted_value",
+            "op": "==", "value": "YES",
+        })
+        agg = agg_handler({
+            "from_run_id": filtered["run_id"],
+            "group_by": ["extracted_value"],
+            "agg": "count",
+        })
+        assert agg["rows"] == [["YES", 2]]
 
 
 # ----------------------------------------------------------------------

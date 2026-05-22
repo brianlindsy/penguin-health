@@ -1,0 +1,387 @@
+{
+  "_source": "Bedrock Claude schema audit, run 2026-05-21 against a sample of the catholic-charities multi-org CSV. Column names below are in the CSV header form (e.g. '21b_Visit_Type_Name'); the loader in analytics_helpers.py normalizes them to the Athena form ('visit_type_name_21b'). Re-run the audit periodically (quarterly or when the source CSV format changes) and replace this file. Do NOT hand-edit individual entries — fix the audit prompt and regenerate so the dataset stays the source of truth.",
+  "row_grain": "visit",
+  "row_grain_explanation": "Each row represents a single clinical service visit (client visit) documented in the EHR, identified by a unique Service_ID.",
+  "columns": [
+    {
+      "name": "50_Visit_Link",
+      "role": "identifier_other",
+      "note": "URL to the visit record in CredibleBH; not useful for analytics queries."
+    },
+    {
+      "name": "1_Service_ID",
+      "role": "primary_key",
+      "note": "Unique visit identifier. Contains commas as thousand separators; use REPLACE(col,',','') before casting to integer."
+    },
+    {
+      "name": "2_Consumer_Name",
+      "role": "patient_identifier",
+      "note": "Full name of the consumer/patient. May represent a school name for Tier 1/2 school-wide services."
+    },
+    {
+      "name": "3_Consumer_DOB",
+      "role": "clinical_date",
+      "note": "Format 'MM/DD/YYYY HH:MM AM/PM'. Use date_parse(col, '%m/%d/%Y %r') or substring to parse date only."
+    },
+    {
+      "name": "4_Episode_ID",
+      "role": "episode_key",
+      "note": "Episode identifier linking visits to a treatment episode. Contains commas; use REPLACE(col,',','') before casting."
+    },
+    {
+      "name": "5_Staff_Name",
+      "role": "staff_identifier",
+      "note": "Name of the staff member who provided the service."
+    },
+    {
+      "name": "6_Staff_ID",
+      "role": "staff_identifier",
+      "note": "Numeric staff identifier. Contains commas; use REPLACE(col,',','') before casting to integer."
+    },
+    {
+      "name": "7_Program",
+      "role": "categorical_enum",
+      "note": "Numeric program code. Use SELECT DISTINCT to see all values."
+    },
+    {
+      "name": "7b_Program_Name",
+      "role": "categorical_enum",
+      "values": ["School Based Mental Health", "Community Support", "Children's Psychiatric Services", "Counseling", "ACT", "Compass", "Free Standing Mental Health Clinic - Counseling", "Med Somatic Services"],
+      "note": "Use SELECT DISTINCT for full set; more than 8 exist including Intake, Quality Assurance, Housing Support Services, CNPP."
+    },
+    {
+      "name": "8_Service_Date",
+      "role": "clinical_date",
+      "note": "Format 'MM/DD/YYYY'. Use date_parse(col, '%m/%d/%Y') to parse."
+    },
+    {
+      "name": "9_Start_Time",
+      "role": "timestamp_other",
+      "note": "Format 'MM/DD/YYYY H:MM AM/PM'. Use date_parse(col, '%m/%d/%Y %r') to parse."
+    },
+    {
+      "name": "10_End_Time",
+      "role": "timestamp_other",
+      "note": "Format 'MM/DD/YYYY H:MM AM/PM'. Use date_parse(col, '%m/%d/%Y %r') to parse."
+    },
+    {
+      "name": "11_Revised_Start",
+      "role": "timestamp_other",
+      "note": "Revised start time; same format as 9_Start_Time."
+    },
+    {
+      "name": "12_Revised_End",
+      "role": "timestamp_other",
+      "note": "Revised end time; same format as 10_End_Time."
+    },
+    {
+      "name": "13_Duration",
+      "role": "duration_or_count",
+      "note": "Duration of service in minutes. Use TRY_CAST(REPLACE(col,',','') AS integer)."
+    },
+    {
+      "name": "14_Signed_Time",
+      "role": "timestamp_other",
+      "note": "Timestamp when note was signed. Format 'MM/DD/YYYY H:MM AM/PM'."
+    },
+    {
+      "name": "15_Transferred_Time",
+      "role": "timestamp_other",
+      "note": "Timestamp when note was transferred/finalized. Format 'MM/DD/YYYY H:MM AM/PM'."
+    },
+    {
+      "name": "16_CPT_Code",
+      "role": "categorical_enum",
+      "note": "CPT or internal billing code for the service (e.g. 90834, H0036, SI-SCREEN, NOTE). Use SELECT DISTINCT for full set."
+    },
+    {
+      "name": "26s_Client_Insurance_Order",
+      "role": "free_text_short",
+      "note": "Pipe-delimited list of consumer insurance plans with priority order and ClientInsIDs."
+    },
+    {
+      "name": "26b_Billing_Order",
+      "role": "duration_or_count",
+      "note": "Numeric billing order (1, 2, 3). Use TRY_CAST(col AS integer)."
+    },
+    {
+      "name": "26c_Billing_Sequence",
+      "role": "duration_or_count",
+      "note": "Numeric billing sequence. Use TRY_CAST(col AS integer)."
+    },
+    {
+      "name": "26t_Billing_Group_ID",
+      "role": "categorical_enum",
+      "note": "Numeric group ID for billing. Use SELECT DISTINCT for values."
+    },
+    {
+      "name": "26u_Billing_Group_Name",
+      "role": "categorical_enum",
+      "values": ["Anchor Mental Health", "FS_SBMH - Watson", "FS_SBMH - Marafino", "FS_SBMH - Drier", "FS_SBMH - McComb", "CSA - Krawczewicz", "CSA - Lovannia", "FSMHC"],
+      "note": "Use SELECT DISTINCT for the complete list."
+    },
+    {
+      "name": "17_Units",
+      "role": "duration_or_count",
+      "note": "Number of billing units. Use TRY_CAST(col AS double)."
+    },
+    {
+      "name": "18_Rate",
+      "role": "monetary_amount",
+      "note": "Billing rate in dollars. Use TRY_CAST(col AS double)."
+    },
+    {
+      "name": "19_Modifier_1",
+      "role": "categorical_enum",
+      "values": ["GT", "95", "93", "XP", "U1", "HK", "XE"],
+      "note": "First billing modifier. Often blank."
+    },
+    {
+      "name": "20_Modifier_2",
+      "role": "categorical_enum",
+      "note": "Second billing modifier. Rarely populated."
+    },
+    {
+      "name": "21_Visit_Type_ID",
+      "role": "categorical_enum",
+      "note": "Numeric visit type code. Use SELECT DISTINCT for values."
+    },
+    {
+      "name": "21b_Visit_Type_Name",
+      "role": "categorical_enum",
+      "note": "Visit type label (e.g. Community Support, SBMH Indiv Therapy, Suicide Screening, General Note). Use SELECT DISTINCT."
+    },
+    {
+      "name": "22_Location_Code",
+      "role": "categorical_enum",
+      "note": "Numeric location code. Use SELECT DISTINCT."
+    },
+    {
+      "name": "22b_Location_Label",
+      "role": "categorical_enum",
+      "values": ["SCHOOL", "OFFICE / AMH", "RSDN", "TH-RSDN", "OTHER", "TH-OTHER"],
+      "note": "Use SELECT DISTINCT for full set."
+    },
+    {
+      "name": "23_Recipient_Code",
+      "role": "categorical_enum",
+      "note": "Numeric recipient code. Use SELECT DISTINCT."
+    },
+    {
+      "name": "23b_Recipient_Label",
+      "role": "categorical_enum",
+      "values": ["CONSUMER", "COLLATERAL", "CSR+COLLAT", "NO CONTACT", "T/C COLLAT", "T/C CSR", "T/C MSG", "NONBILABLE"],
+      "note": "Use SELECT DISTINCT for full set."
+    },
+    {
+      "name": "24_Approved",
+      "role": "boolean_flag",
+      "values": ["Yes", "No"]
+    },
+    {
+      "name": "25_Non_Billable",
+      "role": "boolean_flag",
+      "values": ["Yes", "No"]
+    },
+    {
+      "name": "26_Authorization_ID",
+      "role": "identifier_other",
+      "note": "Authorization number. Contains commas; use REPLACE(col,',',''). Often blank."
+    },
+    {
+      "name": "27_Narrative_Simple",
+      "role": "narrative_prose",
+      "note": "Supervisor or reviewer narrative comments. Usually blank."
+    },
+    {
+      "name": "28_Narrative_Rich",
+      "role": "narrative_prose",
+      "note": "Structured clinical documentation with form answers embedded in brackets. Very long; use for keyword search with LIKE."
+    },
+    {
+      "name": "47g_Tx_Plus_Intervention_Documentation",
+      "role": "narrative_prose",
+      "note": "Intervention documentation linking to the treatment plan. Contains HTML tags."
+    },
+    {
+      "name": "47e_Plan_Documentation",
+      "role": "narrative_prose",
+      "note": "Plan-level documentation tied to objectives. Contains HTML tags."
+    },
+    {
+      "name": "29c_Next_Steps_Effective",
+      "role": "narrative_prose",
+      "note": "Effective next steps narrative. Rarely populated."
+    },
+    {
+      "name": "29b_Next_Steps_Form_Only",
+      "role": "narrative_prose",
+      "note": "Form-only next steps. Rarely populated."
+    },
+    {
+      "name": "29_Next_Steps",
+      "role": "narrative_prose",
+      "note": "Next steps narrative. Rarely populated outside 28_Narrative_Rich."
+    },
+    {
+      "name": "30_31_Form_Q_and_A",
+      "role": "narrative_prose",
+      "note": "Flattened Q&A from structured forms. Pipe-delimited key-value pairs. Use for keyword search."
+    },
+    {
+      "name": "32_Vitals_BP",
+      "role": "free_text_short",
+      "note": "Blood pressure reading in 'systolic/diastolic' format (e.g. '137/85'). Parse with SPLIT(col,'/')."
+    },
+    {
+      "name": "33_Vitals_Pulse",
+      "role": "duration_or_count",
+      "note": "Pulse in BPM. Use TRY_CAST(col AS integer)."
+    },
+    {
+      "name": "34_Vitals_Temp",
+      "role": "duration_or_count",
+      "note": "Temperature in Fahrenheit. Use TRY_CAST(col AS double)."
+    },
+    {
+      "name": "35_Vitals_Weight",
+      "role": "duration_or_count",
+      "note": "Weight in pounds. Use TRY_CAST(col AS double)."
+    },
+    {
+      "name": "38_Plan_Start_Date",
+      "role": "plan_lifecycle_date",
+      "note": "Format 'MM/DD/YYYY HH:MM:SS AM'. Use date_parse(col, '%m/%d/%Y %r') or substring for date."
+    },
+    {
+      "name": "39_Plan_End_Date",
+      "role": "plan_lifecycle_date",
+      "note": "Format 'MM/DD/YYYY HH:MM:SS AM'. Use date_parse(col, '%m/%d/%Y %r') or substring for date."
+    },
+    {
+      "name": "40_Plan_Status",
+      "role": "boolean_flag",
+      "values": ["Yes"],
+      "note": "Indicates whether there is an active plan. Appears always 'Yes' when populated."
+    },
+    {
+      "name": "41b_Diagnosis_Code_Primary",
+      "role": "diagnostic_code",
+      "note": "Primary ICD-10 diagnosis code (e.g. F25.1, F33.1, F90.2). Use SELECT DISTINCT for common values."
+    },
+    {
+      "name": "44_External_ID",
+      "role": "identifier_other",
+      "note": "External system identifier for the consumer."
+    },
+    {
+      "name": "45_Insurance",
+      "role": "categorical_enum",
+      "note": "Insurance name billed (e.g. AmeriHealth, DC Medicaid iCAMS, Medicare). Use SELECT DISTINCT."
+    },
+    {
+      "name": "26o_Has_Next_Insurance_Flag",
+      "role": "boolean_flag",
+      "values": ["Yes", "No"]
+    },
+    {
+      "name": "46_Plan_Type",
+      "role": "categorical_enum",
+      "values": ["2", "6", "7", "9", "10", "11", "12"],
+      "note": "Numeric plan type code. 10=Community Support, 9=ACT, 2=Compass, 6/7=Counseling/FSMHC, 11=Children's/SBMH, 12=CNPP."
+    },
+    {
+      "name": "47b_Plan_Goals_Only",
+      "role": "narrative_prose",
+      "note": "Consumer's plan goals in HTML. Pipe-delimited goals with status annotations.",
+      "do_not_use_for": "Despite 'only' in name, this is long prose — not a boolean flag."
+    },
+    {
+      "name": "47c_Plan_Objectives_Only",
+      "role": "narrative_prose",
+      "note": "Plan objectives in HTML. Pipe-delimited objectives with status annotations.",
+      "do_not_use_for": "Despite 'only' in name, this is long prose — not a boolean flag."
+    },
+    {
+      "name": "47d_Plan_Interventions_Only",
+      "role": "narrative_prose",
+      "note": "Plan interventions in HTML. Pipe-delimited intervention descriptions.",
+      "do_not_use_for": "Despite 'only' in name, this is long prose — not a boolean flag."
+    },
+    {
+      "name": "48_Plan_Signed_Date",
+      "role": "plan_lifecycle_date",
+      "note": "Format 'MM/DD/YYYY H:MM AM/PM'. Use date_parse(col, '%m/%d/%Y %r')."
+    },
+    {
+      "name": "49_Plan_Signer",
+      "role": "free_text_short",
+      "note": "Name of plan signer in 'Last, First' format."
+    },
+    {
+      "name": "49g_Plan_QP_Signer",
+      "role": "free_text_short",
+      "note": "Qualified Professional who co-signed the plan, with title."
+    },
+    {
+      "name": "49h_Plan_Signed_Date_QP",
+      "role": "plan_lifecycle_date",
+      "note": "QP co-signature date. Format 'MM/DD/YYYY H:MM AM/PM'. Use date_parse(col, '%m/%d/%Y %r')."
+    }
+  ],
+  "column_groups": [
+    {
+      "name": "visit_times",
+      "primary": "8_Service_Date",
+      "members": ["8_Service_Date", "9_Start_Time", "10_End_Time", "11_Revised_Start", "12_Revised_End", "13_Duration"],
+      "note": "Use 8_Service_Date for date-level aggregation. Use 11/12 Revised times for actual duration; 13_Duration is the pre-calculated minutes."
+    },
+    {
+      "name": "visit_type_classification",
+      "primary": "21b_Visit_Type_Name",
+      "members": ["16_CPT_Code", "21_Visit_Type_ID", "21b_Visit_Type_Name", "7b_Program_Name"],
+      "note": "Use 21b_Visit_Type_Name for service type analysis; 16_CPT_Code for billing; 7b_Program_Name for program-level grouping."
+    },
+    {
+      "name": "plan_dates",
+      "primary": "38_Plan_Start_Date",
+      "members": ["38_Plan_Start_Date", "39_Plan_End_Date", "48_Plan_Signed_Date", "49h_Plan_Signed_Date_QP"],
+      "note": "Use 38/39 for plan period; 48 for when signed by consumer; 49h for QP co-sign."
+    },
+    {
+      "name": "plan_content",
+      "primary": "47b_Plan_Goals_Only",
+      "members": ["47b_Plan_Goals_Only", "47c_Plan_Objectives_Only", "47d_Plan_Interventions_Only"],
+      "note": "These are the treatment plan narrative fields. Goals for high-level aims, Objectives for measurable targets, Interventions for provider actions."
+    },
+    {
+      "name": "clinical_documentation",
+      "primary": "28_Narrative_Rich",
+      "members": ["28_Narrative_Rich", "30_31_Form_Q_and_A", "47g_Tx_Plus_Intervention_Documentation", "47e_Plan_Documentation"],
+      "note": "28 is the primary clinical note; 30_31 is the flattened structured form data (easier to search). 47g/47e link interventions to the plan."
+    },
+    {
+      "name": "vitals",
+      "primary": "32_Vitals_BP",
+      "members": ["32_Vitals_BP", "33_Vitals_Pulse", "34_Vitals_Temp", "35_Vitals_Weight"],
+      "note": "Only populated for med clinic / nursing visits."
+    },
+    {
+      "name": "billing_insurance",
+      "primary": "45_Insurance",
+      "members": ["45_Insurance", "26s_Client_Insurance_Order", "26b_Billing_Order", "26c_Billing_Sequence", "26o_Has_Next_Insurance_Flag", "18_Rate", "17_Units"],
+      "note": "45_Insurance is the payer billed. 18_Rate * 17_Units approximates revenue. 26s has all plans on file."
+    },
+    {
+      "name": "location",
+      "primary": "22b_Location_Label",
+      "members": ["22_Location_Code", "22b_Location_Label"],
+      "note": "Use 22b_Location_Label for human-readable service location."
+    }
+  ],
+  "join_keys": {
+    "patient_grain": ["2_Consumer_Name", "3_Consumer_DOB", "4_Episode_ID"],
+    "visit_grain": ["1_Service_ID"],
+    "plan_grain": ["2_Consumer_Name", "4_Episode_ID", "38_Plan_Start_Date", "39_Plan_End_Date"]
+  }
+}

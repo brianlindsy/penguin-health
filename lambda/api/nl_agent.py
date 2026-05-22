@@ -60,6 +60,7 @@ def run_agent_loop(
     invoke_fn: Callable[[list, list, str], dict],
     max_steps: int = 15,
     on_step: Optional[Callable[[dict], None]] = None,
+    run_cache=None,
 ) -> dict:
     """
     Drive Claude through tool calls until it calls `finalize` (success) or
@@ -81,6 +82,10 @@ def run_agent_loop(
       on_step: optional callback fired before each Bedrock invocation with
         a step descriptor: {"step": int, "label": str, "tool_calls": [...]}.
         Used by the worker to push progress to DynamoDB.
+      run_cache: optional nl_agent_tools.RunCache shared with the tool
+        handlers. When provided, `finalize(from_run_id=...)` is hydrated
+        from the cache so the agent doesn't have to copy large row
+        payloads into the tool input (which silently truncates).
 
     Returns:
       {
@@ -167,9 +172,31 @@ def run_agent_loop(
                 trace_entry["assistant_text"] = assistant_text
 
             if name == FINALIZE_TOOL:
+                hydrated, hydrate_err = _resolve_finalize_input(tu_input, run_cache)
+                if hydrate_err is not None:
+                    # The agent referenced a run_id we can't find. Don't
+                    # capture as finalize — surface the error as a
+                    # tool_result so the loop continues and the agent can
+                    # retry with a real run_id. This is the failure mode
+                    # the from_run_id support was added to prevent: a
+                    # silently-empty final answer.
+                    trace_entry["status"] = "error"
+                    trace_entry["error"] = hydrate_err
+                    trace.append(trace_entry)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tu_id,
+                        "is_error": True,
+                        "content": hydrate_err,
+                    })
+                    continue
                 # Capture the structured final answer; stop after this turn.
-                finalize_input = tu_input
+                finalize_input = hydrated
                 trace_entry["status"] = "finalize"
+                # Re-summarize after hydration so the trace shows the real
+                # row count rather than the literal-zero the model may
+                # have sent.
+                trace_entry["input_summary"] = _summarize_input(name, hydrated)
                 trace.append(trace_entry)
                 # Per Bedrock contract, every tool_use needs a matching
                 # tool_result in the same user turn, even finalize. We send
@@ -255,6 +282,79 @@ def run_agent_loop(
         "messages": messages,
         "steps": steps,
     }
+
+
+def _resolve_finalize_input(tu_input: dict, run_cache) -> tuple:
+    """Hydrate a finalize tool_use input from the RunCache when the agent
+    passed `from_run_id`.
+
+    The agent is bad at copying large row payloads into a literal `rows`
+    field — Bedrock may truncate the tool input, silently producing a
+    finalize with `rows=[]`. Letting the agent reference a run_id avoids
+    the copy entirely.
+
+    Resolution order:
+      1. If literal `columns` and `rows` are both present, use them as-is
+         (escape hatch for tiny ad-hoc answers).
+      2. Else if `from_run_id` is set, look it up in run_cache, project
+         dict-keyed rows into positional rows parallel to the cached
+         columns, and use those.
+      3. Otherwise return the input unchanged (caller may produce
+         columns=[], rows=[]).
+
+    Returns (resolved_input_dict, error_str_or_None). When error_str is
+    not None, the caller should surface it as a tool_result and NOT
+    capture finalize_input.
+    """
+    if not isinstance(tu_input, dict):
+        return tu_input, None
+
+    literal_cols = tu_input.get("columns")
+    literal_rows = tu_input.get("rows")
+    from_run_id = tu_input.get("from_run_id")
+
+    # Honor explicit literal columns+rows even if from_run_id is also set;
+    # this lets the agent override shape (rename, reorder, subset) when
+    # it really needs to.
+    if literal_cols and literal_rows is not None:
+        return tu_input, None
+
+    if not from_run_id:
+        # No run_id and no literal data — pass through. The downstream
+        # consumer will see empty columns/rows; that's the agent's bug,
+        # not the loop's.
+        return tu_input, None
+
+    if run_cache is None:
+        return tu_input, (
+            f"finalize was called with from_run_id={from_run_id!r} but "
+            f"the agent loop was not given a run_cache. Pass literal "
+            f"`columns` and `rows` instead."
+        )
+
+    run = run_cache.get(from_run_id)
+    if run is None:
+        return tu_input, (
+            f"Unknown run_id {from_run_id!r}. Use the run_id returned by "
+            f"a previous tool (run_sql, extract_from_rows, aggregate, "
+            f"select_columns, filter_rows, concat_runs)."
+        )
+
+    cached_cols = run.get("columns") or []
+    cached_rows = run.get("rows") or []
+    col_names = [
+        (c.get("name") if isinstance(c, dict) else str(c))
+        for c in cached_cols
+    ]
+    positional_rows = [
+        [r.get(name, "") if isinstance(r, dict) else None for name in col_names]
+        for r in cached_rows
+    ]
+
+    resolved = dict(tu_input)
+    resolved["columns"] = cached_cols
+    resolved["rows"] = positional_rows
+    return resolved, None
 
 
 def _summarize_input(tool_name: str, tu_input: dict) -> str:

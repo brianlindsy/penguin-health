@@ -90,7 +90,7 @@ ORG_TABLES = {
         ],
     },
     "catholic-charities-multi-org": {
-        # Header captured directly from a source SFTP CSV (61 columns).
+        # Header captured directly from a source SFTP CSV (63 columns).
         # Glue/Athena column identifiers can't start with a digit, so the
         # leading `<num>_` prefix is moved to the end as `_<num>` for each
         # column. Order is preserved exactly to match OpenCSVSerde's
@@ -134,6 +134,8 @@ ORG_TABLES = {
             "authorization_id_26",
             "narrative_simple_27",
             "narrative_rich_28",
+            "tx_plus_intervention_documentation_47g",
+            "plan_documentation_47e",
             "next_steps_effective_29c",
             "next_steps_form_only_29b",
             "next_steps_29",

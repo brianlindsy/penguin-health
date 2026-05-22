@@ -14,6 +14,7 @@ fake invoke_fn that returns scripted Bedrock-shaped responses and verify:
 
 import pytest
 
+import nl_agent_tools
 from nl_agent import AgentError, run_agent_loop, FINALIZE_TOOL
 
 
@@ -366,6 +367,191 @@ class TestRunAgentLoopAssistantText:
         # Finalize has no preceding text — the key should be absent, not
         # an empty string (keeps trace entries lean in DynamoDB).
         assert "assistant_text" not in result["trace"][0]
+
+
+class TestRunAgentLoopFinalizeHydration:
+    """finalize(from_run_id=...) hydrates columns + rows from the cache so
+    the agent doesn't have to copy large row payloads into the tool input.
+    Without this, Bedrock truncates and the user gets an empty answer."""
+
+    def test_from_run_id_hydrates_columns_and_rows_from_cache(self):
+        cache = nl_agent_tools.RunCache()
+        run_id = cache.put(
+            "select",
+            columns=[
+                {"name": "consumer_name_2", "type": "string"},
+                {"name": "extracted_value", "type": "string"},
+            ],
+            rows=[
+                {"consumer_name_2": "v1", "extracted_value": "Police"},
+                {"consumer_name_2": "v2", "extracted_value": "Hospital"},
+            ],
+        )
+        invoke = _make_invoke([
+            {
+                "stop_reason": "tool_use",
+                "content": [_tool_use_block("t1", FINALIZE_TOOL, {
+                    "from_run_id": run_id,
+                    "viz_type": "table",
+                    "explanation": "Listing consumers and their referral source",
+                })],
+            },
+        ])
+        result = run_agent_loop(
+            system="sys", initial_user="q",
+            tools=[], tool_handlers={},
+            invoke_fn=invoke,
+            run_cache=cache,
+        )
+        final = result["final"]
+        # Columns come from cache; viz_type/explanation preserved.
+        assert [c["name"] for c in final["columns"]] == [
+            "consumer_name_2", "extracted_value",
+        ]
+        # Rows hydrated into POSITIONAL shape parallel to columns.
+        assert final["rows"] == [["v1", "Police"], ["v2", "Hospital"]]
+        assert final["viz_type"] == "table"
+        assert "referral" in final["explanation"]
+
+    def test_finalize_trace_summary_reflects_hydrated_row_count(self):
+        # The model passed from_run_id with no literal rows; the trace
+        # entry must show the hydrated count, not 0. Otherwise the trace
+        # UI says "0 rows" when the user actually got 50.
+        cache = nl_agent_tools.RunCache()
+        run_id = cache.put(
+            "select",
+            columns=[{"name": "x", "type": "string"}],
+            rows=[{"x": str(i)} for i in range(50)],
+        )
+        invoke = _make_invoke([
+            {
+                "stop_reason": "tool_use",
+                "content": [_tool_use_block("t1", FINALIZE_TOOL, {
+                    "from_run_id": run_id,
+                })],
+            },
+        ])
+        result = run_agent_loop(
+            system="sys", initial_user="q",
+            tools=[], tool_handlers={},
+            invoke_fn=invoke,
+            run_cache=cache,
+        )
+        finalize_entry = result["trace"][0]
+        assert finalize_entry["status"] == "finalize"
+        assert "50 rows" in finalize_entry["input_summary"]
+
+    def test_literal_columns_and_rows_still_work(self):
+        # Backward compat: the agent can still pass columns + rows
+        # literally when the data is small / ad-hoc.
+        invoke = _make_invoke([
+            {
+                "stop_reason": "tool_use",
+                "content": [_tool_use_block("t1", FINALIZE_TOOL, {
+                    "columns": [{"name": "n", "type": "number"}],
+                    "rows": [[42]],
+                    "viz_type": "table",
+                })],
+            },
+        ])
+        result = run_agent_loop(
+            system="sys", initial_user="q",
+            tools=[], tool_handlers={},
+            invoke_fn=invoke,
+            run_cache=nl_agent_tools.RunCache(),
+        )
+        assert result["final"]["rows"] == [[42]]
+
+    def test_literal_overrides_from_run_id_when_both_passed(self):
+        # Escape hatch: when the agent provides BOTH literal columns+rows
+        # AND a from_run_id, the literals win. This lets the agent rename
+        # / re-shape the final output without us inventing extra knobs.
+        cache = nl_agent_tools.RunCache()
+        run_id = cache.put(
+            "select",
+            columns=[{"name": "original", "type": "string"}],
+            rows=[{"original": "should-not-appear"}],
+        )
+        invoke = _make_invoke([
+            {
+                "stop_reason": "tool_use",
+                "content": [_tool_use_block("t1", FINALIZE_TOOL, {
+                    "from_run_id": run_id,
+                    "columns": [{"name": "renamed", "type": "string"}],
+                    "rows": [["overridden"]],
+                })],
+            },
+        ])
+        result = run_agent_loop(
+            system="sys", initial_user="q",
+            tools=[], tool_handlers={},
+            invoke_fn=invoke,
+            run_cache=cache,
+        )
+        assert [c["name"] for c in result["final"]["columns"]] == ["renamed"]
+        assert result["final"]["rows"] == [["overridden"]]
+
+    def test_unknown_run_id_surfaces_error_and_loop_continues(self):
+        # The exact failure mode this whole feature was added to prevent:
+        # an unknown run_id must NOT terminate the loop with empty rows.
+        # It must come back as a tool_result error so the agent can fix
+        # it and try again.
+        cache = nl_agent_tools.RunCache()
+        invoke = _make_invoke([
+            {
+                "stop_reason": "tool_use",
+                "content": [_tool_use_block("t1", FINALIZE_TOOL, {
+                    "from_run_id": "select-does-not-exist",
+                })],
+            },
+            {
+                "stop_reason": "tool_use",
+                "content": [_tool_use_block("t2", FINALIZE_TOOL, {
+                    "columns": [], "rows": [],
+                })],
+            },
+        ])
+        result = run_agent_loop(
+            system="sys", initial_user="q",
+            tools=[], tool_handlers={},
+            invoke_fn=invoke,
+            run_cache=cache,
+        )
+        # First turn produced an error trace entry, NOT a finalize.
+        assert result["trace"][0]["status"] == "error"
+        assert "Unknown run_id" in result["trace"][0]["error"]
+        # Loop kept going; the second finalize is what succeeded.
+        assert result["trace"][1]["status"] == "finalize"
+        # And the error came back as a tool_result error to the model.
+        first_tool_result = invoke.calls[1]["messages"][-1]["content"][0]
+        assert first_tool_result.get("is_error") is True
+
+    def test_no_cache_with_from_run_id_surfaces_clear_error(self):
+        # If a caller forgets to pass run_cache but the agent uses
+        # from_run_id, surface a clear error rather than silently
+        # finalizing with empty rows.
+        invoke = _make_invoke([
+            {
+                "stop_reason": "tool_use",
+                "content": [_tool_use_block("t1", FINALIZE_TOOL, {
+                    "from_run_id": "select-001",
+                })],
+            },
+            {
+                "stop_reason": "tool_use",
+                "content": [_tool_use_block("t2", FINALIZE_TOOL, {
+                    "columns": [], "rows": [],
+                })],
+            },
+        ])
+        result = run_agent_loop(
+            system="sys", initial_user="q",
+            tools=[], tool_handlers={},
+            invoke_fn=invoke,
+            # run_cache intentionally omitted
+        )
+        assert result["trace"][0]["status"] == "error"
+        assert "run_cache" in result["trace"][0]["error"]
 
 
 class TestRunAgentLoopMultipleToolUsesPerTurn:

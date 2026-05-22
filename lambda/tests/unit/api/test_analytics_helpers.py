@@ -14,6 +14,7 @@ import pytest
 from analytics_helpers import (
     ORG_SCHEMAS,
     SqlValidationError,
+    _csv_to_athena_name,
     allowed_tables,
     narrative_columns_for_org,
     table_suffix,
@@ -23,6 +24,7 @@ from analytics_helpers import (
 
 CIRCLES = "circles-of-care"
 DEMO = "demo"
+CC = "catholic-charities-multi-org"
 
 
 class TestSchemaRegistry:
@@ -111,6 +113,88 @@ class TestSchemaRegistry:
         }
 
 
+class TestCsvToAthenaName:
+    """Glue/Athena column identifiers can't start with a digit, so our
+    ingest renames CSV headers like '21b_Visit_Type_Name' to
+    'visit_type_name_21b'. The audit JSON uses the CSV form; the loader
+    normalizes via _csv_to_athena_name. If this mapping breaks, every
+    Bedrock-audited note silently fails to attach to the right column."""
+
+    def test_single_digit_prefix(self):
+        assert _csv_to_athena_name("8_Service_Date") == "service_date_8"
+
+    def test_digit_letter_prefix(self):
+        assert _csv_to_athena_name("21b_Visit_Type_Name") == "visit_type_name_21b"
+
+    def test_compound_digit_prefix(self):
+        # '30_31_Form_Q_and_A' — both leading numerics belong to the prefix.
+        assert _csv_to_athena_name("30_31_Form_Q_and_A") == "form_q_and_a_30_31"
+
+    def test_no_digit_prefix_just_lowercases(self):
+        assert _csv_to_athena_name("Already_Lowercase_Friend") == "already_lowercase_friend"
+
+    def test_lowercase_already_idempotent(self):
+        # Once normalized, running it through again must be a no-op.
+        once = _csv_to_athena_name("21b_Visit_Type_Name")
+        twice = _csv_to_athena_name(once)
+        assert once == twice == "visit_type_name_21b"
+
+
+class TestCatholicCharitiesAuditMetadata:
+    """Regression tests for the audited schema metadata. These verify the
+    audit JSON is actually being merged into ORG_SCHEMAS — without these,
+    a bug in _build_org_schemas could silently drop all the role/values/
+    do_not_use_for fields and inspect_schema would degrade gracefully but
+    incorrectly."""
+
+    def test_audit_metadata_attached_to_columns(self):
+        cols = {c["name"]: c for c in ORG_SCHEMAS[CC]["chart_columns"]}
+        # plan_goals_only_47b: the misleading-name flagship case. Must
+        # carry role=narrative_prose AND do_not_use_for to steer the
+        # agent away from treating it as a boolean.
+        g = cols["plan_goals_only_47b"]
+        assert g.get("role") == "narrative_prose"
+        assert "do_not_use_for" in g
+        assert "boolean" in g["do_not_use_for"].lower() or "flag" in g["do_not_use_for"].lower()
+
+    def test_boolean_flag_carries_observed_values(self):
+        cols = {c["name"]: c for c in ORG_SCHEMAS[CC]["chart_columns"]}
+        approved = cols["approved_24"]
+        assert approved.get("role") == "boolean_flag"
+        # Catches a regression where values dropped on the floor during merge.
+        assert set(approved.get("values", [])) == {"Yes", "No"}
+
+    def test_row_grain_present(self):
+        assert ORG_SCHEMAS[CC]["row_grain"] == "visit"
+        assert "service" in (ORG_SCHEMAS[CC].get("row_grain_explanation") or "").lower()
+
+    def test_column_groups_filter_to_known_athena_columns(self):
+        groups = {g["name"]: g for g in ORG_SCHEMAS[CC]["column_groups"]}
+        # plan_content group should include all three plan narrative cols,
+        # with the audited primary preserved.
+        pc = groups["plan_content"]
+        assert pc["primary"] == "plan_goals_only_47b"
+        assert set(pc["members"]) == {
+            "plan_goals_only_47b",
+            "plan_objectives_only_47c",
+            "plan_interventions_only_47d",
+        }
+
+    def test_join_keys_normalized_to_athena_names(self):
+        jk = ORG_SCHEMAS[CC]["join_keys"]
+        # patient_grain uses the Athena-normalized names, not CSV names.
+        # If this regresses, the agent will receive '2_Consumer_Name' and
+        # immediately get a column-not-found error.
+        assert "consumer_name_2" in jk["patient_grain"]
+        assert "service_id_1" in jk["visit_grain"]
+
+    def test_orgs_without_audit_have_no_row_grain(self):
+        # circles-of-care has no audit JSON yet. Verify it doesn't crash
+        # and just returns None/empty for the audited fields.
+        assert ORG_SCHEMAS[CIRCLES].get("row_grain") is None
+        assert ORG_SCHEMAS[CIRCLES].get("column_groups") == []
+
+
 class TestValidateAthenaSqlHappyPath:
     def test_simple_select_against_charts(self):
         out = validate_athena_sql(
@@ -182,6 +266,55 @@ class TestValidateAthenaSqlHappyPath:
             DEMO,
         )
         assert "LIMIT 5" in out
+
+    def test_single_cte_against_allowed_table(self):
+        sql = (
+            "WITH consumer_plans AS ("
+            "  SELECT consumer_name_2, plan_goals_only_47b "
+            "  FROM charts_catholic_charities_multi_org"
+            ") "
+            "SELECT * FROM consumer_plans LIMIT 50"
+        )
+        out = validate_athena_sql(sql, "catholic-charities-multi-org")
+        assert "consumer_plans" in out
+        assert "LIMIT 50" in out
+
+    def test_multiple_ctes(self):
+        sql = (
+            "WITH plans AS (SELECT consumer_name_2 FROM charts_catholic_charities_multi_org), "
+            "     services AS (SELECT consumer_name_2 FROM charts_catholic_charities_multi_org) "
+            "SELECT p.consumer_name_2 FROM plans p LEFT JOIN services s "
+            "ON p.consumer_name_2 = s.consumer_name_2 LIMIT 50"
+        )
+        out = validate_athena_sql(sql, "catholic-charities-multi-org")
+        assert "LIMIT 50" in out
+
+    def test_subquery_with_alias(self):
+        sql = (
+            "SELECT p.consumer_name_2 "
+            "FROM (SELECT consumer_name_2 FROM charts_catholic_charities_multi_org) p "
+            "LIMIT 25"
+        )
+        out = validate_athena_sql(sql, "catholic-charities-multi-org")
+        assert "LIMIT 25" in out
+
+    def test_join_with_subquery_alias(self):
+        sql = (
+            "SELECT c1.consumer_name_2 "
+            "FROM charts_catholic_charities_multi_org c1 "
+            "LEFT JOIN (SELECT consumer_name_2 FROM charts_catholic_charities_multi_org) c2 "
+            "ON c1.consumer_name_2 = c2.consumer_name_2 LIMIT 10"
+        )
+        out = validate_athena_sql(sql, "catholic-charities-multi-org")
+        assert "LIMIT 10" in out
+
+    def test_cte_referencing_disallowed_table_rejected(self):
+        with pytest.raises(SqlValidationError) as exc:
+            validate_athena_sql(
+                "WITH x AS (SELECT * FROM secrets) SELECT * FROM x",
+                "catholic-charities-multi-org",
+            )
+        assert exc.value.code == "DISALLOWED_TABLE"
 
 
 class TestValidateAthenaSqlRejections:

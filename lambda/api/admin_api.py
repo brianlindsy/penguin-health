@@ -2216,6 +2216,11 @@ Tools available:
 - aggregate(from_run_id, group_by, agg, sum_field?, order_by?):
   in-memory GROUP BY on the rows behind a run_id. Returns
   {{run_id, columns, rows, row_count}} in positional shape.
+- filter_rows(from_run_id, field, op, value? | values?): drop rows from
+  a cached run by a single-column predicate. Ops: '==', '!=', 'is_null',
+  'is_not_null', 'in', 'not_in'. Use this AFTER extract_from_rows to keep
+  only the matching rows (e.g. filter_rows(field='extracted_value',
+  op='==', value='YES')). Columns are preserved; row count drops.
 - select_columns(from_run_id, columns, computed?): pick a subset of
   columns from a run_id and optionally add a conditional column via
   computed[col] = {{case_when: {{field, op, value, then, else}}}}.
@@ -2228,10 +2233,14 @@ Tools available:
   this ONLY when a single extract_from_rows call would exceed the
   500-row cap and you've batched via multiple run_sql + extract_from_rows
   pairs. Returns {{run_id, columns, row_count}}.
-- finalize(columns, rows, viz_type?, explanation?): emit final answer
-  and end the loop. `rows` is POSITIONAL (parallel to columns), same
-  shape aggregate / select_columns return — pass their columns + rows
-  straight in. You MUST call finalize exactly once when done.
+- finalize(from_run_id?, columns?, rows?, viz_type?, explanation?):
+  emit final answer and end the loop. PREFERRED: pass `from_run_id` with
+  the run_id of the result you want rendered — the server reads the
+  cached columns + rows directly. Copying large row payloads into a
+  literal `rows` array is unreliable: Bedrock truncates the tool input
+  silently, producing an empty final answer for any result >~50 rows.
+  Literal `columns` + `rows` remain available for tiny ad-hoc data.
+  You MUST call finalize exactly once when done.
 
 Canonical patterns:
 
@@ -2240,8 +2249,8 @@ A) "Count <thing> extracted from narrative":
   2. extract_from_rows(from_run_id="sql-001", question=<what to pull out>)
      → run_id "extract-002".
   3. aggregate(from_run_id="extract-002", group_by=["extracted_value"],
-     agg="count") → {{columns, rows, ...}}.
-  4. finalize(columns=<from step 3>, rows=<from step 3>, viz_type="bar").
+     agg="count") → run_id "agg-003".
+  4. finalize(from_run_id="agg-003", viz_type="bar").
 
 B) "Per-row extracted value + identifier column" (e.g. clientvisit_id +
    referral agency, with answer shown when agency is UNKNOWN):
@@ -2258,10 +2267,20 @@ B) "Per-row extracted value + identifier column" (e.g. clientvisit_id +
            "then": "answer", "else": ""
          }}}}
        }}
-     ) → {{columns, rows, ...}}.
-  4. finalize(columns=<from step 3>, rows=<from step 3>, viz_type="table").
+     ) → run_id "select-003".
+  4. finalize(from_run_id="select-003", viz_type="table").
 
-C) "Batched extraction" when the scope exceeds the 500-row extract cap:
+C) "Keep only rows whose extracted_value matches a condition":
+  1. run_sql SELECT identifier, narrative → run_id "sql-001".
+  2. extract_from_rows(from_run_id="sql-001",
+       question="Does X apply? Answer YES or NO.") → "extract-002".
+  3. filter_rows(from_run_id="extract-002", field="extracted_value",
+       op="==", value="YES") → "filter-003".
+  4. finalize / select_columns / aggregate from filter-003. Do NOT try
+     to re-run SQL against an extract run_id — extract results are not
+     in Athena.
+
+D) "Batched extraction" when the scope exceeds the 500-row extract cap:
   1. Probe the total count with run_sql SELECT COUNT(*) FROM ... → check.
   2. If count > 500, batch with OFFSET/LIMIT (or by partition):
      - run_sql ... ORDER BY clientvisit_id LIMIT 500 OFFSET 0 → "sql-001"
@@ -2273,6 +2292,10 @@ C) "Batched extraction" when the scope exceeds the 500-row extract cap:
   4. Then aggregate / select_columns / finalize as usual from concat-N.
 
 Critical rules:
+- CTEs (WITH ...) and subqueries (FROM (SELECT ...) alias) ARE allowed in
+  run_sql, as long as every base table inside is one of the allowed tables.
+  Prefer them when a question genuinely needs intermediate aggregation; do
+  NOT invent multi-tool workarounds for what one CTE can express.
 - Always include partition filters (ingest_date / validation_date) when
   the question implies a time range.
 - Column values are case-sensitive. Use exact casing from inspect_schema notes.
@@ -2282,8 +2305,12 @@ Critical rules:
 - NEVER try to encode a join, merge, or conditional column inside an
   extract_from_rows prompt. extract_from_rows already preserves source
   columns; for conditional output use select_columns.computed.
-- finalize.rows should be the FINAL shape shown to the user. Do not
-  include intermediate columns the user didn't ask for.
+- The final result you call finalize on should be the FINAL shape shown
+  to the user. Do not include intermediate columns the user didn't ask
+  for — if you need a narrower shape, use select_columns first, then
+  finalize(from_run_id=<that select run_id>).
+- Always prefer finalize(from_run_id=...) over copying literal rows.
+  Copying more than ~50 rows inline frequently produces an empty answer.
 - If a tool returns an error, READ THE ERROR MESSAGE CAREFULLY before
   retrying. Do not repeat the same call with the same shape.
 - Once you have the data you need, call finalize IMMEDIATELY.
@@ -2419,6 +2446,7 @@ def _agent_worker_run(org_id: str, job_id: str, item: dict) -> dict:
             invoke_fn=invoke,
             max_steps=AGENT_MAX_STEPS,
             on_step=on_step,
+            run_cache=run_cache,
         )
     except nl_agent.AgentError as e:
         print(json.dumps({
