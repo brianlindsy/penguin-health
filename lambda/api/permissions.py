@@ -17,7 +17,7 @@ import boto3
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('penguin-health-org-config')
 
-CATEGORIES = ["Intake", "Billing", "Compliance Audit", "Quality Assurance"]
+CATEGORIES = ["Intake", "Billing", "Compliance Audit", "Quality Assurance", "Eligibility"]
 ANALYTICS_PAGES = ["staff_performance", "revenue_analysis"]
 VERBS = ("view", "run")
 

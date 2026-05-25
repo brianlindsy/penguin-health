@@ -120,6 +120,15 @@ export function OrganizationDetail() {
             </svg>
             Staff Performance
           </Link>
+          <Link
+            to={`/organizations/${orgId}/eligibility`}
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-blue-600 text-blue-600 rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Insurance Eligibility
+          </Link>
           {latestRunId ? (
             <Link
               to={`/organizations/${orgId}/validation-runs/${latestRunId}`}

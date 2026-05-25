@@ -40,6 +40,7 @@ class PenguinHealthStack(Stack):
             validation_results_table=db.validation_results_table,
             analytics_reports_table=db.analytics_reports_table,
             deep_jobs_table=db.deep_jobs_table,
+            stedi_table=db.stedi_table,
         )
 
         # ----- Audit Engine -----

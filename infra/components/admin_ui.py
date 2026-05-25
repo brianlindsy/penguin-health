@@ -3,8 +3,10 @@ Admin UI construct: Cognito, API Gateway, Lambda, S3, CloudFront
 for the organization admin dashboard.
 """
 
+import hashlib
 import os
 from aws_cdk import (
+    AssetHashType,
     Duration,
     RemovalPolicy,
     BundlingOptions,
@@ -25,13 +27,46 @@ import config
 from components.bundler import CopyFileBundler, MultiFileBundler, DirectoryBundler
 
 
+def _hash_sources(paths):
+    """SHA-256 over the contents of every Python file under each path.
+
+    CDK's default asset hashing walks the `Code.from_asset()` source directory,
+    so files the local bundler pulls in from *other* directories (e.g.
+    lambda/multi-org/stedi) are invisible — edits there don't change the
+    asset hash and CDK skips the upload. This helper makes the hash depend
+    on every source the bundler actually copies, so any edit triggers a
+    redeploy.
+    """
+    h = hashlib.sha256()
+    for path in sorted(paths):
+        if os.path.isfile(path):
+            h.update(path.encode())
+            with open(path, 'rb') as f:
+                h.update(f.read())
+        elif os.path.isdir(path):
+            for root, _dirs, files in os.walk(path):
+                # Skip caches and bytecode — they don't affect runtime behavior
+                # but their mtimes churn and would defeat the cache.
+                if '__pycache__' in root:
+                    continue
+                for name in sorted(files):
+                    if name.endswith('.pyc'):
+                        continue
+                    fp = os.path.join(root, name)
+                    h.update(os.path.relpath(fp, path).encode())
+                    with open(fp, 'rb') as f:
+                        h.update(f.read())
+    return h.hexdigest()
+
+
 class AdminUi(Construct):
 
     def __init__(self, scope: Construct, id: str, *,
                  org_config_table: dynamodb.ITable,
                  validation_results_table: dynamodb.ITable,
                  analytics_reports_table: dynamodb.ITable,
-                 deep_jobs_table: dynamodb.ITable) -> None:
+                 deep_jobs_table: dynamodb.ITable,
+                 stedi_table: dynamodb.ITable) -> None:
         super().__init__(scope, id)
 
         # ----- Cognito -----
@@ -78,6 +113,19 @@ class AdminUi(Construct):
 
         # ----- Admin API Lambda -----
         lambda_api_dir = os.path.join(os.path.dirname(__file__), "..", "..", "lambda", "api")
+        lambda_multi_org_dir = os.path.join(os.path.dirname(__file__), "..", "..", "lambda", "multi-org")
+        stedi_pkg_dir = os.path.join(lambda_multi_org_dir, "stedi")
+
+        admin_api_sources = [
+            os.path.join(lambda_api_dir, "admin_api.py"),
+            os.path.join(lambda_api_dir, "permissions.py"),
+            os.path.join(lambda_api_dir, "analytics_helpers.py"),
+            os.path.join(lambda_api_dir, "nl_agent.py"),
+            os.path.join(lambda_api_dir, "nl_agent_tools.py"),
+            os.path.join(lambda_api_dir, "eligibility_api.py"),
+            os.path.join(lambda_api_dir, "sqlparse"),
+            stedi_pkg_dir,
+        ]
 
         self.api_function = _lambda.Function(self, "AdminApiFunction",
             function_name=f"{config.PROJECT_NAME}-admin-api",
@@ -92,8 +140,11 @@ class AdminUi(Construct):
                     "!analytics_helpers.py",
                     "!nl_agent.py",
                     "!nl_agent_tools.py",
+                    "!eligibility_api.py",
                     "!sqlparse/**",
                 ],
+                asset_hash_type=AssetHashType.CUSTOM,
+                asset_hash=_hash_sources(admin_api_sources),
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
                     local=DirectoryBundler([
@@ -102,7 +153,9 @@ class AdminUi(Construct):
                         (os.path.join(lambda_api_dir, "analytics_helpers.py"), None),
                         (os.path.join(lambda_api_dir, "nl_agent.py"), None),
                         (os.path.join(lambda_api_dir, "nl_agent_tools.py"), None),
+                        (os.path.join(lambda_api_dir, "eligibility_api.py"), None),
                         (os.path.join(lambda_api_dir, "sqlparse"), None),
+                        (stedi_pkg_dir, "stedi"),
                     ]),
                 ),
             ),
@@ -114,6 +167,8 @@ class AdminUi(Construct):
                 "ANALYTICS_REPORTS_TABLE": analytics_reports_table.table_name,
                 "DEEP_JOBS_TABLE": deep_jobs_table.table_name,
                 "DEEP_WORKER_LAMBDA": f"{config.PROJECT_NAME}-deep-analytics-worker",
+                "STEDI_TABLE_NAME": stedi_table.table_name,
+                "STEDI_API_KEY_SECRET": "penguin-health/stedi/api-key",
             },
         )
 
@@ -129,6 +184,15 @@ class AdminUi(Construct):
         # Same code bundle as the api function, but invoked async by the
         # api lambda to drive the agent loop without the 30s API Gateway
         # HTTP API integration timeout.
+        deep_worker_sources = [
+            os.path.join(lambda_api_dir, "admin_api.py"),
+            os.path.join(lambda_api_dir, "permissions.py"),
+            os.path.join(lambda_api_dir, "analytics_helpers.py"),
+            os.path.join(lambda_api_dir, "nl_agent.py"),
+            os.path.join(lambda_api_dir, "nl_agent_tools.py"),
+            os.path.join(lambda_api_dir, "sqlparse"),
+        ]
+
         self.deep_worker_function = _lambda.Function(self, "DeepAnalyticsWorkerFunction",
             function_name=f"{config.PROJECT_NAME}-deep-analytics-worker",
             runtime=_lambda.Runtime.PYTHON_3_14,
@@ -144,6 +208,8 @@ class AdminUi(Construct):
                     "!nl_agent_tools.py",
                     "!sqlparse/**",
                 ],
+                asset_hash_type=AssetHashType.CUSTOM,
+                asset_hash=_hash_sources(deep_worker_sources),
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
                     local=DirectoryBundler([
@@ -182,6 +248,23 @@ class AdminUi(Construct):
         analytics_reports_table.grant_read_write_data(self.api_function)
         deep_jobs_table.grant_read_write_data(self.api_function)
         deep_jobs_table.grant_read_write_data(self.deep_worker_function)
+
+        # Stedi eligibility: audit log + daily counter table + the GSI used
+        # for "recent checks for this patient" dedup lookups.
+        stedi_table.grant_read_write_data(self.api_function)
+        self.api_function.add_to_role_policy(iam.PolicyStatement(
+            actions=["dynamodb:Query"],
+            resources=[f"{stedi_table.table_arn}/index/*"],
+        ))
+
+        # Stedi API key in Secrets Manager. One key per Stedi account
+        # (not per-org) so we scope to a single secret path.
+        self.api_function.add_to_role_policy(iam.PolicyStatement(
+            actions=["secretsmanager:GetSecretValue"],
+            resources=[
+                f"arn:aws:secretsmanager:{config.AWS_REGION}:*:secret:penguin-health/stedi/*"
+            ],
+        ))
 
         # Bedrock permissions for LLM enhancement endpoints
         self.api_function.add_to_role_policy(iam.PolicyStatement(
@@ -355,6 +438,10 @@ class AdminUi(Construct):
             ("GET",  "/api/organizations/{orgId}/users/{email}"),
             ("PUT",  "/api/organizations/{orgId}/users/{email}"),
             ("DELETE", "/api/organizations/{orgId}/users/{email}"),
+            ("POST", "/api/organizations/{orgId}/eligibility/verify"),
+            ("GET",  "/api/organizations/{orgId}/eligibility/history"),
+            ("GET",  "/api/organizations/{orgId}/eligibility/config"),
+            ("PUT",  "/api/organizations/{orgId}/eligibility/config"),
         ]
 
         for method, path in routes:

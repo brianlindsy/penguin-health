@@ -94,6 +94,30 @@ class Database(Construct):
             removal_policy=RemovalPolicy.DESTROY,
         )
 
+        # ----- penguin-health-stedi -----
+        # Stedi eligibility audit log + daily usage counter.
+        # Two row types share the table:
+        #   sk=AUDIT#{iso_ts}#{request_id}  — one per Stedi call, immutable, 7y TTL
+        #   sk=USAGE#{yyyy-mm-dd}           — one per org per day, atomic counter, 90d TTL
+        # GSI1 keyed by patient_hash so the "recent checks for this patient"
+        # dedup lookup is O(1) instead of scanning AUDIT# rows.
+        self.stedi_table = dynamodb.Table(self, "StediTable",
+            table_name=f"{config.PROJECT_NAME}-stedi",
+            partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            time_to_live_attribute="expires_at",
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True,
+            ),
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+        self.stedi_table.add_global_secondary_index(
+            index_name="gsi1",
+            partition_key=dynamodb.Attribute(name="gsi1pk", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="gsi1sk", type=dynamodb.AttributeType.STRING),
+        )
+
         # ----- SNS Topic for Textract notifications -----
         self.notifications_topic = sns.Topic(self, "NotificationsTopic",
             topic_name=f"{config.PROJECT_NAME}-notifications-multi-org",

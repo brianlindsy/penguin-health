@@ -212,4 +212,25 @@ export const api = {
     request(`/api/organizations/${orgId}/analytics/reports/${reportId}`, {
       method: 'DELETE',
     }),
+
+  // Eligibility (Stedi)
+  verifyEligibility: (orgId, input) =>
+    request(`/api/organizations/${orgId}/eligibility/verify`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  getEligibilityHistory: (orgId, { first, last, dob, limit = 20 }) => {
+    const qs = new URLSearchParams({ first, last, dob, limit: String(limit) })
+    return request(`/api/organizations/${orgId}/eligibility/history?${qs}`)
+  },
+
+  getEligibilityConfig: (orgId) =>
+    request(`/api/organizations/${orgId}/eligibility/config`),
+
+  updateEligibilityConfig: (orgId, body) =>
+    request(`/api/organizations/${orgId}/eligibility/config`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
 }

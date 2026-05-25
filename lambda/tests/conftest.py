@@ -21,6 +21,10 @@ os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
 # so admin_api.py uses `import permissions`. Make that work in tests too by
 # putting lambda/api on sys.path.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'api'))
+# The Stedi package is bundled into the admin_api Lambda asset from
+# lambda/multi-org/stedi; expose it under the same `import stedi` name in
+# tests by putting lambda/multi-org on sys.path.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'multi-org'))
 
 import pytest
 import boto3
@@ -146,6 +150,31 @@ def mock_dynamodb(aws_credentials):
                 {'AttributeName': 'pk', 'AttributeType': 'S'},
                 {'AttributeName': 'sk', 'AttributeType': 'S'},
             ],
+            BillingMode='PAY_PER_REQUEST',
+        )
+
+        # penguin-health-stedi table
+        # Used by: stedi.audit (eligibility audit log + daily counter).
+        dynamodb.create_table(
+            TableName='penguin-health-stedi',
+            KeySchema=[
+                {'AttributeName': 'pk', 'KeyType': 'HASH'},
+                {'AttributeName': 'sk', 'KeyType': 'RANGE'},
+            ],
+            AttributeDefinitions=[
+                {'AttributeName': 'pk', 'AttributeType': 'S'},
+                {'AttributeName': 'sk', 'AttributeType': 'S'},
+                {'AttributeName': 'gsi1pk', 'AttributeType': 'S'},
+                {'AttributeName': 'gsi1sk', 'AttributeType': 'S'},
+            ],
+            GlobalSecondaryIndexes=[{
+                'IndexName': 'gsi1',
+                'KeySchema': [
+                    {'AttributeName': 'gsi1pk', 'KeyType': 'HASH'},
+                    {'AttributeName': 'gsi1sk', 'KeyType': 'RANGE'},
+                ],
+                'Projection': {'ProjectionType': 'ALL'},
+            }],
             BillingMode='PAY_PER_REQUEST',
         )
 

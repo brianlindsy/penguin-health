@@ -23,6 +23,7 @@ import permissions as perms_module
 import analytics_helpers
 import nl_agent
 import nl_agent_tools
+import eligibility_api
 
 dynamodb = boto3.resource('dynamodb')
 s3_client = boto3.client('s3')
@@ -170,6 +171,22 @@ def lambda_handler(event, context):
         'GET /api/organizations/{orgId}/users/{email}': get_org_user,
         'PUT /api/organizations/{orgId}/users/{email}': upsert_org_user,
         'DELETE /api/organizations/{orgId}/users/{email}': delete_org_user,
+        'POST /api/organizations/{orgId}/eligibility/verify':
+            lambda event, path_params, body, **kw: eligibility_api.verify(
+                event=event, path_params=path_params, body=body,
+                authorize_fn=authorize_request),
+        'GET /api/organizations/{orgId}/eligibility/history':
+            lambda event, path_params, body, **kw: eligibility_api.history(
+                event=event, path_params=path_params,
+                authorize_fn=authorize_request),
+        'GET /api/organizations/{orgId}/eligibility/config':
+            lambda event, path_params, body, **kw: eligibility_api.get_config(
+                event=event, path_params=path_params,
+                authorize_fn=authorize_request),
+        'PUT /api/organizations/{orgId}/eligibility/config':
+            lambda event, path_params, body, **kw: eligibility_api.update_config(
+                event=event, path_params=path_params, body=body,
+                authorize_fn=authorize_request),
     }
 
     handler = routes.get(route_key)
