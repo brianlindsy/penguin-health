@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useAuth } from './AuthProvider.jsx'
 
-export const CATEGORIES = ['Intake', 'Billing', 'Compliance Audit', 'Quality Assurance']
+export const CATEGORIES = ['Intake', 'Billing', 'Compliance Audit', 'Quality Assurance', 'Eligibility']
 export const ANALYTICS_PAGES = ['staff_performance', 'revenue_analysis']
 
 // Lightweight wrapper around the permissions object the backend hands us at
@@ -63,6 +63,10 @@ export function usePermissions() {
       viewableCategories,
       runnableCategories,
       canViewAnalytics,
+      // Number of morning-census rows in the latest run that need
+      // attention (any non-verified status not yet resolved). Drives the
+      // nav badge on the Eligibility link.
+      eligibilityUnreadCount: permissions?.eligibility_unread_count || 0,
     }
   }, [permissions, isSuperAdmin])
 }

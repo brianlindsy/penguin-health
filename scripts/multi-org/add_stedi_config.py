@@ -48,6 +48,28 @@ def parse_args(argv):
                         'See lambda/multi-org/stedi/payer_registry.py for valid IDs.')
     p.add_argument('--disabled', action='store_true',
                    help='Write with enabled=False to pause without deleting.')
+    p.add_argument('--demo-mode', action='store_true',
+                   help='Route verify-patient calls to canned fixtures instead '
+                        'of Stedi. Lets you exercise the full UI workflow '
+                        '(discovery + eligibility + UI) without spending Stedi '
+                        'transactions. See lambda/multi-org/stedi/demo_fixtures.py '
+                        'for the patient list. Never enable for a production org.')
+    p.add_argument('--census-enabled', action='store_true',
+                   help='Opt the org into the morning-census auto-run. Without '
+                        'this flag, the scheduled census_runner Lambda will skip '
+                        'this org. The EventBridge schedule itself is defined in '
+                        'infra/components/audit_engine.py based on infra/config.py.')
+    p.add_argument('--census-roster-source', default='demo_roster',
+                   choices=['demo_roster', 'sftp', 'fhir'],
+                   help='Where the morning roster comes from. Only "demo_roster" '
+                        'is implemented; "sftp" and "fhir" raise NotImplementedError. '
+                        'Default: demo_roster.')
+    p.add_argument('--census-schedule-cron', default=None,
+                   help='Cron expression for the morning EventBridge fire, in '
+                        'AWS Schedule format (e.g. "0 11 * * ? *" = 6am ET in UTC). '
+                        'Stored on the config for documentation; the actual '
+                        'schedule is defined in infra (CDK redeploy required to '
+                        'change). If omitted, falls back to infra default.')
     p.add_argument('--region', default='us-east-1')
     p.add_argument('--dry-run', action='store_true')
     return p.parse_args(argv)
@@ -60,7 +82,7 @@ def build_item(args):
         raise SystemExit(f"--daily-cap must be positive, got {args.daily_cap}")
     preferred = [p.strip() for p in args.preferred_payers.split(',') if p.strip()]
     now = datetime.now(timezone.utc).isoformat()
-    return {
+    item = {
         'pk': f'ORG#{args.org_id}',
         'sk': 'STEDI_CONFIG',
         'gsi1pk': 'STEDI_CONFIG',
@@ -73,9 +95,15 @@ def build_item(args):
         },
         'daily_cap': args.daily_cap,
         'preferred_payer_ids': preferred,
+        'demo_mode': args.demo_mode,
+        'census_enabled': args.census_enabled,
+        'census_roster_source': args.census_roster_source,
         'created_at': now,
         'updated_at': now,
     }
+    if args.census_schedule_cron:
+        item['census_schedule_cron'] = args.census_schedule_cron
+    return item
 
 
 def main(argv=None):
@@ -93,6 +121,8 @@ def main(argv=None):
     print(
         f"Wrote STEDI_CONFIG for org={args.org_id} "
         f"(enabled={not args.disabled}, daily_cap={args.daily_cap}, "
+        f"demo_mode={args.demo_mode}, census_enabled={args.census_enabled}, "
+        f"census_roster_source={args.census_roster_source}, "
         f"preferred_payers={item['preferred_payer_ids']})"
     )
     return 0

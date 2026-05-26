@@ -136,8 +136,34 @@ def can_view_analytics(claims: dict, org_id: str, page: str) -> bool:
     return page in perms['analytics_permissions']
 
 
+_UNREAD_CACHE_TTL_SECONDS = 60
+_unread_cache: dict[tuple[str | None, str | None], tuple[float, int]] = {}
+
+
+def _eligibility_unread_count_for(email: str | None, org_id: str | None) -> int:
+    """Cached read of the morning-census attention-needed count for the
+    nav badge. Lazy-imported so the permissions module stays free of an
+    Athena/DDB dependency until something actually needs the count."""
+    if not org_id:
+        return 0
+    cache_key = (email, org_id)
+    cached = _unread_cache.get(cache_key)
+    if cached is not None:
+        expires_at, count = cached
+        if _now() < expires_at:
+            return count
+    try:
+        from census_api import unread_count_for_org  # local import; admin_api Lambda only
+        count = unread_count_for_org(org_id)
+    except Exception:  # noqa: BLE001 — never break /me/permissions
+        count = 0
+    _unread_cache[cache_key] = (_now() + _UNREAD_CACHE_TTL_SECONDS, count)
+    return count
+
+
 def serialize_for_me_endpoint(claims: dict) -> dict:
     """Shape returned by GET /api/me/permissions for the frontend."""
+    email = claims.get('email')
     if is_super_admin(claims):
         return {
             'is_super_admin': True,
@@ -145,9 +171,11 @@ def serialize_for_me_endpoint(claims: dict) -> dict:
             'organization_id': None,
             'report_permissions': {cat: list(VERBS) for cat in CATEGORIES},
             'analytics_permissions': list(ANALYTICS_PAGES),
+            'eligibility_unread_count': 0,  # super-admin nav has no org context
         }
     org_id = claims.get('organization_id')
-    perms = load_permissions(claims.get('email'), org_id) if org_id else None
+    perms = load_permissions(email, org_id) if org_id else None
+    unread = _eligibility_unread_count_for(email, org_id)
     if not perms:
         return {
             'is_super_admin': False,
@@ -155,6 +183,7 @@ def serialize_for_me_endpoint(claims: dict) -> dict:
             'organization_id': org_id,
             'report_permissions': {cat: [] for cat in CATEGORIES},
             'analytics_permissions': [],
+            'eligibility_unread_count': unread,
         }
     return {
         'is_super_admin': False,
@@ -162,6 +191,7 @@ def serialize_for_me_endpoint(claims: dict) -> dict:
         'organization_id': perms['organization_id'],
         'report_permissions': perms['report_permissions'],
         'analytics_permissions': perms['analytics_permissions'],
+        'eligibility_unread_count': unread,
     }
 
 

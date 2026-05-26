@@ -41,6 +41,7 @@ def transform(stedi_response):
 def _normalize_item(item):
     confidence = item.get('confidence') or {}
     sub = item.get('subscriber') or {}
+    dep = item.get('dependent') or {}
     payer_block = item.get('payer') or {}
     trading_partner_id = (
         item.get('tradingPartnerServiceId')
@@ -60,4 +61,45 @@ def _normalize_item(item):
         "group_number": sub.get('groupNumber'),
         "subscriber_first_name": sub.get('firstName'),
         "subscriber_last_name": sub.get('lastName'),
+        # Payer-side subscriber demographics — full picture so UR can see
+        # exactly what the payer has on file vs. what intake captured.
+        # This is the diff that explains REVIEW_NEEDED hits.
+        "subscriber_demographics": _strip_none({
+            "first_name": sub.get('firstName'),
+            "middle_name": sub.get('middleName'),
+            "last_name": sub.get('lastName'),
+            "suffix": sub.get('suffix'),
+            "dob": sub.get('dateOfBirth'),
+            "gender": sub.get('gender'),
+            "address1": (sub.get('address') or {}).get('address1'),
+            "address2": (sub.get('address') or {}).get('address2'),
+            "city": (sub.get('address') or {}).get('city'),
+            "state": (sub.get('address') or {}).get('state'),
+            "postal_code": (sub.get('address') or {}).get('postalCode'),
+        }),
+        # If discovery returned a dependent block, this is the patient
+        # we're admitting and the subscriber is the policyholder (e.g.
+        # parent's plan). UR needs both demographics side-by-side.
+        "dependent_demographics": _strip_none({
+            "first_name": dep.get('firstName'),
+            "middle_name": dep.get('middleName'),
+            "last_name": dep.get('lastName'),
+            "suffix": dep.get('suffix'),
+            "dob": dep.get('dateOfBirth'),
+            "gender": dep.get('gender'),
+            "relation_to_subscriber": dep.get('relationToSubscriber'),
+            "address1": (dep.get('address') or {}).get('address1'),
+            "address2": (dep.get('address') or {}).get('address2'),
+            "city": (dep.get('address') or {}).get('city'),
+            "state": (dep.get('address') or {}).get('state'),
+            "postal_code": (dep.get('address') or {}).get('postalCode'),
+        }) or None,
     }
+
+
+def _strip_none(d):
+    """Drop None / empty-string entries so the DDB write doesn't
+    persist a wall of nulls. Returns None instead of {} so callers
+    can use `or None` to short-circuit."""
+    cleaned = {k: v for k, v in d.items() if v not in (None, '', [])}
+    return cleaned if cleaned else None

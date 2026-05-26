@@ -20,7 +20,7 @@ def org_config():
         'enabled': True,
         'provider': {'npi': '1234567890', 'organization_name': 'Test Provider'},
         'daily_cap': 200,
-        'preferred_payer_ids': ['AETNA'],
+        'preferred_payer_ids': ['60054'],
     }
 
 
@@ -35,7 +35,7 @@ def fake_audit():
     return audit
 
 
-def _eligibility_response(payer_id='AETNA', payer_name='Aetna', active=True,
+def _eligibility_response(payer_id='60054', payer_name='Aetna', active=True,
                           member_id='ABC123', plan_name='Aetna PPO'):
     return {
         'controlNumber': 'CTRL-1',
@@ -62,7 +62,7 @@ def _discovery_response(items=None):
     }
 
 
-def _discovery_item(payer_id='AETNA', payer_name='Aetna', confidence='HIGH', member_id='ABC123'):
+def _discovery_item(payer_id='60054', payer_name='Aetna', confidence='HIGH', member_id='ABC123'):
     return {
         'confidence': {'level': confidence, 'reason': 'name+dob+ssn match'},
         'tradingPartnerServiceId': payer_id,
@@ -80,7 +80,7 @@ def test_direct_path_uses_eligibility_only(org_config, fake_audit):
 
     result = orchestrator.verify(
         {'first_name': 'John', 'last_name': 'Doe', 'dob': '19800101',
-         'member_id': 'ABC123', 'payer_id': 'AETNA'},
+         'member_id': 'ABC123', 'payer_id': '60054'},
         org_id='test-org', org_config=org_config, stedi_client=client,
         client_ip='10.0.0.1', user_email='ur@example.com', audit=fake_audit,
     )
@@ -98,9 +98,9 @@ def test_direct_path_uses_eligibility_only(org_config, fake_audit):
 def test_discovery_first_with_single_high_hit(org_config, fake_audit):
     client = MagicMock()
     client.check_insurance_discovery.return_value = _discovery_response([
-        _discovery_item(payer_id='AETNA', member_id='ABC123', confidence='HIGH'),
+        _discovery_item(payer_id='60054', member_id='ABC123', confidence='HIGH'),
     ])
-    client.check_eligibility.return_value = _eligibility_response(payer_id='AETNA')
+    client.check_eligibility.return_value = _eligibility_response(payer_id='60054')
 
     result = orchestrator.verify(
         {'first_name': 'John', 'last_name': 'Doe', 'dob': '19800101', 'ssn': '123456789'},
@@ -109,7 +109,7 @@ def test_discovery_first_with_single_high_hit(org_config, fake_audit):
     )
 
     assert result['path'] == 'discovery_first'
-    assert result['primary_coverage']['payer']['name'] == 'Aetna'
+    assert 'Aetna' in result['primary_coverage']['payer']['name']
     assert result['primary_coverage']['status'] == 'active'
     assert client.check_insurance_discovery.call_count == 1
     assert client.check_eligibility.call_count == 1
@@ -119,7 +119,7 @@ def test_discovery_first_with_single_high_hit(org_config, fake_audit):
 def test_discovery_first_caps_at_three_high_hits(org_config, fake_audit):
     client = MagicMock()
     client.check_insurance_discovery.return_value = _discovery_response([
-        _discovery_item(payer_id='AETNA', member_id='M1'),
+        _discovery_item(payer_id='60054', member_id='M1'),
         _discovery_item(payer_id='CIGNA', member_id='M2'),
         _discovery_item(payer_id='UHC', member_id='M3'),
         _discovery_item(payer_id='HUMANA', member_id='M4'),  # should be ignored (cap=3)
@@ -163,7 +163,7 @@ def test_daily_cap_raises_before_stedi_call(org_config, fake_audit):
     with pytest.raises(StediDailyCapExceeded):
         orchestrator.verify(
             {'first_name': 'John', 'last_name': 'Doe', 'dob': '19800101',
-             'member_id': 'M1', 'payer_id': 'AETNA'},
+             'member_id': 'M1', 'payer_id': '60054'},
             org_id='test-org', org_config=org_config, stedi_client=client,
             client_ip='10.0.0.1', user_email='ur@example.com', audit=fake_audit,
         )
@@ -210,7 +210,7 @@ def test_outbound_payload_includes_provider_organization_name(org_config, fake_a
     client.check_eligibility.return_value = _eligibility_response()
     orchestrator.verify(
         {'first_name': 'John', 'last_name': 'Doe', 'dob': '19800101',
-         'member_id': 'ABC123', 'payer_id': 'AETNA'},
+         'member_id': 'ABC123', 'payer_id': '60054'},
         org_id='test-org', org_config=org_config, stedi_client=client,
         client_ip='10.0.0.1', user_email='u@example.com', audit=fake_audit,
     )
@@ -227,11 +227,11 @@ def test_primary_changed_discrepancy(org_config, fake_audit):
         {'payer_name': 'Cigna', 'requested_at': '2026-05-01T10:00:00+00:00'},
     ]
     client = MagicMock()
-    client.check_eligibility.return_value = _eligibility_response(payer_id='AETNA', payer_name='Aetna')
+    client.check_eligibility.return_value = _eligibility_response(payer_id='60054', payer_name='Aetna')
 
     result = orchestrator.verify(
         {'first_name': 'John', 'last_name': 'Doe', 'dob': '19800101',
-         'member_id': 'A1', 'payer_id': 'AETNA'},
+         'member_id': 'A1', 'payer_id': '60054'},
         org_id='test-org', org_config=org_config, stedi_client=client,
         client_ip='10.0.0.1', user_email='u@example.com', audit=fake_audit,
     )
@@ -245,7 +245,7 @@ def test_recent_inactivation_discrepancy(org_config, fake_audit):
     five_days_ago = (date.today() - timedelta(days=5)).strftime('%Y%m%d')
     client.check_eligibility.return_value = {
         'controlNumber': 'X',
-        'tradingPartnerServiceId': 'AETNA',
+        'tradingPartnerServiceId': '60054',
         'subscriber': {'firstName': 'J', 'lastName': 'D', 'memberId': 'A1'},
         'planInformation': {'planName': 'Aetna PPO'},
         'planDateInformation': {'planBegin': '20240101', 'planEnd': five_days_ago},
@@ -254,7 +254,7 @@ def test_recent_inactivation_discrepancy(org_config, fake_audit):
 
     result = orchestrator.verify(
         {'first_name': 'J', 'last_name': 'D', 'dob': '19800101',
-         'member_id': 'A1', 'payer_id': 'AETNA'},
+         'member_id': 'A1', 'payer_id': '60054'},
         org_id='test-org', org_config=org_config, stedi_client=client,
         client_ip='10.0.0.1', user_email='u@example.com', audit=fake_audit,
     )
@@ -269,7 +269,7 @@ def test_copy_block_included(org_config, fake_audit):
     client.check_eligibility.return_value = _eligibility_response()
     result = orchestrator.verify(
         {'first_name': 'J', 'last_name': 'D', 'dob': '19800101',
-         'member_id': 'ABC123', 'payer_id': 'AETNA'},
+         'member_id': 'ABC123', 'payer_id': '60054'},
         org_id='test-org', org_config=org_config, stedi_client=client,
         client_ip='10.0.0.1', user_email='u@example.com', audit=fake_audit,
     )
@@ -288,7 +288,7 @@ def test_recent_check_attached_when_in_window(org_config, fake_audit):
     client.check_eligibility.return_value = _eligibility_response()
     result = orchestrator.verify(
         {'first_name': 'J', 'last_name': 'D', 'dob': '19800101',
-         'member_id': 'A1', 'payer_id': 'AETNA'},
+         'member_id': 'A1', 'payer_id': '60054'},
         org_id='test-org', org_config=org_config, stedi_client=client,
         client_ip='10.0.0.1', user_email='u@example.com', audit=fake_audit,
     )

@@ -15,7 +15,7 @@ describe('RunCategories', () => {
 
   it('renders "All" when every canonical category is present', () => {
     render(<RunCategories categories={[
-      'Intake', 'Billing', 'Compliance Audit', 'Quality Assurance',
+      'Intake', 'Billing', 'Compliance Audit', 'Quality Assurance', 'Eligibility',
     ]} />)
     expect(screen.getByText('All')).toBeInTheDocument()
   })

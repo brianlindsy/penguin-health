@@ -24,6 +24,7 @@ import analytics_helpers
 import nl_agent
 import nl_agent_tools
 import eligibility_api
+import census_api
 
 dynamodb = boto3.resource('dynamodb')
 s3_client = boto3.client('s3')
@@ -185,6 +186,22 @@ def lambda_handler(event, context):
                 authorize_fn=authorize_request),
         'PUT /api/organizations/{orgId}/eligibility/config':
             lambda event, path_params, body, **kw: eligibility_api.update_config(
+                event=event, path_params=path_params, body=body,
+                authorize_fn=authorize_request),
+        'GET /api/organizations/{orgId}/eligibility/census/latest':
+            lambda event, path_params, body, **kw: census_api.get_latest_run(
+                event=event, path_params=path_params,
+                authorize_fn=authorize_request),
+        'GET /api/organizations/{orgId}/eligibility/census/runs':
+            lambda event, path_params, body, **kw: census_api.list_runs(
+                event=event, path_params=path_params,
+                authorize_fn=authorize_request),
+        'PUT /api/organizations/{orgId}/eligibility/census/items/{runId}/{patientHash}/resolve':
+            lambda event, path_params, body, **kw: census_api.resolve_item(
+                event=event, path_params=path_params, body=body,
+                authorize_fn=authorize_request),
+        'POST /api/organizations/{orgId}/eligibility/census/items/{runId}/{patientHash}/rerun':
+            lambda event, path_params, body, **kw: census_api.rerun_census_item(
                 event=event, path_params=path_params, body=body,
                 authorize_fn=authorize_request),
     }

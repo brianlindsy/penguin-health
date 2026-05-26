@@ -20,9 +20,8 @@ import boto3
 
 import permissions as perms_module
 from stedi import audit as stedi_audit
-from stedi import config as stedi_config
-from stedi import payer_registry, secrets, orchestrator
-from stedi.stedi_client import StediClient
+from stedi import client_factory, config as stedi_config
+from stedi import demo_fixtures, payer_registry, orchestrator
 from stedi.exceptions import (
     StediAuthError,
     StediBadRequest,
@@ -77,8 +76,7 @@ def verify(event, path_params, body, authorize_fn, **_):
     except StediOrgNotConfigured as e:
         return _response(409, {'error': str(e)})
 
-    api_key = secrets.get_stedi_api_key()
-    client = StediClient(api_key, client_ip=_client_ip(event))
+    client = client_factory.build_client(org_config, client_ip=_client_ip(event))
 
     try:
         result = orchestrator.verify(
@@ -144,12 +142,15 @@ def get_config(event, path_params, authorize_fn, **_):
     item = response.get('Item')
     if not item:
         return _response(404, {'error': 'no STEDI_CONFIG'})
+    demo_mode = bool(item.get('demo_mode'))
     return _response(200, {
         'enabled': item.get('enabled', False),
         'provider': item.get('provider'),
         'daily_cap': item.get('daily_cap'),
         'preferred_payer_ids': item.get('preferred_payer_ids') or [],
         'available_payers': payer_registry.list_all(),
+        'demo_mode': demo_mode,
+        'demo_scenarios': demo_fixtures.list_scenarios() if demo_mode else [],
         'created_at': item.get('created_at'),
         'updated_at': item.get('updated_at'),
     })
@@ -205,6 +206,7 @@ def update_config(event, path_params, body, authorize_fn, **_):
         'provider': merged_provider,
         'daily_cap': daily_cap if daily_cap is not None else existing.get('daily_cap'),
         'preferred_payer_ids': body.get('preferred_payer_ids', existing.get('preferred_payer_ids') or []),
+        'demo_mode': bool(body.get('demo_mode', existing.get('demo_mode', False))),
         'created_at': existing.get('created_at', now),
         'updated_at': now,
     }

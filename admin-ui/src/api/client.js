@@ -233,4 +233,23 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+
+  // Morning census
+  getLatestCensusRun: (orgId) =>
+    request(`/api/organizations/${orgId}/eligibility/census/latest`),
+
+  listCensusRuns: (orgId, { limit = 30 } = {}) =>
+    request(`/api/organizations/${orgId}/eligibility/census/runs?limit=${limit}`),
+
+  resolveCensusItem: (orgId, runId, patientHash, body) =>
+    request(
+      `/api/organizations/${orgId}/eligibility/census/items/${encodeURIComponent(runId)}/${encodeURIComponent(patientHash)}/resolve`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+
+  rerunCensusItem: (orgId, runId, patientHash, demographics) =>
+    request(
+      `/api/organizations/${orgId}/eligibility/census/items/${encodeURIComponent(runId)}/${encodeURIComponent(patientHash)}/rerun`,
+      { method: 'POST', body: JSON.stringify(demographics) },
+    ),
 }

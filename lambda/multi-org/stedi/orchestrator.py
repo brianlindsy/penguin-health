@@ -40,8 +40,11 @@ def verify(input_, *, org_id, org_config, stedi_client, client_ip, user_email,
     """Run the verify decision tree. Returns a VerifyResult dict.
 
     `input_` keys:
-        first_name, last_name, dob (YYYYMMDD), ssn?, member_id?, payer_id?,
-        address1?, city?, state?, postal_code?
+        first_name, last_name, dob (YYYYMMDD),
+        middle_name?, suffix?, gender?,
+        ssn? (full) | ssn_last4?,
+        member_id?, payer_id?,
+        address1?, address2?, city?, state?, postal_code?
     `org_config` is the STEDI_CONFIG item (must contain provider.npi).
     `audit`/`eligibility_xform`/`discovery_xform` are injected for tests.
     """
@@ -237,8 +240,16 @@ def _build_eligibility_payload(input_, provider_payload, payer_id, member_id):
         'dateOfBirth': input_['dob'],
         'memberId': member_id,
     }
+    if input_.get('middle_name'):
+        subscriber['middleName'] = input_['middle_name']
+    if input_.get('suffix'):
+        subscriber['suffix'] = input_['suffix']
+    if input_.get('gender'):
+        subscriber['gender'] = input_['gender']
     if input_.get('address1'):
         subscriber['address1'] = input_['address1']
+    if input_.get('address2'):
+        subscriber['address2'] = input_['address2']
     if input_.get('city'):
         subscriber['city'] = input_['city']
     if input_.get('state'):
@@ -262,11 +273,23 @@ def _build_discovery_payload(input_, provider_payload):
         'lastName': input_['last_name'],
         'dateOfBirth': input_['dob'],
     }
+    if input_.get('middle_name'):
+        subscriber['middleName'] = input_['middle_name']
+    if input_.get('suffix'):
+        subscriber['suffix'] = input_['suffix']
+    if input_.get('gender'):
+        subscriber['gender'] = input_['gender']
+    # Stedi accepts either the full SSN or just the last 4. Last-4 is
+    # what we persist on the roster; pass it through here.
     if input_.get('ssn'):
         subscriber['ssn'] = input_['ssn']
+    elif input_.get('ssn_last4'):
+        subscriber['ssn'] = input_['ssn_last4']
     address = {}
     if input_.get('address1'):
         address['address1'] = input_['address1']
+    if input_.get('address2'):
+        address['address2'] = input_['address2']
     if input_.get('city'):
         address['city'] = input_['city']
     if input_.get('state'):

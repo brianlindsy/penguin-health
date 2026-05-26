@@ -18,6 +18,8 @@ from aws_cdk import (
     aws_cloudfront as cloudfront,
     aws_cloudfront_origins as origins,
     aws_apigatewayv2 as apigwv2,
+    aws_events as events,
+    aws_events_targets as targets,
 )
 from aws_cdk.aws_apigatewayv2_integrations import HttpLambdaIntegration
 from aws_cdk.aws_apigatewayv2_authorizers import HttpJwtAuthorizer
@@ -123,6 +125,7 @@ class AdminUi(Construct):
             os.path.join(lambda_api_dir, "nl_agent.py"),
             os.path.join(lambda_api_dir, "nl_agent_tools.py"),
             os.path.join(lambda_api_dir, "eligibility_api.py"),
+            os.path.join(lambda_api_dir, "census_api.py"),
             os.path.join(lambda_api_dir, "sqlparse"),
             stedi_pkg_dir,
         ]
@@ -154,6 +157,7 @@ class AdminUi(Construct):
                         (os.path.join(lambda_api_dir, "nl_agent.py"), None),
                         (os.path.join(lambda_api_dir, "nl_agent_tools.py"), None),
                         (os.path.join(lambda_api_dir, "eligibility_api.py"), None),
+                        (os.path.join(lambda_api_dir, "census_api.py"), None),
                         (os.path.join(lambda_api_dir, "sqlparse"), None),
                         (stedi_pkg_dir, "stedi"),
                     ]),
@@ -231,6 +235,60 @@ class AdminUi(Construct):
             },
         )
 
+        # ----- Morning Census Runner Lambda -----
+        # Scheduled per-org by EventBridge to run orchestrator.verify()
+        # against a roster of new admissions (demo_roster for now; later
+        # SFTP or FHIR). Bundles the same stedi/ package as the admin API.
+        census_runner_sources = [
+            os.path.join(lambda_api_dir, "permissions.py"),  # imported transitively
+            stedi_pkg_dir,
+        ]
+
+        self.census_runner_function = _lambda.Function(self, "CensusRunnerFunction",
+            function_name=f"{config.PROJECT_NAME}-census-runner",
+            runtime=_lambda.Runtime.PYTHON_3_14,
+            handler="stedi.census_runner.handler",
+            code=_lambda.Code.from_asset(
+                lambda_multi_org_dir,
+                exclude=["*", "!stedi/**"],
+                asset_hash_type=AssetHashType.CUSTOM,
+                asset_hash=_hash_sources(census_runner_sources),
+                bundling=BundlingOptions(
+                    image=_lambda.Runtime.PYTHON_3_14.bundling_image,
+                    local=DirectoryBundler([
+                        (stedi_pkg_dir, "stedi"),
+                    ]),
+                ),
+            ),
+            timeout=Duration.minutes(5),  # 10 patients x worst-case Stedi latency
+            memory_size=config.LAMBDA_DEFAULT_MEMORY_MB,
+            environment={
+                "STEDI_TABLE_NAME": stedi_table.table_name,
+                "STEDI_API_KEY_SECRET": "penguin-health/stedi/api-key",
+            },
+        )
+
+        # EventBridge schedules: one rule per opted-in org. Adding Circles
+        # of Care later = a new entry in this list + add_stedi_config.py
+        # run with --census-enabled.
+        for org_id, schedule_cron, label in [
+            # 11:00 UTC = 6am ET (winter) / 7am EDT — close enough for a 6am
+            # "data ready when staff arrive" demo. Adjust per-org as needed.
+            ("demo", "0 11 * * ? *", "Demo"),
+        ]:
+            events.Rule(self, f"{label}MorningCensusSchedule",
+                rule_name=f"{config.PROJECT_NAME}-{org_id}-morning-census",
+                schedule=events.Schedule.expression(f"cron({schedule_cron})"),
+                targets=[
+                    targets.LambdaFunction(
+                        self.census_runner_function,
+                        event=events.RuleTargetInput.from_object({
+                            "organization_id": org_id,
+                        }),
+                    ),
+                ],
+            )
+
         org_config_table.grant_read_write_data(self.api_function)
         self.api_function.add_to_role_policy(iam.PolicyStatement(
             actions=["dynamodb:Query", "dynamodb:Scan", "dynamodb:GetItem",
@@ -260,6 +318,22 @@ class AdminUi(Construct):
         # Stedi API key in Secrets Manager. One key per Stedi account
         # (not per-org) so we scope to a single secret path.
         self.api_function.add_to_role_policy(iam.PolicyStatement(
+            actions=["secretsmanager:GetSecretValue"],
+            resources=[
+                f"arn:aws:secretsmanager:{config.AWS_REGION}:*:secret:penguin-health/stedi/*"
+            ],
+        ))
+
+        # Census runner: reads STEDI_CONFIG from org_config_table, writes
+        # CENSUS_RUN# + CENSUS_ITEM# + (in demo mode) seeded AUDIT# rows to
+        # stedi_table, and reads the Stedi API key from Secrets Manager.
+        org_config_table.grant_read_data(self.census_runner_function)
+        stedi_table.grant_read_write_data(self.census_runner_function)
+        self.census_runner_function.add_to_role_policy(iam.PolicyStatement(
+            actions=["dynamodb:Query"],
+            resources=[f"{stedi_table.table_arn}/index/*"],
+        ))
+        self.census_runner_function.add_to_role_policy(iam.PolicyStatement(
             actions=["secretsmanager:GetSecretValue"],
             resources=[
                 f"arn:aws:secretsmanager:{config.AWS_REGION}:*:secret:penguin-health/stedi/*"
@@ -442,6 +516,10 @@ class AdminUi(Construct):
             ("GET",  "/api/organizations/{orgId}/eligibility/history"),
             ("GET",  "/api/organizations/{orgId}/eligibility/config"),
             ("PUT",  "/api/organizations/{orgId}/eligibility/config"),
+            ("GET",  "/api/organizations/{orgId}/eligibility/census/latest"),
+            ("GET",  "/api/organizations/{orgId}/eligibility/census/runs"),
+            ("PUT",  "/api/organizations/{orgId}/eligibility/census/items/{runId}/{patientHash}/resolve"),
+            ("POST", "/api/organizations/{orgId}/eligibility/census/items/{runId}/{patientHash}/rerun"),
         ]
 
         for method, path in routes:
