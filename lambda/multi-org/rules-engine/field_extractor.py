@@ -33,8 +33,7 @@ def extract_fields_from_text(text, field_mappings):
     if not text or not field_mappings:
         return fields
 
-    # Log first 500 chars of text for debugging
-    print(f"Extracting fields from text ({len(text)} chars). First 500 chars: {text[:500]}")
+    print(f"Extracting fields from text ({len(text)} chars)")
 
     lines = text.split('\n')
     print(f"Text split into {len(lines)} lines")
@@ -47,7 +46,7 @@ def extract_fields_from_text(text, field_mappings):
                 parts = line.split(key_pattern, 1)
                 if len(parts) > 1:
                     value = parts[1].strip()
-                    print(f"Extracted {field_name}: '{value}' from key '{key_pattern}'")
+                    print(f"Extracted {field_name} from key '{key_pattern}'")
                     break
 
         fields[field_name] = value if value else None
@@ -101,7 +100,7 @@ def extract_fields_from_csv(csv_content, csv_column_mappings):
             fields[internal_name] = value if value else None
 
             if value:
-                print(f"Extracted {internal_name}: '{value}' from column '{csv_column}'")
+                print(f"Extracted {internal_name} from column '{csv_column}'")
             else:
                 print(f"Field '{internal_name}' not found in column '{csv_column}'")
 

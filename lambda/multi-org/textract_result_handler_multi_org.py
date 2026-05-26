@@ -33,8 +33,7 @@ def lambda_handler(event, context):
                 source_file_key = document_location.get('S3ObjectName')
 
                 if not bucket_name or not source_file_key:
-                    print(f"Could not extract bucket/key from SNS message for job {job_id}")
-                    print(f"Message contents: {json.dumps(message)}")
+                    print(f"Could not extract bucket/key from SNS message for job {job_id}: status={status}, api={api}, has_document_location={bool(document_location)}")
                     continue
 
                 print(f"Processing job from bucket: {bucket_name}, file: {source_file_key}")

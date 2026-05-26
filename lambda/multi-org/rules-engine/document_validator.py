@@ -175,7 +175,7 @@ Please respond with JSON, with the key: 'fields'. The value should be an object 
         return None
 
     extracted = response_json.get('fields', {})
-    print(f"Fields extracted: {extracted}")
+    print(f"Fields extracted: {len(extracted)} fields, names={list(extracted.keys())}")
     return extracted
 
 

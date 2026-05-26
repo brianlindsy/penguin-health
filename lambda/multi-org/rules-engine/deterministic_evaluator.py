@@ -710,7 +710,7 @@ def extract_csv_columns(csv_content):
             if col_name is not None:
                 columns[col_name] = value.strip() if value else None
 
-        print(f"Extracted {len(columns)} columns from CSV: {list(columns.keys())[:10]}...")
+        print(f"Extracted {len(columns)} columns from CSV")
         return columns
 
     except Exception as e:

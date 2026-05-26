@@ -1543,7 +1543,7 @@ def enhance_note(event, path_params, body, **kwargs):
     """
 
     print(f"Rule ID: {rule_id}, Document ID: {document_id}, Validation Run ID: {validation_run_id}")
-    print(f"Previous notes: {notes}")
+    print(f"Previous notes count: {len(notes) if notes else 0}")
     print(f"Organization ID: {org_id}")
 
     # Fetch organization to get S3 bucket
@@ -1551,7 +1551,7 @@ def enhance_note(event, path_params, body, **kwargs):
     if err:
         return response(500, {'error': err})
 
-    print(f"Organization: {org}")
+    print(f"Organization ID: {org.get('organization_id')}, Bucket: {org.get('s3_bucket_name')}")
 
     s3_bucket_name = org.get('s3_bucket_name')
     if s3_bucket_name is None:
@@ -1568,7 +1568,7 @@ def enhance_note(event, path_params, body, **kwargs):
         )
         if validation_query.get('Items'):
             validation_result = validation_query['Items'][0]
-            print(f"Validation result: {validation_result}")
+            print(f"Validation result found for run {validation_run_id}: pk={validation_result.get('pk')}, sk={validation_result.get('sk')}")
 
     user_prompt = f"""
     Rule text: {rule_text}

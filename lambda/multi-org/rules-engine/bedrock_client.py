@@ -82,21 +82,19 @@ def extract_json_from_claude_response(response_body: dict) -> Optional[dict]:
 
         try:
             parsed = json.loads(json_str)
-            print(f"Extracted JSON data: {json.dumps(parsed, indent=2)}")
+            print(f"Extracted JSON data: {len(json_str)} chars, keys={list(parsed.keys()) if isinstance(parsed, dict) else type(parsed).__name__}")
             return parsed
         except json.JSONDecodeError as e:
-            print(f"Error decoding JSON: {e}")
-            print(f"Raw JSON string: {json_str}")
+            print(f"Error decoding JSON: {e} (raw length {len(json_str)} chars)")
         return None
 
     json_str = match.group(1)
     try:
         parsed = json.loads(json_str)
-        print(f"Extracted JSON data: {json.dumps(parsed, indent=2)}")
+        print(f"Extracted JSON data: {len(json_str)} chars, keys={list(parsed.keys()) if isinstance(parsed, dict) else type(parsed).__name__}")
         return parsed
     except json.JSONDecodeError as e:
-        print(f"Error decoding JSON: {e}")
-        print(f"Raw JSON string: {json_str}")
+        print(f"Error decoding JSON: {e} (raw length {len(json_str)} chars)")
         return None
 
 
