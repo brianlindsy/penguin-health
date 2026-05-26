@@ -135,6 +135,7 @@ class AuditEngine(Construct):
             "multi_org_config.py",       # DynamoDB org config loading
             "rate_limiter.py",           # Rate limiting for Bedrock API
             "bedrock_client.py",         # Claude model invocation
+            "claude_cost.py",            # Per-org CloudWatch cost emission
             "document_validator.py",     # Per-rule LLM validation with multi-threading
             "deterministic_evaluator.py", # Code-based deterministic rule evaluation
             "results_handler.py",        # DynamoDB storage and CSV reports
@@ -186,6 +187,17 @@ class AuditEngine(Construct):
         self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
             actions=["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe"],
             resources=["*"],
+        ))
+        # Per-org Claude cost attribution metrics. Namespace-scoped so this
+        # role can't write outside PenguinHealth/LLMCost.
+        self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["cloudwatch:PutMetricData"],
+            resources=["*"],
+            conditions={
+                "StringEquals": {
+                    "cloudwatch:namespace": "PenguinHealth/LLMCost"
+                }
+            },
         ))
         # Permission to invoke itself for continuation pattern
         # Use ARN pattern to avoid circular dependency

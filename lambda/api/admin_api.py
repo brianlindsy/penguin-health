@@ -25,6 +25,11 @@ import nl_agent
 import nl_agent_tools
 import eligibility_api
 import census_api
+from bedrock_client import (
+    invoke_claude_model,
+    extract_json_from_claude_response,
+    MODEL_ID,
+)
 
 dynamodb = boto3.resource('dynamodb')
 s3_client = boto3.client('s3')
@@ -38,22 +43,17 @@ deep_jobs_table = dynamodb.Table(
     os.environ.get('DEEP_JOBS_TABLE', 'penguin-health-analytics-deep-jobs')
 )
 
-# Bedrock client tuned for tool-use turns: read_timeout above the boto3
-# default of 60s because Claude can take longer to reason over chunky
-# tool_result content (large run_sql output, narrative extraction). The
-# worker Lambda has a 10-min ceiling; this just stops boto3 from giving
-# up prematurely inside a single turn. retries={} disables botocore's
-# legacy retry mode (we drive retries ourselves where wanted).
-_BEDROCK_BOTO_CONFIG = BotoConfig(
-    read_timeout=300,
-    connect_timeout=10,
-    retries={'max_attempts': 1, 'mode': 'standard'},
-)
+# Module-level Bedrock client shared across agent steps in one worker
+# invocation so HTTP connection pooling kicks in for multi-turn loops.
+# Config is owned by bedrock_client._BEDROCK_BOTO_CONFIG (read_timeout=300
+# for tool-use turns, botocore retries disabled — we drive retries
+# explicitly). Importing the private constant by name keeps the tuning
+# in one place; the alternative was duplicating BotoConfig() here.
+from bedrock_client import _BEDROCK_BOTO_CONFIG
 bedrock = boto3.client('bedrock-runtime', config=_BEDROCK_BOTO_CONFIG)
 
 RULES_ENGINE_LAMBDA = 'penguin-health-rules-engine-rag'
 DEEP_WORKER_LAMBDA = os.environ.get('DEEP_WORKER_LAMBDA', 'penguin-health-deep-analytics-worker')
-MODEL_ID = 'global.anthropic.claude-sonnet-4-5-20250929-v1:0'
 
 # Deep-job item retention (24h after creation). DynamoDB TTL is best-effort
 # and may run hours late, but is fine here — jobs are display-only.
@@ -1206,140 +1206,6 @@ def trigger_validation_run(event, path_params, body, **kwargs):
 
 # ---- LLM Enhancement ----
 
-def _extract_complete_json(text: str) -> Optional[str]:
-    """
-    Extract a complete JSON object by properly matching braces.
-    Handles nested objects and strings containing braces.
-    """
-    start = text.find('{')
-    if start == -1:
-        return None
-
-    brace_count = 0
-    in_string = False
-    escape_next = False
-
-    for i in range(start, len(text)):
-        char = text[i]
-
-        if escape_next:
-            escape_next = False
-            continue
-
-        if char == '\\':
-            escape_next = True
-            continue
-
-        if char == '"':
-            in_string = not in_string
-            continue
-
-        if not in_string:
-            if char == '{':
-                brace_count += 1
-            elif char == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    return text[start:i+1]
-
-    return None
-
-
-def extract_json_from_claude_response(response_body: dict) -> Optional[dict]:
-    """Extract JSON from a Bedrock Claude model response."""
-    content_list = response_body.get("content", [])
-    if not content_list:
-        print("No 'content' field found or it's empty in the model response.")
-        return None
-
-    all_text = " ".join(
-        block.get("text", "") for block in content_list if block.get("type") == "text"
-    )
-
-    # Try ```json``` code block first
-    match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", all_text)
-    if not match:
-        print("No JSON code block found. Trying raw extraction...")
-        json_str = _extract_complete_json(all_text)
-        if not json_str:
-            print("No valid JSON object found.")
-            return None
-
-        try:
-            parsed = json.loads(json_str)
-            print(f"Extracted JSON data: {json.dumps(parsed, indent=2)}")
-            return parsed
-        except json.JSONDecodeError as e:
-            print(f"Error decoding JSON: {e}")
-            print(f"Raw JSON string: {json_str}")
-        return None
-
-    json_str = match.group(1)
-    try:
-        parsed = json.loads(json_str)
-        print(f"Extracted JSON data: {json.dumps(parsed, indent=2)}")
-        return parsed
-    except json.JSONDecodeError as e:
-        print(f"Error decoding JSON: {e}")
-        print(f"Raw JSON string: {json_str}")
-        return None
-
-
-def invoke_claude_model(
-    inference_profile_id: str,
-    body: dict,
-    return_json_only: bool,
-    bedrock_client=None,
-    retries: int = 1,
-    raise_on_error: bool = True,
-    region_name: str = 'us-east-1',
-):
-    """Invoke Claude model via Bedrock with optional JSON extraction and retry logic.
-
-    The body dict is forwarded to Bedrock as-is, so callers can include tool-use
-    fields (`tools`, `tool_choice`) and multi-turn `messages` arrays. Tool-use
-    loops live in nl_agent.run_agent_loop; this function is single-turn.
-    """
-    if bedrock_client is None:
-        bedrock_client = boto3.client(
-            'bedrock-runtime',
-            region_name=region_name,
-            config=_BEDROCK_BOTO_CONFIG,
-        )
-
-    model_response = bedrock_client.invoke_model(
-        modelId=inference_profile_id,
-        body=json.dumps(body),
-        contentType='application/json',
-        accept='application/json',
-    )
-
-    response_body = json.loads(model_response['body'].read())
-
-    if not return_json_only:
-        return response_body
-
-    extracted_json = extract_json_from_claude_response(response_body)
-
-    if extracted_json is None:
-        if retries > 0:
-            return invoke_claude_model(
-                inference_profile_id=inference_profile_id,
-                body=body,
-                return_json_only=return_json_only,
-                bedrock_client=bedrock_client,
-                retries=retries - 1,
-                raise_on_error=raise_on_error,
-                region_name=region_name,
-            )
-        else:
-            if raise_on_error:
-                raise ValueError("No JSON found in Claude response")
-            return None
-
-    return extracted_json
-
-
 def enhance_fields(event, path_params, body, **kwargs):
     """Use LLM to extract fields_to_extract from rule_text"""
     org_id = path_params.get('orgId')
@@ -1414,16 +1280,24 @@ Rule text: {rule_text}
 Return a JSON array of fields to extract."""
 
     try:
-        resp = bedrock.invoke_model(
-            modelId=MODEL_ID,
-            body=json.dumps({
+        # Returns a JSON ARRAY (not object) so we can't use
+        # return_json_only=True — that path only extracts objects.
+        # Route through the wrapper anyway so the call shows up in
+        # PenguinHealth/LLMCost dimensioned by this org.
+        result = invoke_claude_model(
+            inference_profile_id=MODEL_ID,
+            body={
                 'anthropic_version': 'bedrock-2023-05-31',
                 'max_tokens': 2048,
                 'system': system_prompt,
                 'messages': [{'role': 'user', 'content': user_prompt}],
-            }),
+            },
+            return_json_only=False,
+            bedrock_client=bedrock,
+            org_id=org_id,
+            user_email=claims.get('email'),
+            call_type='rule_fields_enhance',
         )
-        result = json.loads(resp['body'].read())
         content = result['content'][0]['text']
 
         # Parse the JSON array from the response
@@ -1596,7 +1470,10 @@ def enhance_note(event, path_params, body, **kwargs):
             body=body_payload,
             return_json_only=True,
             raise_on_error=True,
-            retries=1
+            retries=1,
+            org_id=org_id,
+            user_email=claims.get('email'),
+            call_type='rule_note_enhance',
         )
         print(f"Response JSON: {response_json}")
 
@@ -1942,11 +1819,17 @@ def nl_query(event, path_params, body, **kwargs):
     })
 
 
-def _deep_extract_for_row(question: str, row_payload: dict) -> str:
+def _deep_extract_for_row(question: str, row_payload: dict,
+                          *, org_id: str = None, user_email: str = None,
+                          parent_request_id: str = None) -> str:
     """
     Call Claude to extract a single answer string from one row's narrative
     fields. Returns 'unknown' on any error so a single bad row doesn't kill
     the whole batch.
+
+    Cost-attribution kwargs are keyword-only so existing positional callers
+    keep working; pass them from the worker handler so each row's Claude
+    spend lands in CloudWatch under this org's job.
     """
     system = (
         "You extract one short answer from a chart record's narrative fields. "
@@ -1971,6 +1854,10 @@ def _deep_extract_for_row(question: str, row_payload: dict) -> str:
             retries=0,
             raise_on_error=False,
             bedrock_client=bedrock,
+            org_id=org_id,
+            user_email=user_email,
+            call_type='deep_extract_row',
+            parent_request_id=parent_request_id,
         )
         if isinstance(resp, dict) and isinstance(resp.get('value'), str):
             return resp['value'].strip() or 'unknown'
@@ -2362,6 +2249,7 @@ def _agent_worker_run(org_id: str, job_id: str, item: dict) -> dict:
     `athena-results/` output, never a shared cross-org bucket.
     """
     question = item.get('question') or ''
+    user_email = item.get('created_by')
     bucket = nl_agent_tools.org_data_bucket(org_id)
     spill = nl_agent_tools.make_s3_spill(s3_client, bucket, job_id)
     job_started_at = time.monotonic()
@@ -2373,7 +2261,10 @@ def _agent_worker_run(org_id: str, job_id: str, item: dict) -> dict:
     }))
 
     def extractor(q: str, row_payload: dict) -> str:
-        return _deep_extract_for_row(q, row_payload)
+        return _deep_extract_for_row(
+            q, row_payload,
+            org_id=org_id, user_email=user_email, parent_request_id=job_id,
+        )
 
     # Shared scratch cache for tool-to-tool row handoffs. Lives only for
     # this one worker invocation; freed when the function returns.
@@ -2425,7 +2316,9 @@ def _agent_worker_run(org_id: str, job_id: str, item: dict) -> dict:
         # Single-turn Bedrock call; the agent loop manages multi-turn state.
         # Pass the module-level `bedrock` client so we reuse its tuned
         # read_timeout (300s) and HTTP connection pool across all turns
-        # in one worker invocation.
+        # in one worker invocation. parent_request_id=job_id so every
+        # step of this agent loop rolls up to one queryable parent in
+        # PenguinHealth/LLMCost.
         return invoke_claude_model(
             inference_profile_id=MODEL_ID,
             body={
@@ -2435,6 +2328,10 @@ def _agent_worker_run(org_id: str, job_id: str, item: dict) -> dict:
                 'tools': tools,
                 'messages': messages,
             },
+            org_id=org_id,
+            user_email=user_email,
+            call_type='nl_agent_step',
+            parent_request_id=job_id,
             return_json_only=False,
             retries=0,
             raise_on_error=True,
@@ -2603,6 +2500,7 @@ def deep_worker_handler(event, context):
         return _agent_worker_run(org_id, job_id, item)
 
     question = item['question']
+    user_email = item.get('created_by')
     columns = item.get('columns') or []
     rows = item.get('rows') or []
     col_names = [c['name'] for c in columns]
@@ -2621,7 +2519,10 @@ def deep_worker_handler(event, context):
     try:
         with ThreadPoolExecutor(max_workers=10) as pool:
             futures = {
-                pool.submit(_deep_extract_for_row, question, row_to_payload(r)): i
+                pool.submit(
+                    _deep_extract_for_row, question, row_to_payload(r),
+                    org_id=org_id, user_email=user_email, parent_request_id=job_id,
+                ): i
                 for i, r in enumerate(rows)
                 if extracted[i] is None
             }

@@ -25,6 +25,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'api'))
 # lambda/multi-org/stedi; expose it under the same `import stedi` name in
 # tests by putting lambda/multi-org on sys.path.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'multi-org'))
+# bedrock_client, claude_cost, and rate_limiter live in lambda/multi-org/
+# rules-engine and are bundled flat into both the admin_api and rules-engine
+# Lambda assets. Tests reach them the same way the Lambda runtime does.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'multi-org', 'rules-engine'))
 
 import pytest
 import boto3

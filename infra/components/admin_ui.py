@@ -116,7 +116,16 @@ class AdminUi(Construct):
         # ----- Admin API Lambda -----
         lambda_api_dir = os.path.join(os.path.dirname(__file__), "..", "..", "lambda", "api")
         lambda_multi_org_dir = os.path.join(os.path.dirname(__file__), "..", "..", "lambda", "multi-org")
+        rules_engine_dir = os.path.join(lambda_multi_org_dir, "rules-engine")
         stedi_pkg_dir = os.path.join(lambda_multi_org_dir, "stedi")
+
+        # Three modules live in rules-engine/ but are bundled flat into the
+        # admin_api asset so `from bedrock_client import ...` resolves at
+        # the asset root the same way it does in the rules-engine Lambda.
+        # bedrock_client owns invoke_claude_model + JSON extraction;
+        # claude_cost emits per-org CloudWatch cost metrics; rate_limiter
+        # is bedrock_client's transitive dependency.
+        shared_llm_modules = ["bedrock_client.py", "claude_cost.py", "rate_limiter.py"]
 
         admin_api_sources = [
             os.path.join(lambda_api_dir, "admin_api.py"),
@@ -128,7 +137,7 @@ class AdminUi(Construct):
             os.path.join(lambda_api_dir, "census_api.py"),
             os.path.join(lambda_api_dir, "sqlparse"),
             stedi_pkg_dir,
-        ]
+        ] + [os.path.join(rules_engine_dir, m) for m in shared_llm_modules]
 
         self.api_function = _lambda.Function(self, "AdminApiFunction",
             function_name=f"{config.PROJECT_NAME}-admin-api",
@@ -160,6 +169,9 @@ class AdminUi(Construct):
                         (os.path.join(lambda_api_dir, "census_api.py"), None),
                         (os.path.join(lambda_api_dir, "sqlparse"), None),
                         (stedi_pkg_dir, "stedi"),
+                    ] + [
+                        (os.path.join(rules_engine_dir, m), None)
+                        for m in shared_llm_modules
                     ]),
                 ),
             ),
@@ -195,7 +207,7 @@ class AdminUi(Construct):
             os.path.join(lambda_api_dir, "nl_agent.py"),
             os.path.join(lambda_api_dir, "nl_agent_tools.py"),
             os.path.join(lambda_api_dir, "sqlparse"),
-        ]
+        ] + [os.path.join(rules_engine_dir, m) for m in shared_llm_modules]
 
         self.deep_worker_function = _lambda.Function(self, "DeepAnalyticsWorkerFunction",
             function_name=f"{config.PROJECT_NAME}-deep-analytics-worker",
@@ -223,6 +235,9 @@ class AdminUi(Construct):
                         (os.path.join(lambda_api_dir, "nl_agent.py"), None),
                         (os.path.join(lambda_api_dir, "nl_agent_tools.py"), None),
                         (os.path.join(lambda_api_dir, "sqlparse"), None),
+                    ] + [
+                        (os.path.join(rules_engine_dir, m), None)
+                        for m in shared_llm_modules
                     ]),
                 ),
             ),
@@ -357,6 +372,21 @@ class AdminUi(Construct):
                 "arn:aws:bedrock:*:*:inference-profile/*",
             ],
         ))
+
+        # Per-org Claude cost attribution metrics. Namespace-scoped so
+        # neither role can write outside PenguinHealth/LLMCost. Both
+        # admin API and the agent worker emit; they're each on the hot
+        # path for Bedrock calls.
+        for fn in (self.api_function, self.deep_worker_function):
+            fn.add_to_role_policy(iam.PolicyStatement(
+                actions=["cloudwatch:PutMetricData"],
+                resources=["*"],
+                conditions={
+                    "StringEquals": {
+                        "cloudwatch:namespace": "PenguinHealth/LLMCost"
+                    }
+                },
+            ))
 
         # Worker runs Athena via the run_sql tool — same scope as the api
         # function so per-org workgroup isolation is preserved.

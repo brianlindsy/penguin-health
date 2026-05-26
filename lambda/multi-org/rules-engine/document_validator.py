@@ -34,8 +34,12 @@ def extract_document_id_from_filename(filename):
     return stem.rsplit('__', 1)[-1]
 
 
-def evaluate_rule(rule_config, fields, data=None):
-    """Evaluate a single rule against the document fields."""
+def evaluate_rule(rule_config, fields, data=None, *,
+                  org_id=None, validation_run_id=None):
+    """Evaluate a single rule against the document fields.
+
+    `org_id` and `validation_run_id` are forwarded to the LLM cost hook
+    so per-org spend rolls up by validation run in CloudWatch."""
     rule_type = rule_config.get('type', 'llm')
 
     result = {
@@ -47,7 +51,10 @@ def evaluate_rule(rule_config, fields, data=None):
 
     try:
         if rule_type == 'llm':
-            status, message, _ = evaluate_llm_rule(rule_config, fields, data)
+            status, message, _ = evaluate_llm_rule(
+                rule_config, fields, data,
+                org_id=org_id, validation_run_id=validation_run_id,
+            )
         elif rule_type == 'deterministic':
             status, message = evaluate_deterministic_rule(rule_config, fields, data)
         else:
@@ -64,7 +71,8 @@ def evaluate_rule(rule_config, fields, data=None):
     return result
 
 
-def evaluate_llm_rule(rule_config, fields, data=None):
+def evaluate_llm_rule(rule_config, fields, data=None, *,
+                      org_id=None, validation_run_id=None):
     """
     Evaluate a rule using AWS Bedrock Claude with structured JSON output.
     Uses the flat schema with rule_text, fields_to_extract, and notes.
@@ -97,14 +105,16 @@ def evaluate_llm_rule(rule_config, fields, data=None):
         # Step 1: Extract fields if fields_to_extract is defined
         if fields_to_extract:
             extracted_fields = _extract_rule_fields(
-                MODEL_ID, rule_text, notes, fields_to_extract, chart_text
+                MODEL_ID, rule_text, notes, fields_to_extract, chart_text,
+                org_id=org_id, validation_run_id=validation_run_id,
             )
             if extracted_fields is None:
                 return 'ERROR', 'No JSON found in Claude response (field extraction)', ''
 
         # Step 2: Validate the rule
         return _validate_rule(
-            MODEL_ID, rule_text, notes, chart_text, extracted_fields
+            MODEL_ID, rule_text, notes, chart_text, extracted_fields,
+            org_id=org_id, validation_run_id=validation_run_id,
         )
 
     except Exception as e:
@@ -115,7 +125,8 @@ def evaluate_llm_rule(rule_config, fields, data=None):
         return 'ERROR', error_msg, error_msg
 
 
-def _extract_rule_fields(model_id, rule_text, notes, fields_to_extract, chart_text):
+def _extract_rule_fields(model_id, rule_text, notes, fields_to_extract, chart_text,
+                         *, org_id=None, validation_run_id=None):
     """
     Step 1: Extract fields from chart text to help validate the rule.
     """
@@ -168,7 +179,10 @@ Please respond with JSON, with the key: 'fields'. The value should be an object 
         body=body,
         return_json_only=True,
         raise_on_error=True,
-        retries=1
+        retries=1,
+        org_id=org_id,
+        call_type='chart_field_extract',
+        parent_request_id=validation_run_id,
     )
 
     if response_json is None:
@@ -179,7 +193,8 @@ Please respond with JSON, with the key: 'fields'. The value should be an object 
     return extracted
 
 
-def _validate_rule(model_id, rule_text, notes, chart_text, extracted_fields=None):
+def _validate_rule(model_id, rule_text, notes, chart_text, extracted_fields=None,
+                   *, org_id=None, validation_run_id=None):
     """
     Step 2: Validate the rule using extracted fields (if any).
     Returns (status, message, reasoning) tuple.
@@ -230,7 +245,10 @@ Please respond with JSON, with the keys: 'status' and 'reasoning'. The status sh
         body=body,
         return_json_only=True,
         raise_on_error=True,
-        retries=1
+        retries=1,
+        org_id=org_id,
+        call_type='chart_rule_validate',
+        parent_request_id=validation_run_id,
     )
 
     if response_json is None:
@@ -271,7 +289,10 @@ def validate_document(data, filename, config, org_id, validation_run_id):
         rule_results = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_rule = {
-                executor.submit(evaluate_rule, rule_config, fields, data): rule_config
+                executor.submit(
+                    evaluate_rule, rule_config, fields, data,
+                    org_id=org_id, validation_run_id=validation_run_id,
+                ): rule_config
                 for rule_config in enabled_rules
             }
 
