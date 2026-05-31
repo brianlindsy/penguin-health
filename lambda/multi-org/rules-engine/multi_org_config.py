@@ -287,7 +287,6 @@ def build_env_config(org_id):
             'ORGANIZATION_ID': 'example-org',
             'BUCKET_NAME': 'penguin-health-example-org',
             'DYNAMODB_TABLE': 'penguin-health-validation-results',
-            'DYNAMODB_IRP_TABLE': 'penguin-health-irp',
             'TEXTRACT_PROCESSED': 'textract-processed/'
         }
     """
@@ -297,7 +296,6 @@ def build_env_config(org_id):
         'ORGANIZATION_ID': org_id,
         'BUCKET_NAME': org['s3_bucket_name'],
         'DYNAMODB_TABLE': 'penguin-health-validation-results',
-        'DYNAMODB_IRP_TABLE': 'penguin-health-irp',
         'TEXTRACT_PROCESSED': 'textract-processed/'
     }
 

@@ -31,7 +31,6 @@ class AuditEngine(Construct):
     def __init__(self, scope: Construct, id: str, *,
                  org_config_table: dynamodb.ITable,
                  validation_results_table: dynamodb.ITable,
-                 irp_table: dynamodb.ITable,
                  notifications_topic: sns.ITopic) -> None:
         super().__init__(scope, id)
 
@@ -176,7 +175,6 @@ class AuditEngine(Construct):
         self.rules_engine_fn.add_to_role_policy(s3_policy)
         org_config_table.grant_read_data(self.rules_engine_fn)
         validation_results_table.grant_read_write_data(self.rules_engine_fn)
-        irp_table.grant_read_data(self.rules_engine_fn)
 
         # Bedrock permissions for LLM-based rule evaluation
         self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(

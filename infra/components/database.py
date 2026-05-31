@@ -51,25 +51,6 @@ class Database(Construct):
             sort_key=dynamodb.Attribute(name="gsi2sk", type=dynamodb.AttributeType.STRING),
         )
 
-        # ----- penguin-health-irp -----
-        self.irp_table = dynamodb.Table(self, "IrpTable",
-            table_name=f"{config.PROJECT_NAME}-irp",
-            partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
-            sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
-            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            removal_policy=RemovalPolicy.RETAIN,
-        )
-        self.irp_table.add_global_secondary_index(
-            index_name="gsi1",
-            partition_key=dynamodb.Attribute(name="gsi1pk", type=dynamodb.AttributeType.STRING),
-            sort_key=dynamodb.Attribute(name="gsi1sk", type=dynamodb.AttributeType.STRING),
-        )
-        self.irp_table.add_global_secondary_index(
-            index_name="gsi2",
-            partition_key=dynamodb.Attribute(name="gsi2pk", type=dynamodb.AttributeType.STRING),
-            sort_key=dynamodb.Attribute(name="gsi2sk", type=dynamodb.AttributeType.STRING),
-        )
-
         # ----- penguin-health-analytics-reports -----
         # Saved NL-analytics query snapshots. pk=ORG#{org_id},
         # sk=REPORT#{created_at_iso}#{report_id} so a single query lists

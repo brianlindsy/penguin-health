@@ -47,7 +47,6 @@ class PenguinHealthStack(Stack):
         audit_engine = AuditEngine(self, "AuditEngine",
             org_config_table=db.org_config_table,
             validation_results_table=db.validation_results_table,
-            irp_table=db.irp_table,
             notifications_topic=db.notifications_topic,
         )
 
