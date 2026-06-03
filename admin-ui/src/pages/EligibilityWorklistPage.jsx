@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { api } from '../api/client.js'
 
-// Status palette — mirrors the result_status values the census runner
-// writes to DynamoDB. Add new statuses here and in census_runner.py
-// _classify together.
+// Status palette — mirrors the result_status values the FHIR eligibility
+// poller writes to DynamoDB. Add new statuses here and in
+// fhir_eligibility_poller.py _classify together.
 const STATUS_META = {
   verified:             { label: 'Verified',        pill: 'bg-emerald-100 text-emerald-800 border-emerald-200', dot: 'bg-emerald-500',  attention: false },
   discrepancy:          { label: 'Discrepancy',     pill: 'bg-amber-100 text-amber-800 border-amber-200',         dot: 'bg-amber-500',   attention: true  },
@@ -15,58 +15,36 @@ const STATUS_META = {
   error:                { label: 'Error',           pill: 'bg-gray-200 text-gray-800 border-gray-300',             dot: 'bg-gray-500',    attention: true  },
 }
 
-// Actions offered for each result_status. Keep mostly in sync with the
-// table in the plan; tweak labels as Barb gives feedback.
-const ACTIONS_BY_STATUS = {
-  discrepancy: [
-    'Verified correct via payer portal',
-    'Updated patient record',
-    'Escalate to admissions',
-  ],
-  review_needed: [
-    'Confirmed match via payer portal',
-    'Not a match — needs discovery rerun',
-    'Escalate',
-  ],
-  no_coverage: [
-    'Patient confirmed uninsured',
-    'Patient provided new info — rerun',
-    'Self-pay arranged',
-    'Escalate',
-  ],
-  pediatric_no_info: [
-    'Parent contacted — got info, rerun',
-    'Parent unreachable',
-    'Self-pay/charity arranged',
-  ],
-  service_type_denied: [
-    'Discussed alternatives with patient',
-    'Out-of-network arranged',
-    'Patient transferred',
-  ],
-  error: [
-    'Acknowledged — will rerun manually',
-    'Escalate',
-  ],
+function patientLabel(item) {
+  // Poller-written rows only store initials at the row root (PHI hygiene).
+  // Full names live in submitted_demographics for the demo / rerun flow.
+  const submitted = item.submitted_demographics || {}
+  const first = submitted.first_name || item.patient_first_initial || '?'
+  const last = submitted.last_name || item.patient_last_initial || '?'
+  return `${first} ${last}`
 }
 
-export function CensusPage() {
+function patientDob(item) {
+  return (item.submitted_demographics || {}).dob || ''
+}
+
+export function EligibilityWorklistPage() {
   const { orgId } = useParams()
-  const [run, setRun] = useState(null)
   const [items, setItems] = useState([])
+  const [counts, setCounts] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [expandedHash, setExpandedHash] = useState(null)
+  const [expandedId, setExpandedId] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const res = await api.getLatestCensusRun(orgId)
-      setRun(res.run)
+      const res = await api.listEligibilityEncounters(orgId)
       setItems(res.items || [])
+      setCounts(res.counts || null)
     } catch (e) {
-      setError(e.message || 'failed to load census')
+      setError(e.message || 'failed to load eligibility worklist')
     } finally {
       setLoading(false)
     }
@@ -74,7 +52,10 @@ export function CensusPage() {
 
   useEffect(() => { load() }, [load])
 
-  const counts = useMemo(() => {
+  // Fall back to client-side counts if the server didn't send them (e.g.
+  // tests with stubbed responses) so the summary pills always render.
+  const derivedCounts = useMemo(() => {
+    if (counts) return counts
     const c = { total: items.length, verified: 0, discrepancy: 0, no_coverage: 0,
                 review_needed: 0, pediatric_no_info: 0, service_type_denied: 0,
                 error: 0, attention: 0, resolved: 0 }
@@ -87,40 +68,38 @@ export function CensusPage() {
       if (meta?.attention && !resolved) c.attention += 1
     }
     return c
-  }, [items])
+  }, [items, counts])
 
-  async function onResolve(item, action, note) {
-    const updated = await api.resolveCensusItem(orgId, item.run_id, item.patient_hash, {
-      state: 'resolved', action, note,
+  async function onResolve(item, note) {
+    const updated = await api.resolveEligibilityEncounter(orgId, item.encounter_id, {
+      state: 'resolved', note,
     })
     setItems((prev) => prev.map((i) =>
-      i.patient_hash === item.patient_hash ? { ...i, resolution: updated.resolution } : i
+      i.encounter_id === item.encounter_id ? { ...i, resolution: updated.resolution } : i
     ))
-    setExpandedHash(null)
+    setExpandedId(null)
   }
 
   async function onRerun(item, correctedDemographics) {
-    const res = await api.rerunCensusItem(orgId, item.run_id, item.patient_hash, correctedDemographics)
-    // Replace the item with the freshly-returned one so the row reflects
-    // the new status, corrected_demographics, rerun_history, etc.
+    const res = await api.rerunEligibilityEncounter(orgId, item.encounter_id, correctedDemographics)
     setItems((prev) => prev.map((i) =>
-      i.patient_hash === item.patient_hash ? { ...i, ...res.item } : i
+      i.encounter_id === item.encounter_id ? { ...i, ...res.item } : i
     ))
     return res.item
   }
 
-  if (loading) return <div className="text-sm text-gray-500">Loading morning census…</div>
+  if (loading) return <div className="text-sm text-gray-500">Loading eligibility worklist…</div>
   if (error) {
     return (
       <div className="rounded border border-red-300 bg-red-50 p-4 text-sm text-red-800">{error}</div>
     )
   }
-  if (!run) {
+  if (items.length === 0) {
     return (
       <div>
-        <PageHeader orgId={orgId} run={null} />
+        <PageHeader orgId={orgId} />
         <div className="mt-6 rounded border border-gray-200 bg-white p-8 text-center text-sm text-gray-500">
-          No census run yet. The scheduled run fires every morning at 6am ET.
+          No encounters verified yet. The FHIR poller runs every ~15 minutes for opted-in orgs.
         </div>
       </div>
     )
@@ -128,9 +107,9 @@ export function CensusPage() {
 
   return (
     <div>
-      <PageHeader orgId={orgId} run={run} />
+      <PageHeader orgId={orgId} />
 
-      <SummaryPills counts={counts} run={run} />
+      <SummaryPills counts={derivedCounts} />
 
       <div className="mt-6 bg-white border border-gray-200 rounded-lg overflow-hidden">
         <table className="min-w-full text-sm">
@@ -139,6 +118,7 @@ export function CensusPage() {
               <th className="px-3 py-2 text-left w-8"></th>
               <th className="px-3 py-2 text-left">Patient</th>
               <th className="px-3 py-2 text-left">DOB</th>
+              <th className="px-3 py-2 text-left">Encounter</th>
               <th className="px-3 py-2 text-left">Status</th>
               <th className="px-3 py-2 text-left">Payer</th>
               <th className="px-3 py-2 text-left">Member ID</th>
@@ -148,13 +128,13 @@ export function CensusPage() {
           </thead>
           <tbody>
             {items.map((it) => {
-              const expanded = expandedHash === it.patient_hash
+              const expanded = expandedId === it.encounter_id
               return (
-                <CensusRow
-                  key={it.patient_hash}
+                <EncounterRow
+                  key={it.encounter_id}
                   item={it}
                   expanded={expanded}
-                  onToggle={() => setExpandedHash(expanded ? null : it.patient_hash)}
+                  onToggle={() => setExpandedId(expanded ? null : it.encounter_id)}
                   onResolve={onResolve}
                   onRerun={onRerun}
                 />
@@ -168,16 +148,13 @@ export function CensusPage() {
 }
 
 
-function PageHeader({ orgId, run }) {
+function PageHeader({ orgId }) {
   return (
     <div className="flex items-start justify-between">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Morning Census</h1>
+        <h1 className="text-2xl font-semibold text-gray-900">Eligibility Worklist</h1>
         <p className="text-sm text-gray-500 mt-1">
-          {run
-            ? <>Run on {formatDate(run.run_date)} at {formatTime(run.completed_at || run.started_at)} · source: <code>{run.source}</code></>
-            : <>Scheduled morning verification worklist.</>
-          }
+          New encounters from the FHIR feed, verified against Stedi as they arrive.
         </p>
       </div>
       <Link
@@ -191,7 +168,7 @@ function PageHeader({ orgId, run }) {
 }
 
 
-function SummaryPills({ counts, run }) {
+function SummaryPills({ counts }) {
   const pills = [
     { label: 'Total',         count: counts.total,               cls: 'bg-gray-100 text-gray-800' },
     { label: 'Verified',      count: counts.verified,            cls: STATUS_META.verified.pill },
@@ -223,7 +200,7 @@ function SummaryPills({ counts, run }) {
 }
 
 
-function CensusRow({ item, expanded, onToggle, onResolve, onRerun }) {
+function EncounterRow({ item, expanded, onToggle, onResolve, onRerun }) {
   const meta = STATUS_META[item.result_status] || STATUS_META.error
   const summary = item.result_summary || {}
   const resolved = item.resolution?.state === 'resolved'
@@ -232,8 +209,12 @@ function CensusRow({ item, expanded, onToggle, onResolve, onRerun }) {
     <>
       <tr className={`border-t border-gray-100 hover:bg-gray-50 cursor-pointer ${dimCls}`} onClick={onToggle}>
         <td className="px-3 py-2"><span className={`inline-block w-2 h-2 rounded-full ${meta.dot}`} /></td>
-        <td className="px-3 py-2 text-gray-900 font-medium">{item.patient_first_name} {item.patient_last_name}</td>
-        <td className="px-3 py-2 text-gray-600">{formatDob(item.patient_dob)}</td>
+        <td className="px-3 py-2 text-gray-900 font-medium">{patientLabel(item)}</td>
+        <td className="px-3 py-2 text-gray-600">{formatDob(patientDob(item))}</td>
+        <td className="px-3 py-2 text-gray-500 font-mono text-xs">
+          {(item.encounter_class || '—')}
+          <div className="text-gray-400">{formatTime(item.encounter_lastUpdated)}</div>
+        </td>
         <td className="px-3 py-2">
           <span className={`text-xs rounded px-2 py-0.5 border ${meta.pill}`}>{meta.label}</span>
           {summary.auth_required === true && (
@@ -254,7 +235,7 @@ function CensusRow({ item, expanded, onToggle, onResolve, onRerun }) {
         </td>
         <td className="px-3 py-2">
           {resolved ? (
-            <span className="text-xs text-emerald-700">✓ {item.resolution?.action || 'Resolved'}</span>
+            <span className="text-xs text-emerald-700">✓ Resolved</span>
           ) : (
             <span className="text-xs text-gray-400">—</span>
           )}
@@ -262,7 +243,7 @@ function CensusRow({ item, expanded, onToggle, onResolve, onRerun }) {
       </tr>
       {expanded && (
         <tr className="border-t border-gray-100 bg-gray-50">
-          <td colSpan={8} className="px-3 py-4">
+          <td colSpan={9} className="px-3 py-4">
             <ExpandedDetail item={item} onResolve={onResolve} onRerun={onRerun} />
           </td>
         </tr>
@@ -274,17 +255,14 @@ function CensusRow({ item, expanded, onToggle, onResolve, onRerun }) {
 
 function ExpandedDetail({ item, onResolve, onRerun }) {
   const summary = item.result_summary || {}
-  const actions = ACTIONS_BY_STATUS[item.result_status] || []
-  const [chosen, setChosen] = useState('')
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const resolved = item.resolution?.state === 'resolved'
 
   async function submit() {
-    if (!chosen) return
     setBusy(true)
     try {
-      await onResolve(item, chosen, note)
+      await onResolve(item, note)
     } finally {
       setBusy(false)
     }
@@ -304,6 +282,7 @@ function ExpandedDetail({ item, onResolve, onRerun }) {
           <dt className="text-gray-500">Secondary plans</dt><dd>{summary.secondary_count || 0}</dd>
         </dl>
         <ServiceTypesTable serviceTypes={summary.service_types} />
+        <CobCheckPanel cobCheck={summary.cob_check} />
         {(summary.discrepancies || []).length > 0 && (
           <div className="mt-3 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
             <div className="font-medium mb-1">Discrepancies</div>
@@ -323,7 +302,7 @@ function ExpandedDetail({ item, onResolve, onRerun }) {
         <div className="text-xs font-semibold text-gray-500 uppercase mb-1">Resolve</div>
         {resolved ? (
           <div className="text-sm">
-            <div className="text-emerald-700 font-medium">✓ {item.resolution.action}</div>
+            <div className="text-emerald-700 font-medium">✓ Resolved</div>
             {item.resolution.note && <div className="text-gray-600 mt-1">{item.resolution.note}</div>}
             <div className="text-xs text-gray-500 mt-2">
               by {item.resolution.resolved_by} at {formatTime(item.resolution.resolved_at)}
@@ -331,14 +310,6 @@ function ExpandedDetail({ item, onResolve, onRerun }) {
           </div>
         ) : (
           <div className="space-y-2">
-            <select
-              className="w-full rounded border border-gray-300 text-sm shadow-sm focus:border-blue-500 focus:ring-blue-500"
-              value={chosen}
-              onChange={(e) => setChosen(e.target.value)}
-            >
-              <option value="">Choose an action…</option>
-              {actions.map((a) => <option key={a} value={a}>{a}</option>)}
-            </select>
             <textarea
               className="w-full rounded border border-gray-300 text-sm shadow-sm focus:border-blue-500 focus:ring-blue-500"
               rows={2}
@@ -348,7 +319,7 @@ function ExpandedDetail({ item, onResolve, onRerun }) {
             />
             <button
               type="button"
-              disabled={!chosen || busy}
+              disabled={busy}
               onClick={submit}
               className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white text-sm font-medium rounded px-3 py-1.5"
             >
@@ -365,9 +336,6 @@ function ExpandedDetail({ item, onResolve, onRerun }) {
 
 
 // Editable demographics + payer-side diff + rerun history.
-// The crux of the rerun workflow: UR sees what intake captured (left),
-// what the payer has on file (right), edits whichever fields are wrong,
-// hits Rerun, and the row updates in place.
 const DEMOGRAPHIC_LABELS = [
   ['first_name',  'First name'],
   ['middle_name', 'Middle'],
@@ -383,9 +351,6 @@ const DEMOGRAPHIC_LABELS = [
   ['postal_code', 'ZIP'],
 ]
 
-// Map our demographic keys to what the payer-side diff returns under
-// `payer_demographics.subscriber` / `.dependent`. Names match the
-// transformer output verbatim.
 const PAYER_FIELD_MAP = {
   first_name:  'first_name',
   middle_name: 'middle_name',
@@ -398,7 +363,6 @@ const PAYER_FIELD_MAP = {
   city:        'city',
   state:       'state',
   postal_code: 'postal_code',
-  // SSN never returned by payers; member_id surfaced separately.
 }
 
 function DemographicsPanel({ item, onRerun }) {
@@ -407,19 +371,16 @@ function DemographicsPanel({ item, onRerun }) {
   const payerDemographics = item.payer_demographics
   const rerunHistory = item.rerun_history || []
 
-  // Edit state starts with whichever demographics are most recent —
-  // corrected if a prior rerun exists, otherwise submitted.
   const initial = useMemo(() => ({
     ...submitted, ...(corrected || {}),
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [item.patient_hash, JSON.stringify(corrected)])
+  }), [item.encounter_id, JSON.stringify(corrected)])
 
   const [edits, setEdits] = useState(initial)
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
-  // If the item changes (e.g. after rerun) reset the edits to match.
   useEffect(() => { setEdits(initial) }, [initial])
 
   const payerForCompare =
@@ -445,8 +406,6 @@ function DemographicsPanel({ item, onRerun }) {
   }
 
   async function submitRerun() {
-    // Only send fields that differ from the original submission. That
-    // way the backend's audit trail captures exactly what UR changed.
     const corrections = {}
     for (const [k] of DEMOGRAPHIC_LABELS) {
       const newVal = (edits[k] || '').trim()
@@ -661,10 +620,51 @@ function ServiceTypesTable({ serviceTypes }) {
 }
 
 
-function formatDate(iso) {
-  if (!iso) return ''
-  try { return new Date(iso).toLocaleDateString() } catch { return iso }
+// Coordination-of-Benefits result panel. Only renders when the verify
+// flow actually issued a COB call (i.e. ≥2 active coverages AND the org
+// has cob_enabled). When status='ok', COB picked a different primary
+// than our default "first active wins" rule — that's also flagged in
+// the Discrepancies banner above; this panel shows the full ranking.
+function CobCheckPanel({ cobCheck }) {
+  if (!cobCheck || !cobCheck.checked) return null
+
+  const meta = {
+    ok:         { label: 'COB reordered primary',  cls: 'border-amber-300 bg-amber-50 text-amber-900', dot: '⚖' },
+    no_change:  { label: 'COB confirmed primacy',  cls: 'border-emerald-300 bg-emerald-50 text-emerald-900', dot: '✓' },
+    no_signal:  { label: 'COB ran — no signal',    cls: 'border-gray-300 bg-gray-50 text-gray-700', dot: '•' },
+    skipped_cap:{ label: 'COB skipped (daily cap)',cls: 'border-gray-300 bg-gray-50 text-gray-700', dot: '•' },
+    error:      { label: 'COB call failed',        cls: 'border-gray-300 bg-gray-50 text-gray-700', dot: '!' },
+  }[cobCheck.status] || { label: 'COB ran', cls: 'border-gray-300 bg-gray-50 text-gray-700', dot: '•' }
+
+  const rankings = cobCheck.rankings || []
+
+  return (
+    <div className={`mt-3 rounded border p-2 text-xs ${meta.cls}`}>
+      <div className="font-medium mb-1">{meta.dot} {meta.label}</div>
+      {rankings.length > 0 && (
+        <ol className="list-decimal pl-4 space-y-0.5">
+          {rankings.map((r, i) => (
+            <li key={i}>
+              <span className="capitalize">{r.rank}</span>:{' '}
+              <span className="font-medium">{r.payer_name || r.payer_id}</span>
+              {r.payer_name && r.payer_id && (
+                <span className="text-gray-500 font-mono ml-1">({r.payer_id})</span>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+      {cobCheck.reason && (
+        <div className="mt-1 italic">{cobCheck.reason}</div>
+      )}
+      {cobCheck.cob_id && (
+        <div className="mt-1 text-gray-500 font-mono">trace: {cobCheck.cob_id}</div>
+      )}
+    </div>
+  )
 }
+
+
 function formatTime(iso) {
   if (!iso) return ''
   try { return new Date(iso).toLocaleString() } catch { return iso }

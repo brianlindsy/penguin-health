@@ -141,7 +141,7 @@ _unread_cache: dict[tuple[str | None, str | None], tuple[float, int]] = {}
 
 
 def _eligibility_unread_count_for(email: str | None, org_id: str | None) -> int:
-    """Cached read of the morning-census attention-needed count for the
+    """Cached read of the eligibility-worklist attention-needed count for the
     nav badge. Lazy-imported so the permissions module stays free of an
     Athena/DDB dependency until something actually needs the count."""
     if not org_id:
@@ -153,7 +153,7 @@ def _eligibility_unread_count_for(email: str | None, org_id: str | None) -> int:
         if _now() < expires_at:
             return count
     try:
-        from census_api import unread_count_for_org  # local import; admin_api Lambda only
+        from eligibility_worklist_api import unread_count_for_org  # local import; admin_api Lambda only
         count = unread_count_for_org(org_id)
     except Exception:  # noqa: BLE001 — never break /me/permissions
         count = 0

@@ -5,6 +5,22 @@ APIs (first: Qualifacts Credible) and materializing it into Athena for
 report enrichment. **Not** a sync/warehouse pipeline — fetches only the
 resources today's reports need.
 
+## Consumers of this package
+
+Two Lambdas import `fhir.fhir_query` / `fhir.get_resource`:
+
+1. **`fhir-encounter-materializer`** (this directory's sibling
+   `fhir-materializer/`). Triggered by `SftpIngestComplete` EventBridge
+   events from the CSV splitter; writes NDJSON + Parquet to S3 for the
+   document-validation analytics path.
+2. **`fhir-eligibility-poller`** (in `stedi/fhir_eligibility_poller.py`).
+   Triggered by a 15-minute EventBridge rate rule; queries
+   `Encounter?_lastUpdated=gt{cursor}` for new encounters, fetches each
+   referenced `Patient`, and drives `stedi.orchestrator.verify`.
+
+Both share the per-org KMS-signed `private_key_jwt` auth and the
+`page_size`/`concurrency` rate-limiting in `fhir_client.py`.
+
 ## Architecture at a glance
 
 ```

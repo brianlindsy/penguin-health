@@ -131,13 +131,13 @@ export function OrganizationDetail() {
             Insurance Eligibility
           </Link>
           <Link
-            to={`/organizations/${orgId}/eligibility/census`}
+            to={`/organizations/${orgId}/eligibility/worklist`}
             className="relative flex items-center gap-2 px-4 py-2 bg-white border border-blue-600 text-blue-600 rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2a4 4 0 014-4h4M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z" />
             </svg>
-            Morning Census
+            Eligibility Worklist
             {headerPerms.eligibilityUnreadCount > 0 && (
               <span className="absolute -top-2 -right-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 rounded-full bg-red-500 text-white text-xs font-semibold">
                 {headerPerms.eligibilityUnreadCount}

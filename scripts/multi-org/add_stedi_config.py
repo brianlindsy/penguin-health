@@ -55,21 +55,25 @@ def parse_args(argv):
                         'transactions. See lambda/multi-org/stedi/demo_fixtures.py '
                         'for the patient list. Never enable for a production org.')
     p.add_argument('--census-enabled', action='store_true',
-                   help='Opt the org into the morning-census auto-run. Without '
-                        'this flag, the scheduled census_runner Lambda will skip '
-                        'this org. The EventBridge schedule itself is defined in '
-                        'infra/components/audit_engine.py based on infra/config.py.')
-    p.add_argument('--census-roster-source', default='demo_roster',
-                   choices=['demo_roster', 'sftp', 'fhir'],
-                   help='Where the morning roster comes from. Only "demo_roster" '
-                        'is implemented; "sftp" and "fhir" raise NotImplementedError. '
-                        'Default: demo_roster.')
-    p.add_argument('--census-schedule-cron', default=None,
-                   help='Cron expression for the morning EventBridge fire, in '
-                        'AWS Schedule format (e.g. "0 11 * * ? *" = 6am ET in UTC). '
-                        'Stored on the config for documentation; the actual '
-                        'schedule is defined in infra (CDK redeploy required to '
-                        'change). If omitted, falls back to infra default.')
+                   help='Opt the org into automated eligibility verification. '
+                        'When set, the fhir_eligibility_poller Lambda polls the '
+                        "org's FHIR API every ~15 minutes for new encounters "
+                        'matching --encounter-filter-* and runs orchestrator.verify '
+                        'for each. (The legacy flag name is kept on the DDB item '
+                        'for backward compatibility.)')
+    p.add_argument('--encounter-filter-class-codes', default='',
+                   help='Comma-separated FHIR Encounter.class codes the poller '
+                        'should match (e.g. "IMP,EMER"). Empty = no class filter.')
+    p.add_argument('--encounter-filter-type-codes', default='',
+                   help='Comma-separated FHIR Encounter.type codes the poller '
+                        'should match. Empty = no type filter.')
+    p.add_argument('--encounter-filter-statuses', default='',
+                   help='Comma-separated FHIR Encounter.status values to match '
+                        '(e.g. "planned,arrived,in-progress"). Empty = no status filter.')
+    p.add_argument('--cob-enabled', action='store_true',
+                   help='Opt the org into a Stedi /coordination-of-benefits call '
+                        'when discovery + eligibility return ≥2 active coverages. '
+                        'One extra Stedi transaction per check; off by default.')
     p.add_argument('--region', default='us-east-1')
     p.add_argument('--dry-run', action='store_true')
     return p.parse_args(argv)
@@ -97,12 +101,25 @@ def build_item(args):
         'preferred_payer_ids': preferred,
         'demo_mode': args.demo_mode,
         'census_enabled': args.census_enabled,
-        'census_roster_source': args.census_roster_source,
+        'cob_enabled': args.cob_enabled,
         'created_at': now,
         'updated_at': now,
     }
-    if args.census_schedule_cron:
-        item['census_schedule_cron'] = args.census_schedule_cron
+    encounter_filter = {}
+    if args.encounter_filter_class_codes:
+        encounter_filter['class_codes'] = [
+            c.strip() for c in args.encounter_filter_class_codes.split(',') if c.strip()
+        ]
+    if args.encounter_filter_type_codes:
+        encounter_filter['type_codes'] = [
+            c.strip() for c in args.encounter_filter_type_codes.split(',') if c.strip()
+        ]
+    if args.encounter_filter_statuses:
+        encounter_filter['statuses'] = [
+            s.strip() for s in args.encounter_filter_statuses.split(',') if s.strip()
+        ]
+    if encounter_filter:
+        item['encounter_filter'] = encounter_filter
     return item
 
 
@@ -122,7 +139,8 @@ def main(argv=None):
         f"Wrote STEDI_CONFIG for org={args.org_id} "
         f"(enabled={not args.disabled}, daily_cap={args.daily_cap}, "
         f"demo_mode={args.demo_mode}, census_enabled={args.census_enabled}, "
-        f"census_roster_source={args.census_roster_source}, "
+        f"cob_enabled={args.cob_enabled}, "
+        f"encounter_filter={item.get('encounter_filter') or {}}, "
         f"preferred_payers={item['preferred_payer_ids']})"
     )
     return 0

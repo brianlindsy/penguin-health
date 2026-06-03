@@ -37,6 +37,17 @@ class DemoStediClient:
             return self.real_client.check_insurance_discovery(payload)
         return _empty_discovery_response()
 
+    def check_coordination_of_benefits(self, payload):
+        sub = payload.get('subscriber') or {}
+        scenario = demo_fixtures.lookup(
+            sub.get('firstName'), sub.get('lastName'), sub.get('dateOfBirth'),
+        )
+        if scenario is not None and scenario.get('cob') is not None:
+            return scenario['cob']
+        if self.real_client is not None:
+            return self.real_client.check_coordination_of_benefits(payload)
+        return _empty_cob_response()
+
     def check_eligibility(self, payload):
         sub = payload.get('subscriber') or {}
         payer_id = payload.get('tradingPartnerServiceId')
@@ -78,6 +89,15 @@ def _empty_discovery_response():
         "items": [],
         "errors": [],
         "status": "COMPLETE",
+        "meta": {"applicationMode": "demo"},
+    }
+
+
+def _empty_cob_response():
+    return {
+        "cobId": "demo-cob-empty",
+        "status": "COMPLETE",
+        "result": {},
         "meta": {"applicationMode": "demo"},
     }
 

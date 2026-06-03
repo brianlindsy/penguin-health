@@ -21,10 +21,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 
 from . import audit as audit_module
+from . import cob_transformer
 from . import copy_block as copy_block_module
 from . import discovery_transformer
 from . import eligibility_transformer
-from .exceptions import StediBadRequest, StediDailyCapExceeded
+from .exceptions import StediBadRequest, StediDailyCapExceeded, StediError
 
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,8 @@ _DISCREPANCY_LOOKBACK_DAYS = 30
 
 def verify(input_, *, org_id, org_config, stedi_client, client_ip, user_email,
            audit=audit_module, eligibility_xform=eligibility_transformer,
-           discovery_xform=discovery_transformer):
+           discovery_xform=discovery_transformer,
+           cob_xform=cob_transformer):
     """Run the verify decision tree. Returns a VerifyResult dict.
 
     `input_` keys:
@@ -46,7 +48,8 @@ def verify(input_, *, org_id, org_config, stedi_client, client_ip, user_email,
         member_id?, payer_id?,
         address1?, address2?, city?, state?, postal_code?
     `org_config` is the STEDI_CONFIG item (must contain provider.npi).
-    `audit`/`eligibility_xform`/`discovery_xform` are injected for tests.
+    `audit`/`eligibility_xform`/`discovery_xform`/`cob_xform` are injected
+    for tests.
     """
     _require_fields(input_)
     provider = org_config.get('provider') or {}
@@ -70,6 +73,7 @@ def verify(input_, *, org_id, org_config, stedi_client, client_ip, user_email,
     payer_id = (input_.get('payer_id') or '').strip() or None
 
     audit_ids = []
+    cob_check = {'checked': False}
     if member_id and payer_id:
         path = "direct"
         primary, secondaries, review_needed = _path_direct(
@@ -85,9 +89,9 @@ def verify(input_, *, org_id, org_config, stedi_client, client_ip, user_email,
         )
     else:
         path = "discovery_first"
-        primary, secondaries, review_needed = _path_discovery_first(
-            input_, provider_payload, org_id, daily_cap,
-            stedi_client, audit, eligibility_xform, discovery_xform,
+        primary, secondaries, review_needed, cob_check = _path_discovery_first(
+            input_, provider_payload, org_id, org_config, daily_cap,
+            stedi_client, audit, eligibility_xform, discovery_xform, cob_xform,
             user_email, client_ip, audit_ids,
         )
 
@@ -96,12 +100,24 @@ def verify(input_, *, org_id, org_config, stedi_client, client_ip, user_email,
         input_['first_name'], input_['last_name'], input_['dob'],
     )
 
+    # If COB disagreed with our primary pick, surface that as a discrepancy
+    # so it lands in the UI's discrepancy banner. ('ok' means COB returned
+    # a different order; 'no_change' means it confirmed our pick.)
+    if cob_check.get('status') == 'ok':
+        primary_payer_name = cob_check.get('primary_payer_name') or 'another payer'
+        our_pick = ((primary or {}).get('payer') or {}).get('name') or 'the first active payer'
+        discrepancies.append(
+            f"COB check reordered primary: was {our_pick}; payer-of-record rules put "
+            f"{primary_payer_name} primary."
+        )
+
     result = {
         "path": path,
         "primary_coverage": primary,
         "secondary_coverages": secondaries,
         "discovery_review_needed": review_needed,
         "discrepancies": discrepancies,
+        "cob_check": cob_check,
         "recent_check": recent,
         "audit_ids": audit_ids,
     }
@@ -152,8 +168,8 @@ def _path_payer_only(input_, provider_payload, payer_id, org_id, daily_cap,
     return primary, [], discovery_result['review_needed']
 
 
-def _path_discovery_first(input_, provider_payload, org_id, daily_cap,
-                          client, audit, eligibility_xform, discovery_xform,
+def _path_discovery_first(input_, provider_payload, org_id, org_config, daily_cap,
+                          client, audit, eligibility_xform, discovery_xform, cob_xform,
                           user_email, client_ip, audit_ids):
     discovery_result, _ = _run_discovery(
         input_, provider_payload, org_id, daily_cap, client, audit, discovery_xform,
@@ -161,7 +177,7 @@ def _path_discovery_first(input_, provider_payload, org_id, daily_cap,
     )
     high = discovery_result['high_confidence'][:_MAX_HIGH_HITS]
     if not high:
-        return None, [], discovery_result['review_needed']
+        return None, [], discovery_result['review_needed'], {'checked': False}
 
     def _run_one(hit):
         if not hit.get('trading_partner_service_id') or not hit.get('member_id'):
@@ -204,13 +220,106 @@ def _path_discovery_first(input_, provider_payload, org_id, daily_cap,
                 cap_skipped.append(skipped)
 
     if not coverages:
-        return None, [], discovery_result['review_needed'] + cap_skipped
-    primary = next((c for c in coverages if c['status'] == 'active'), coverages[0])
+        return None, [], discovery_result['review_needed'] + cap_skipped, {'checked': False}
+
+    # Default ordering: first active wins; fall back to first hit.
+    active_coverages = [c for c in coverages if c.get('status') == 'active']
+    primary = active_coverages[0] if active_coverages else coverages[0]
     secondaries = [c for c in coverages if c is not primary]
-    return primary, secondaries, discovery_result['review_needed'] + cap_skipped
+
+    # COB call: only when ≥2 active coverages AND the org has opted in.
+    # One Stedi transaction per call, so it's gated by daily_cap too.
+    cob_check = {'checked': False}
+    if org_config.get('cob_enabled') and len(active_coverages) >= 2:
+        cob_check = _run_cob_check(
+            input_, provider_payload, active_coverages, org_id, daily_cap,
+            client, audit, cob_xform, user_email, client_ip, audit_ids,
+        )
+        # Re-rank when COB returns a definitive new order.
+        if cob_check.get('status') == 'ok' and cob_check.get('primary_payer_id'):
+            new_primary = next(
+                (c for c in coverages
+                 if (c.get('payer') or {}).get('id') == cob_check['primary_payer_id']),
+                None,
+            )
+            if new_primary is not None:
+                primary = new_primary
+                secondaries = [c for c in coverages if c is not primary]
+
+    return primary, secondaries, discovery_result['review_needed'] + cap_skipped, cob_check
 
 
 # ---- helpers ------------------------------------------------------------
+
+def _run_cob_check(input_, provider_payload, active_coverages, org_id, daily_cap,
+                   client, audit, xform, user_email, client_ip, audit_ids):
+    """Call Stedi COB with the active coverages and normalize the response.
+
+    Returns the cob_xform output (a dict with `checked: True`). On daily-
+    cap exhaustion or any Stedi error, returns `{'checked': False, ...}`
+    so the rest of verify still succeeds — COB is advisory, not blocking.
+    """
+    try:
+        audit.reserve_capacity(org_id, daily_cap)
+    except StediDailyCapExceeded:
+        logger.warning("cob skipped: daily cap exhausted org=%s", org_id)
+        return {'checked': False, 'status': 'skipped_cap'}
+
+    request_id = str(uuid.uuid4())
+    payload = _build_cob_payload(input_, provider_payload, active_coverages)
+    started = datetime.now(timezone.utc)
+    try:
+        response = client.check_coordination_of_benefits(payload)
+    except StediError as e:
+        logger.warning("cob call failed org=%s err=%s", org_id, type(e).__name__)
+        return {'checked': False, 'status': 'error'}
+    duration_ms = (datetime.now(timezone.utc) - started).total_seconds() * 1000
+
+    cob = xform.transform(response, input_coverages=active_coverages)
+
+    audit_ids.append(audit.write_audit(
+        org_id=org_id, user_email=user_email, call_type='cob',
+        patient={'first_name': input_['first_name'], 'last_name': input_['last_name'], 'dob': input_['dob']},
+        # COB has no notion of "active/inactive plan"; record the primacy
+        # signal as the result_status so the audit row is queryable.
+        result={'status': cob.get('status') or 'unknown', 'plan': {}},
+        client_ip=client_ip,
+        stedi_control_number=cob.get('cob_id') or response.get('controlNumber'),
+        duration_ms=duration_ms,
+        request_id=request_id,
+    ))
+    return cob
+
+
+def _build_cob_payload(input_, provider_payload, active_coverages):
+    """Stedi COB request: provider + subscriber demographics + the list of
+    coverages we want primacy-ranked. Each coverage carries the
+    tradingPartnerServiceId + member ID we got back from eligibility."""
+    subscriber = {
+        'firstName': input_['first_name'],
+        'lastName': input_['last_name'],
+        'dateOfBirth': input_['dob'],
+    }
+    if input_.get('gender'):
+        subscriber['gender'] = input_['gender']
+
+    coverages_payload = []
+    for c in active_coverages:
+        payer = c.get('payer') or {}
+        sub = c.get('subscriber') or {}
+        entry = {
+            'tradingPartnerServiceId': payer.get('id'),
+        }
+        if sub.get('member_id'):
+            entry['memberId'] = sub['member_id']
+        coverages_payload.append(entry)
+
+    return {
+        'provider': dict(provider_payload),
+        'subscriber': subscriber,
+        'coverages': coverages_payload,
+    }
+
 
 def _run_discovery(input_, provider_payload, org_id, daily_cap, client, audit, xform,
                    user_email, client_ip, audit_ids):

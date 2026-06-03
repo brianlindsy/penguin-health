@@ -22,7 +22,7 @@ Two lookup paths:
   on `check_eligibility`.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 
 # ---- Eligibility response builders -------------------------------------
@@ -398,6 +398,34 @@ _DISCOVERY_SARAH_PLACEHOLDER_AGED_OUT = {
 }
 
 
+# ---- COB responses ------------------------------------------------------
+# Stedi /coordination-of-benefits returns a ranked primacy decision. We
+# only attach a COB fixture to scenarios that produce ≥2 active coverages
+# (today: Robert Testpatient — Aetna commercial + FL Medicaid).
+
+_COB_ROBERT_AETNA_PRIMARY = {
+    "cobId": "demo-cob-robert-001",
+    "status": "COMPLETE",
+    "meta": {"applicationMode": "demo", "traceId": "demo-trace-cob-robert"},
+    "result": {
+        "primaryCoverage": {
+            "tradingPartnerServiceId": "60054",
+            "payer": {"name": "Aetna", "payorIdentification": "60054"},
+        },
+        "secondaryCoverage": {
+            "tradingPartnerServiceId": "68068",
+            "payer": {"name": "Cenpatico Sunshine State", "payorIdentification": "68068"},
+        },
+        "reason": (
+            "Patient has both commercial (Aetna) and state Medicaid coverage. "
+            "Medicaid is the payer of last resort by federal rule; commercial "
+            "is primary."
+        ),
+    },
+    "errors": [],
+}
+
+
 # ---- Scenario registry (discovery-first lookup) ------------------------
 # Keyed by (first_name lower, last_name lower). DOB must also match the
 # fixture's expected DOB or the orchestrator falls through to "no_coverage".
@@ -412,12 +440,13 @@ SCENARIOS = {
     },
     ("robert", "testpatient"): {
         "expected_dob": "19780214",
-        "summary": "Robert Testpatient — Aetna commercial primary + FL Medicaid secondary (the messy multi-payer case)",
+        "summary": "Robert Testpatient — Aetna commercial primary + FL Medicaid secondary; COB confirms primacy",
         "discovery": _DISCOVERY_ROBERT_TESTPATIENT_TWO_HIGH,
         "eligibility_by_payer": {
             "60054": lambda m: _eligibility_aetna_active(m, "ROBERT", "TESTPATIENT", "19780214"),
             "68068": lambda m: _eligibility_medicaid_active(m, "ROBERT", "TESTPATIENT", "19780214"),
         },
+        "cob": _COB_ROBERT_AETNA_PRIMARY,
     },
     ("maria", "mockerson"): {
         "expected_dob": "19550630",
@@ -526,13 +555,12 @@ ELIGIBILITY_DIRECT_SCENARIOS = {
 }
 
 
-# ---- Census roster: ordered list of patients the scheduled run hits ----
-# Each entry mirrors what would later arrive via FHIR encounter feed or
-# SFTP census upload. The census_runner loops over this list and calls
-# orchestrator.verify() for each. Patients with `member_id` + `payer_id`
-# take the direct path; others go through discovery first.
-#
-# Order is stable so the demo run's worklist always renders the same.
+# ---- Demo patient roster -----------------------------------------------
+# The synthetic patient set that drives ENCOUNTER_STREAM below. Each entry
+# stands in for what the FHIR Patient resource would supply in production:
+# name, DOB, gender, last 4 of SSN, address. Patients with `member_id` +
+# `payer_id` take the direct path; others go through discovery first.
+# Order is stable so the demo worklist always renders the same.
 
 CENSUS_ROSTER = [
     # Discovery-first patients (intake captured demographics but no member ID).
@@ -616,7 +644,7 @@ DEMOGRAPHIC_FIELDS = (
 
 # Linda Sandbox's "primary changed" discrepancy needs a prior audit row
 # showing Cigna so the orchestrator's _derive_discrepancies fires.
-# Seeded once by census_runner._ensure_demo_history_seeds.
+# Seeded once by fhir_eligibility_poller._ensure_demo_history_seeds (demo mode only).
 DEMO_HISTORY_SEEDS = [
     {
         "first_name": "Linda", "last_name": "Sandbox", "dob": "19620818",
@@ -665,3 +693,155 @@ def list_scenarios():
         }
         for k, v in SCENARIOS.items()
     ]
+
+
+# ---- Demo encounter stream (FHIR-polling-triggered eligibility) ---------
+# The fhir_eligibility_poller pulls from this when org_config.demo_mode is
+# on so the demo flow exercises the new pipeline without a real FHIR
+# endpoint. Each entry mirrors a FHIR R4 Encounter resource referencing a
+# synthetic Patient built from CENSUS_ROSTER. meta.lastUpdated is
+# monotonically increasing from a fixed epoch so reruns are deterministic.
+
+_DEMO_EPOCH = datetime(2026, 1, 15, 8, 0, 0, tzinfo=timezone.utc)
+
+
+def _demo_patient_id(roster_entry):
+    """Stable synthetic FHIR Patient id derived from a roster entry."""
+    return (
+        f"{roster_entry['first_name'].lower()}-"
+        f"{roster_entry['last_name'].lower()}-"
+        f"{roster_entry['dob']}"
+    )
+
+
+def _build_demo_patient(roster_entry):
+    """Build a synthetic FHIR R4 Patient resource from a CENSUS_ROSTER row.
+
+    Shape matches what fhir_patient_mapper.to_verify_input expects to read:
+    name[0].given/family, birthDate (YYYY-MM-DD), gender, address[0].*,
+    identifier[?] with system='http://hl7.org/fhir/sid/us-ssn' when last4
+    is present.
+    """
+    patient_id = _demo_patient_id(roster_entry)
+    given = [roster_entry['first_name']]
+    if roster_entry.get('middle_name'):
+        given.append(roster_entry['middle_name'])
+    name = {
+        "use": "official",
+        "family": roster_entry['last_name'],
+        "given": given,
+    }
+    if roster_entry.get('suffix'):
+        name["suffix"] = [roster_entry['suffix']]
+
+    dob = roster_entry.get('dob')
+    birth_date = f"{dob[0:4]}-{dob[4:6]}-{dob[6:8]}" if dob and len(dob) == 8 else None
+
+    gender_raw = (roster_entry.get('gender') or '').upper()
+    gender = {'M': 'male', 'F': 'female'}.get(gender_raw)
+
+    address = {}
+    lines = [v for v in (roster_entry.get('address1'), roster_entry.get('address2')) if v]
+    if lines:
+        address["line"] = lines
+    if roster_entry.get('city'):
+        address["city"] = roster_entry['city']
+    if roster_entry.get('state'):
+        address["state"] = roster_entry['state']
+    if roster_entry.get('postal_code'):
+        address["postalCode"] = roster_entry['postal_code']
+    if address:
+        address["use"] = "home"
+
+    identifiers = []
+    if roster_entry.get('ssn_last4'):
+        # Synthetic SSN; only the last 4 are meaningful for the mapper, but
+        # we ship a full 9-digit string so the regex path is exercised.
+        identifiers.append({
+            "system": "http://hl7.org/fhir/sid/us-ssn",
+            "value": f"999-99-{roster_entry['ssn_last4']}",
+        })
+    if roster_entry.get('member_id'):
+        identifiers.append({
+            "type": {"coding": [{"code": "MB"}]},
+            "value": roster_entry['member_id'],
+        })
+
+    patient = {
+        "resourceType": "Patient",
+        "id": patient_id,
+        "name": [name],
+        "gender": gender,
+    }
+    if birth_date:
+        patient["birthDate"] = birth_date
+    if address:
+        patient["address"] = [address]
+    if identifiers:
+        patient["identifier"] = identifiers
+    return patient
+
+
+def _build_demo_encounter(roster_entry, index):
+    """Build a synthetic FHIR R4 Encounter for a roster entry.
+
+    All demo encounters are inpatient admissions (class=IMP, status=in-progress)
+    so the default encounter_filter for the demo org matches. lastUpdated is
+    epoch + (index minutes) for deterministic cursor advancement.
+    """
+    patient_id = _demo_patient_id(roster_entry)
+    last_updated = (_DEMO_EPOCH + timedelta(minutes=index)).isoformat().replace('+00:00', 'Z')
+    encounter_id = f"enc-{patient_id}-{index:03d}"
+    return {
+        "resourceType": "Encounter",
+        "id": encounter_id,
+        "status": "in-progress",
+        "class": {
+            "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+            "code": "IMP",
+            "display": "inpatient encounter",
+        },
+        "subject": {"reference": f"Patient/{patient_id}"},
+        "period": {"start": last_updated},
+        "meta": {"lastUpdated": last_updated},
+    }
+
+
+DEMO_PATIENT_BY_ID = {
+    _demo_patient_id(entry): _build_demo_patient(entry)
+    for entry in CENSUS_ROSTER
+}
+
+
+ENCOUNTER_STREAM = [
+    _build_demo_encounter(entry, idx)
+    for idx, entry in enumerate(CENSUS_ROSTER)
+]
+
+
+def encounter_stream_after(cursor_iso):
+    """Yield demo Encounter resources whose meta.lastUpdated > cursor_iso.
+
+    cursor_iso is the watermark from the FHIR_POLL_CURSOR row. None or empty
+    string means 'beginning of time' — yield everything. Order matches
+    ENCOUNTER_STREAM so the poller's cursor advances monotonically.
+    """
+    if not cursor_iso:
+        yield from ENCOUNTER_STREAM
+        return
+    for encounter in ENCOUNTER_STREAM:
+        last_updated = (encounter.get('meta') or {}).get('lastUpdated')
+        if last_updated and last_updated > cursor_iso:
+            yield encounter
+
+
+def lookup_patient_by_reference(reference):
+    """Resolve a FHIR subject.reference string to a synthetic Patient dict.
+
+    Accepts 'Patient/{id}', a bare '{id}', or an absolute URL ending in
+    '/Patient/{id}'. Returns None if the id isn't in DEMO_PATIENT_BY_ID.
+    """
+    if not reference:
+        return None
+    ref = reference.split('/')[-1]
+    return DEMO_PATIENT_BY_ID.get(ref)

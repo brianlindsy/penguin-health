@@ -1,16 +1,14 @@
-"""HTTP handlers for the morning-census worklist.
+"""HTTP handlers for the eligibility worklist.
 
-Wired into admin_api.py's dispatch dict. Four endpoints:
-    GET  /api/organizations/{orgId}/eligibility/census/latest
-    GET  /api/organizations/{orgId}/eligibility/census/runs
-    PUT  /api/organizations/{orgId}/eligibility/census/items/
-         {runId}/{patientHash}/resolve
-    POST /api/organizations/{orgId}/eligibility/census/items/
-         {runId}/{patientHash}/rerun
+Each row is one Encounter the FHIR poller verified, keyed by encounter_id.
+Wired into admin_api.py's dispatch dict. Three endpoints:
+    GET   /api/organizations/{orgId}/eligibility/encounters
+    PUT   /api/organizations/{orgId}/eligibility/encounters/{encounterId}/resolve
+    POST  /api/organizations/{orgId}/eligibility/encounters/{encounterId}/rerun
 
-The census runner Lambda writes the rows; this module reads + the resolve
+`fhir_eligibility_poller` writes the rows; this module reads + the resolve
 handler patches the `resolution` sub-object + the rerun handler re-runs
-verify with corrected demographics and updates the same item.
+verify with corrected demographics and updates the same item in place.
 """
 
 import json
@@ -22,7 +20,6 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 import permissions as perms_module
-from stedi import audit as stedi_audit
 from stedi import client_factory, config as stedi_config
 from stedi import orchestrator
 from stedi.exceptions import (
@@ -43,6 +40,11 @@ _stedi_table = _dynamodb.Table(_TABLE_NAME)
 
 _VALID_RESOLUTION_STATES = {'unresolved', 'in_progress', 'resolved'}
 
+_ATTENTION_STATUSES = frozenset({
+    'discrepancy', 'no_coverage', 'review_needed',
+    'pediatric_no_info', 'service_type_denied', 'error',
+})
+
 
 def _response(status_code, body):
     return {
@@ -52,29 +54,11 @@ def _response(status_code, body):
     }
 
 
-# ---- GET /eligibility/census/latest ------------------------------------
+# ---- GET /eligibility/encounters ----------------------------------------
 
-def get_latest_run(event, path_params, authorize_fn, **_):
-    org_id = path_params.get('orgId')
-    claims, error = authorize_fn(event, org_id=org_id)
-    if error:
-        return error
-    if not perms_module.can_view_category(claims, org_id, 'Eligibility'):
-        return _response(403, {'error': 'Eligibility:view permission required'})
-
-    run = _query_latest_run(org_id)
-    if not run:
-        return _response(200, {'run': None, 'items': []})
-    items = _query_items_for_run(org_id, run['run_date'], run['run_id'])
-    return _response(200, {
-        'run': _format_run(run),
-        'items': [_format_item(i) for i in items],
-    })
-
-
-# ---- GET /eligibility/census/runs --------------------------------------
-
-def list_runs(event, path_params, authorize_fn, **_):
+def list_encounters(event, path_params, authorize_fn, **_):
+    """Return the rolling list of recently-verified encounters for the org,
+    newest first. Drives the worklist UI."""
     org_id = path_params.get('orgId')
     claims, error = authorize_fn(event, org_id=org_id)
     if error:
@@ -84,23 +68,20 @@ def list_runs(event, path_params, authorize_fn, **_):
 
     qs = event.get('queryStringParameters') or {}
     try:
-        limit = min(int(qs.get('limit') or 30), 100)
+        limit = min(int(qs.get('limit') or 100), 500)
     except (TypeError, ValueError):
-        limit = 30
+        limit = 100
 
-    response = _stedi_table.query(
-        IndexName='gsi1',
-        KeyConditionExpression=Key('gsi1pk').eq(f'CENSUS_RUN#{org_id}'),
-        ScanIndexForward=False,
-        Limit=limit,
-    )
-    runs = [_format_run(r) for r in (response.get('Items') or [])]
-    return _response(200, {'runs': runs})
+    items = _query_encounters(org_id, limit=limit)
+    return _response(200, {
+        'items': [_format_item(i) for i in items],
+        'counts': _count_by_status(items),
+    })
 
 
-# ---- PUT /eligibility/census/items/{runId}/{patientHash}/resolve --------
+# ---- PUT /eligibility/encounters/{encounterId}/resolve ------------------
 
-def resolve_item(event, path_params, body, authorize_fn, **_):
+def resolve_encounter(event, path_params, body, authorize_fn, **_):
     org_id = path_params.get('orgId')
     claims, error = authorize_fn(event, org_id=org_id)
     if error:
@@ -115,30 +96,25 @@ def resolve_item(event, path_params, body, authorize_fn, **_):
     if state not in _VALID_RESOLUTION_STATES:
         return _response(400, {'error': f'state must be one of {sorted(_VALID_RESOLUTION_STATES)}'})
 
-    action = (body.get('action') or '').strip() or None
     note = (body.get('note') or '').strip() or None
     rerun_audit_id = (body.get('rerun_audit_id') or '').strip() or None
 
-    run_id = path_params.get('runId')
-    patient_hash = path_params.get('patientHash')
-    if not run_id or not patient_hash:
-        return _response(400, {'error': 'runId and patientHash path params required'})
+    encounter_id = path_params.get('encounterId')
+    if not encounter_id:
+        return _response(400, {'error': 'encounterId path param required'})
 
-    # We don't have run_date in the URL but it's part of the SK. Query by
-    # patient_hash suffix to find the row. Cheap because there's at most a
-    # handful of runs per patient per 90 days.
-    item = _find_item_by_run_and_patient(org_id, run_id, patient_hash)
+    item = _get_encounter(org_id, encounter_id)
     if not item:
-        return _response(404, {'error': 'census item not found'})
+        return _response(404, {'error': 'encounter item not found'})
 
     now = datetime.now(timezone.utc).isoformat()
+    prev_resolution = item.get('resolution') or {}
     resolution = {
         'state': state,
-        'action': action,
         'note': note,
-        'resolved_by': claims.get('email') if state == 'resolved' else item.get('resolution', {}).get('resolved_by'),
-        'resolved_at': now if state == 'resolved' else item.get('resolution', {}).get('resolved_at'),
-        'rerun_audit_id': rerun_audit_id or item.get('resolution', {}).get('rerun_audit_id'),
+        'resolved_by': claims.get('email') if state == 'resolved' else prev_resolution.get('resolved_by'),
+        'resolved_at': now if state == 'resolved' else prev_resolution.get('resolved_at'),
+        'rerun_audit_id': rerun_audit_id or prev_resolution.get('rerun_audit_id'),
     }
 
     try:
@@ -154,10 +130,10 @@ def resolve_item(event, path_params, body, authorize_fn, **_):
     return _response(200, {'resolution': resolution})
 
 
-# ---- POST /eligibility/census/items/{runId}/{patientHash}/rerun ---------
+# ---- POST /eligibility/encounters/{encounterId}/rerun -------------------
 
-# Demographic fields the UI is allowed to send in a rerun. Everything
-# else on the body is ignored.
+# Demographic fields the UI is allowed to send in a rerun. Everything else
+# on the body is ignored.
 _RERUN_DEMOGRAPHIC_FIELDS = (
     'first_name', 'middle_name', 'last_name', 'suffix',
     'dob', 'gender', 'ssn_last4',
@@ -166,8 +142,8 @@ _RERUN_DEMOGRAPHIC_FIELDS = (
 )
 
 
-def rerun_census_item(event, path_params, body, authorize_fn, **_):
-    """Re-run discovery + eligibility for a single census item with
+def rerun_encounter(event, path_params, body, authorize_fn, **_):
+    """Re-run discovery + eligibility for a single encounter row with
     corrected demographics. Updates the item in place — result_summary,
     payer_demographics, and corrected_demographics — and appends to the
     rerun_history audit trail."""
@@ -181,17 +157,14 @@ def rerun_census_item(event, path_params, body, authorize_fn, **_):
     if not isinstance(body, dict):
         return _response(400, {'error': 'JSON body required'})
 
-    run_id = path_params.get('runId')
-    patient_hash = path_params.get('patientHash')
-    if not run_id or not patient_hash:
-        return _response(400, {'error': 'runId and patientHash path params required'})
+    encounter_id = path_params.get('encounterId')
+    if not encounter_id:
+        return _response(400, {'error': 'encounterId path param required'})
 
-    existing = _find_item_by_run_and_patient(org_id, run_id, patient_hash)
+    existing = _get_encounter(org_id, encounter_id)
     if not existing:
-        return _response(404, {'error': 'census item not found'})
+        return _response(404, {'error': 'encounter item not found'})
 
-    # Build the corrected demographics from the body, falling back to the
-    # original submitted_demographics for anything the user didn't touch.
     submitted = existing.get('submitted_demographics') or {}
     corrected = {
         k: body[k] for k in _RERUN_DEMOGRAPHIC_FIELDS
@@ -202,8 +175,6 @@ def rerun_census_item(event, path_params, body, authorize_fn, **_):
             'error': f'at least one of {list(_RERUN_DEMOGRAPHIC_FIELDS)} must be provided',
         })
 
-    # Required fields for orchestrator.verify must still be present after
-    # the merge. Validate up front so we don't 500 inside Stedi.
     merged = {**submitted, **corrected}
     for required in ('first_name', 'last_name', 'dob'):
         if not merged.get(required):
@@ -270,7 +241,7 @@ def rerun_census_item(event, path_params, body, authorize_fn, **_):
     except ClientError as e:
         return _response(500, {'error': str(e)})
 
-    refreshed = _find_item_by_run_and_patient(org_id, run_id, patient_hash)
+    refreshed = _get_encounter(org_id, encounter_id)
     return _response(200, {'item': _format_item(refreshed)})
 
 
@@ -279,9 +250,9 @@ def _client_ip_from(event):
 
 
 def _summarize_for_rerun(result):
-    """Same shape as census_runner._build_item_row's result_summary, but
-    rebuilt here so the runner doesn't have to live in the api Lambda.
-    Returns (result_status, result_summary, payer_demographics)."""
+    """Same shape as fhir_eligibility_poller._build_item_row's result_summary
+    + payer_demographics, rebuilt here so the poller doesn't have to live
+    in the api Lambda. Returns (result_status, result_summary, payer_demographics)."""
     primary = result.get('primary_coverage') or {}
     sub = primary.get('subscriber') or {}
     plan = primary.get('plan') or {}
@@ -292,12 +263,8 @@ def _summarize_for_rerun(result):
     review_needed = result.get('discovery_review_needed') or []
     discrepancies = result.get('discrepancies') or []
 
-    # Mirror census_runner._classify for status decision.
     if primary is None or not primary:
-        if review_needed:
-            new_status = 'review_needed'
-        else:
-            new_status = 'no_coverage'
+        new_status = 'review_needed' if review_needed else 'no_coverage'
     elif primary.get('active') and primary.get('service_type_status') == 'not_covered':
         new_status = 'service_type_denied'
     elif discrepancies:
@@ -319,6 +286,7 @@ def _summarize_for_rerun(result):
         'discrepancies': discrepancies,
         'secondary_count': len(secondaries),
         'review_needed_count': len(review_needed),
+        'cob_check': result.get('cob_check') or {'checked': False},
     }
 
     payer_demographics = None
@@ -339,71 +307,57 @@ def _summarize_for_rerun(result):
     return new_status, summary, payer_demographics
 
 
-# ---- helpers ------------------------------------------------------------
+# ---- DDB helpers --------------------------------------------------------
 
-def _query_latest_run(org_id):
+def _query_encounters(org_id, *, limit):
+    """Pull the most recent ENCOUNTER_ITEM# rows via the chronological GSI."""
     response = _stedi_table.query(
         IndexName='gsi1',
-        KeyConditionExpression=Key('gsi1pk').eq(f'CENSUS_RUN#{org_id}'),
+        KeyConditionExpression=Key('gsi1pk').eq(f'ENCOUNTER_ITEM#{org_id}'),
         ScanIndexForward=False,
-        Limit=1,
-    )
-    items = response.get('Items') or []
-    return items[0] if items else None
-
-
-def _query_items_for_run(org_id, run_date, run_id):
-    response = _stedi_table.query(
-        KeyConditionExpression=(
-            Key('pk').eq(f'ORG#{org_id}')
-            & Key('sk').begins_with(f'CENSUS_ITEM#{run_date}#{run_id}#')
-        ),
+        Limit=limit,
     )
     return response.get('Items') or []
 
 
-def _find_item_by_run_and_patient(org_id, run_id, patient_hash):
-    """Walk the org's CENSUS_ITEM# rows looking for one whose sk ends with
-    #{run_id}#{patient_hash}. Bounded since 90d retention caps the volume."""
-    response = _stedi_table.query(
-        KeyConditionExpression=(
-            Key('pk').eq(f'ORG#{org_id}')
-            & Key('sk').begins_with('CENSUS_ITEM#')
-        ),
+def _get_encounter(org_id, encounter_id):
+    response = _stedi_table.get_item(
+        Key={'pk': f'ORG#{org_id}', 'sk': f'ENCOUNTER_ITEM#{encounter_id}'},
     )
-    target_suffix = f'#{run_id}#{patient_hash}'
-    for item in (response.get('Items') or []):
-        if item.get('sk', '').endswith(target_suffix):
-            return item
-    return None
+    return response.get('Item')
 
 
-def _format_run(item):
-    return {
-        'run_id': item.get('run_id'),
-        'run_date': item.get('run_date'),
-        'started_at': item.get('started_at'),
-        'completed_at': item.get('completed_at'),
-        'status': item.get('status'),
-        'source': item.get('source'),
-        'total': _i(item.get('total')),
-        'verified': _i(item.get('verified')),
-        'discrepancy': _i(item.get('discrepancy')),
-        'no_coverage': _i(item.get('no_coverage')),
-        'review_needed': _i(item.get('review_needed')),
-        'pediatric_no_info': _i(item.get('pediatric_no_info')),
-        'service_type_denied': _i(item.get('service_type_denied')),
-        'error': _i(item.get('error')),
+def _count_by_status(items):
+    counts = {
+        'total': len(items),
+        'verified': 0, 'discrepancy': 0, 'no_coverage': 0,
+        'review_needed': 0, 'pediatric_no_info': 0,
+        'service_type_denied': 0, 'error': 0,
+        'attention': 0, 'resolved': 0,
     }
+    for it in items:
+        status = it.get('result_status')
+        if status in counts:
+            counts[status] += 1
+        resolution_state = (it.get('resolution') or {}).get('state')
+        if resolution_state == 'resolved':
+            counts['resolved'] += 1
+        elif status in _ATTENTION_STATUSES:
+            counts['attention'] += 1
+    return counts
 
 
 def _format_item(item):
+    if item is None:
+        return None
     return {
-        'run_id': item.get('run_id'),
+        'encounter_id': item.get('encounter_id'),
+        'encounter_class': item.get('encounter_class'),
+        'encounter_status': item.get('encounter_status'),
+        'encounter_lastUpdated': item.get('encounter_lastUpdated'),
         'patient_hash': item.get('patient_hash'),
-        'patient_first_name': item.get('patient_first_name'),
-        'patient_last_name': item.get('patient_last_name'),
-        'patient_dob': item.get('patient_dob'),
+        'patient_first_initial': item.get('patient_first_initial'),
+        'patient_last_initial': item.get('patient_last_initial'),
         'submitted_demographics': item.get('submitted_demographics') or {},
         'corrected_demographics': item.get('corrected_demographics'),
         'payer_demographics': item.get('payer_demographics'),
@@ -415,34 +369,20 @@ def _format_item(item):
     }
 
 
-def _i(v):
-    """Coerce DynamoDB Decimal to int. Returns 0 for None."""
-    if v is None:
-        return 0
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return 0
-
-
 # ---- unread-count helper (called from permissions.serialize_for_me_endpoint) ----
 
 def unread_count_for_org(org_id):
-    """Number of CENSUS_ITEM# rows in the latest run that need attention
-    (any non-verified status) and haven't been resolved. Returns 0 on any
-    failure so a flaky DDB call doesn't break the /me/permissions endpoint."""
+    """Number of recent ENCOUNTER_ITEM# rows that need attention (any
+    non-verified status) and haven't been resolved. Returns 0 on any
+    failure so a flaky DDB call doesn't break the /me/permissions endpoint.
+
+    Looks at the most recent 200 encounters — enough to bound the count
+    even when verify is running every 15 minutes."""
     try:
-        run = _query_latest_run(org_id)
-        if not run:
-            return 0
-        items = _query_items_for_run(org_id, run['run_date'], run['run_id'])
-        attention_statuses = {
-            'discrepancy', 'no_coverage', 'review_needed',
-            'pediatric_no_info', 'service_type_denied', 'error',
-        }
+        items = _query_encounters(org_id, limit=200)
         return sum(
             1 for i in items
-            if i.get('result_status') in attention_statuses
+            if i.get('result_status') in _ATTENTION_STATUSES
             and (i.get('resolution') or {}).get('state') != 'resolved'
         )
     except Exception:  # noqa: BLE001

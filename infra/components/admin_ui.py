@@ -26,7 +26,12 @@ from aws_cdk.aws_apigatewayv2_authorizers import HttpJwtAuthorizer
 from constructs import Construct
 
 import config
-from components.bundler import CopyFileBundler, MultiFileBundler, DirectoryBundler
+from components.bundler import (
+    CopyFileBundler,
+    DirectoryBundler,
+    MultiFileBundler,
+    PipInstallBundler,
+)
 
 
 def _hash_sources(paths):
@@ -134,7 +139,7 @@ class AdminUi(Construct):
             os.path.join(lambda_api_dir, "nl_agent.py"),
             os.path.join(lambda_api_dir, "nl_agent_tools.py"),
             os.path.join(lambda_api_dir, "eligibility_api.py"),
-            os.path.join(lambda_api_dir, "census_api.py"),
+            os.path.join(lambda_api_dir, "eligibility_worklist_api.py"),
             os.path.join(lambda_api_dir, "sqlparse"),
             stedi_pkg_dir,
         ] + [os.path.join(rules_engine_dir, m) for m in shared_llm_modules]
@@ -153,6 +158,7 @@ class AdminUi(Construct):
                     "!nl_agent.py",
                     "!nl_agent_tools.py",
                     "!eligibility_api.py",
+                    "!eligibility_worklist_api.py",
                     "!sqlparse/**",
                 ],
                 asset_hash_type=AssetHashType.CUSTOM,
@@ -166,7 +172,7 @@ class AdminUi(Construct):
                         (os.path.join(lambda_api_dir, "nl_agent.py"), None),
                         (os.path.join(lambda_api_dir, "nl_agent_tools.py"), None),
                         (os.path.join(lambda_api_dir, "eligibility_api.py"), None),
-                        (os.path.join(lambda_api_dir, "census_api.py"), None),
+                        (os.path.join(lambda_api_dir, "eligibility_worklist_api.py"), None),
                         (os.path.join(lambda_api_dir, "sqlparse"), None),
                         (stedi_pkg_dir, "stedi"),
                     ] + [
@@ -250,32 +256,45 @@ class AdminUi(Construct):
             },
         )
 
-        # ----- Morning Census Runner Lambda -----
-        # Scheduled per-org by EventBridge to run orchestrator.verify()
-        # against a roster of new admissions (demo_roster for now; later
-        # SFTP or FHIR). Bundles the same stedi/ package as the admin API.
-        census_runner_sources = [
-            os.path.join(lambda_api_dir, "permissions.py"),  # imported transitively
-            stedi_pkg_dir,
-        ]
+        # ----- FHIR Eligibility Poller Lambda -----
+        # EventBridge fires this every 15 minutes per opted-in org. The
+        # poller queries the org's FHIR API for new Encounters since the
+        # last cursor watermark, fetches each referenced Patient, and runs
+        # stedi.orchestrator.verify for each. Pinned to Python 3.13 to match
+        # the FHIR materializer's PyJWT[crypto] wheel availability.
+        fhir_pkg_dir = os.path.join(lambda_multi_org_dir, "fhir")
+        fhir_eligibility_poller_sources = [stedi_pkg_dir, fhir_pkg_dir]
 
-        self.census_runner_function = _lambda.Function(self, "CensusRunnerFunction",
-            function_name=f"{config.PROJECT_NAME}-census-runner",
-            runtime=_lambda.Runtime.PYTHON_3_14,
-            handler="stedi.census_runner.handler",
+        self.fhir_eligibility_poller_fn = _lambda.Function(
+            self, "FhirEligibilityPollerFunction",
+            function_name=f"{config.PROJECT_NAME}-fhir-eligibility-poller",
+            runtime=_lambda.Runtime.PYTHON_3_13,
+            handler="stedi.fhir_eligibility_poller.handler",
             code=_lambda.Code.from_asset(
                 lambda_multi_org_dir,
-                exclude=["*", "!stedi/**"],
+                exclude=["*", "!stedi/**", "!fhir/**"],
                 asset_hash_type=AssetHashType.CUSTOM,
-                asset_hash=_hash_sources(census_runner_sources),
+                asset_hash=_hash_sources(fhir_eligibility_poller_sources),
                 bundling=BundlingOptions(
-                    image=_lambda.Runtime.PYTHON_3_14.bundling_image,
-                    local=DirectoryBundler([
-                        (stedi_pkg_dir, "stedi"),
-                    ]),
+                    image=_lambda.Runtime.PYTHON_3_13.bundling_image,
+                    local=PipInstallBundler(
+                        source_paths=[],
+                        source_dirs=[
+                            (stedi_pkg_dir, "stedi"),
+                            (fhir_pkg_dir, "fhir"),
+                        ],
+                        requirements=[
+                            # PyJWT[crypto] for FHIR private_key_jwt auth.
+                            # The [crypto] extra pulls `cryptography`, which
+                            # ships manylinux wheels for Python 3.13.
+                            "PyJWT[crypto]==2.10.1",
+                        ],
+                        python_version="3.13",
+                    ),
                 ),
             ),
-            timeout=Duration.minutes(5),  # 10 patients x worst-case Stedi latency
+            # 200 encounters/poll x worst-case (FHIR + Stedi) latency.
+            timeout=Duration.minutes(10),
             memory_size=config.LAMBDA_DEFAULT_MEMORY_MB,
             environment={
                 "STEDI_TABLE_NAME": stedi_table.table_name,
@@ -283,25 +302,22 @@ class AdminUi(Construct):
             },
         )
 
-        # EventBridge schedules: one rule per opted-in org. Adding Circles
-        # of Care later = a new entry in this list + add_stedi_config.py
-        # run with --census-enabled.
-        for org_id, schedule_cron, label in [
-            # 11:00 UTC = 6am ET (winter) / 7am EDT — close enough for a 6am
-            # "data ready when staff arrive" demo. Adjust per-org as needed.
-            ("demo", "0 11 * * ? *", "Demo"),
-        ]:
-            events.Rule(self, f"{label}MorningCensusSchedule",
-                rule_name=f"{config.PROJECT_NAME}-{org_id}-morning-census",
-                schedule=events.Schedule.expression(f"cron({schedule_cron})"),
-                targets=[
-                    targets.LambdaFunction(
-                        self.census_runner_function,
-                        event=events.RuleTargetInput.from_object({
-                            "organization_id": org_id,
-                        }),
-                    ),
-                ],
+        # 15-minute schedule. One rule, multiple per-org targets so adding
+        # an org = one entry in this list + add_stedi_config.py run with
+        # --census-enabled and --encounter-filter-* flags.
+        fhir_eligibility_schedule = events.Rule(
+            self, "FhirEligibilityPollerSchedule",
+            rule_name=f"{config.PROJECT_NAME}-fhir-eligibility-poller",
+            schedule=events.Schedule.rate(Duration.minutes(15)),
+        )
+        for org_id in ["demo"]:
+            fhir_eligibility_schedule.add_target(
+                targets.LambdaFunction(
+                    self.fhir_eligibility_poller_fn,
+                    event=events.RuleTargetInput.from_object({
+                        "organization_id": org_id,
+                    }),
+                ),
             )
 
         org_config_table.grant_read_write_data(self.api_function)
@@ -339,20 +355,48 @@ class AdminUi(Construct):
             ],
         ))
 
-        # Census runner: reads STEDI_CONFIG from org_config_table, writes
-        # CENSUS_RUN# + CENSUS_ITEM# + (in demo mode) seeded AUDIT# rows to
-        # stedi_table, and reads the Stedi API key from Secrets Manager.
-        org_config_table.grant_read_data(self.census_runner_function)
-        stedi_table.grant_read_write_data(self.census_runner_function)
-        self.census_runner_function.add_to_role_policy(iam.PolicyStatement(
+        # FHIR eligibility poller: reads STEDI_CONFIG + FHIR_CONFIG from
+        # org_config_table, writes ENCOUNTER_ITEM# + FHIR_POLL_CURSOR +
+        # AUDIT# + USAGE# rows to stedi_table, reads the Stedi API key
+        # from Secrets Manager, and signs FHIR JWT assertions via KMS.
+        org_config_table.grant_read_data(self.fhir_eligibility_poller_fn)
+        stedi_table.grant_read_write_data(self.fhir_eligibility_poller_fn)
+        self.fhir_eligibility_poller_fn.add_to_role_policy(iam.PolicyStatement(
             actions=["dynamodb:Query"],
             resources=[f"{stedi_table.table_arn}/index/*"],
         ))
-        self.census_runner_function.add_to_role_policy(iam.PolicyStatement(
+        self.fhir_eligibility_poller_fn.add_to_role_policy(iam.PolicyStatement(
             actions=["secretsmanager:GetSecretValue"],
             resources=[
                 f"arn:aws:secretsmanager:{config.AWS_REGION}:*:secret:penguin-health/stedi/*"
             ],
+        ))
+        # KMS: per-org FHIR signing key, alias-scoped exactly like the
+        # FHIR encounter materializer's grant in audit_engine.py.
+        self.fhir_eligibility_poller_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=[
+                "kms:Sign",
+                "kms:GetPublicKey",
+                "kms:DescribeKey",
+            ],
+            resources=["*"],
+            conditions={
+                "ForAnyValue:StringLike": {
+                    "kms:ResourceAliases": [
+                        f"alias/{config.PROJECT_NAME}-fhir-*"
+                    ]
+                }
+            },
+        ))
+        # Per-poll counters (encounters fetched, errors, cap hits).
+        self.fhir_eligibility_poller_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["cloudwatch:PutMetricData"],
+            resources=["*"],
+            conditions={
+                "StringEquals": {
+                    "cloudwatch:namespace": "PenguinHealth/FhirEligibilityPoller"
+                }
+            },
         ))
 
         # Bedrock permissions for LLM enhancement endpoints
@@ -546,10 +590,9 @@ class AdminUi(Construct):
             ("GET",  "/api/organizations/{orgId}/eligibility/history"),
             ("GET",  "/api/organizations/{orgId}/eligibility/config"),
             ("PUT",  "/api/organizations/{orgId}/eligibility/config"),
-            ("GET",  "/api/organizations/{orgId}/eligibility/census/latest"),
-            ("GET",  "/api/organizations/{orgId}/eligibility/census/runs"),
-            ("PUT",  "/api/organizations/{orgId}/eligibility/census/items/{runId}/{patientHash}/resolve"),
-            ("POST", "/api/organizations/{orgId}/eligibility/census/items/{runId}/{patientHash}/rerun"),
+            ("GET",  "/api/organizations/{orgId}/eligibility/encounters"),
+            ("PUT",  "/api/organizations/{orgId}/eligibility/encounters/{encounterId}/resolve"),
+            ("POST", "/api/organizations/{orgId}/eligibility/encounters/{encounterId}/rerun"),
         ]
 
         for method, path in routes:

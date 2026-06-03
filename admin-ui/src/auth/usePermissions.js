@@ -63,9 +63,9 @@ export function usePermissions() {
       viewableCategories,
       runnableCategories,
       canViewAnalytics,
-      // Number of morning-census rows in the latest run that need
-      // attention (any non-verified status not yet resolved). Drives the
-      // nav badge on the Eligibility link.
+      // Number of recent eligibility encounters that need attention
+      // (any non-verified status not yet resolved). Drives the nav badge
+      // on the Eligibility Worklist link.
       eligibilityUnreadCount: permissions?.eligibility_unread_count || 0,
     }
   }, [permissions, isSuperAdmin])

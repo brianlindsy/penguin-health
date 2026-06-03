@@ -1,8 +1,9 @@
 """HTTP client for the Stedi healthcare APIs.
 
-Two endpoints:
+Three endpoints:
   POST /change/medicalnetwork/eligibility/v3   — synchronous 270/271 check
   POST /insurance-discovery/check/v1            — demographic search across payers
+  POST /coordination-of-benefits/check/v1       — primacy ranking for ≥2 active coverages
 
 Auth is a static API key in the Authorization header (one per Stedi account).
 We always forward X-Forwarded-For from the caller's IP — CMS requires this
@@ -48,6 +49,9 @@ class StediClient:
 
     def check_insurance_discovery(self, payload):
         return self._post('/2024-04-01/insurance-discovery/check/v1', payload)
+
+    def check_coordination_of_benefits(self, payload):
+        return self._post('/2024-04-01/coordination-of-benefits/check/v1', payload)
 
     def _post(self, path, payload):
         url = f"{self.base_url}{path}"
@@ -99,6 +103,7 @@ class StediClient:
             response.get('controlNumber')
             or response.get('meta', {}).get('controlNumber')
             or response.get('discoveryId')
+            or response.get('cobId')
         )
         logger.info(
             "stedi_call path=%s status=%s duration_ms=%d control=%s",

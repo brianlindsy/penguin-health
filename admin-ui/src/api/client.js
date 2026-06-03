@@ -234,22 +234,19 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  // Morning census
-  getLatestCensusRun: (orgId) =>
-    request(`/api/organizations/${orgId}/eligibility/census/latest`),
+  // Eligibility worklist (encounter-keyed; populated by the FHIR poller).
+  listEligibilityEncounters: (orgId, { limit = 100 } = {}) =>
+    request(`/api/organizations/${orgId}/eligibility/encounters?limit=${limit}`),
 
-  listCensusRuns: (orgId, { limit = 30 } = {}) =>
-    request(`/api/organizations/${orgId}/eligibility/census/runs?limit=${limit}`),
-
-  resolveCensusItem: (orgId, runId, patientHash, body) =>
+  resolveEligibilityEncounter: (orgId, encounterId, body) =>
     request(
-      `/api/organizations/${orgId}/eligibility/census/items/${encodeURIComponent(runId)}/${encodeURIComponent(patientHash)}/resolve`,
+      `/api/organizations/${orgId}/eligibility/encounters/${encodeURIComponent(encounterId)}/resolve`,
       { method: 'PUT', body: JSON.stringify(body) },
     ),
 
-  rerunCensusItem: (orgId, runId, patientHash, demographics) =>
+  rerunEligibilityEncounter: (orgId, encounterId, demographics) =>
     request(
-      `/api/organizations/${orgId}/eligibility/census/items/${encodeURIComponent(runId)}/${encodeURIComponent(patientHash)}/rerun`,
+      `/api/organizations/${orgId}/eligibility/encounters/${encodeURIComponent(encounterId)}/rerun`,
       { method: 'POST', body: JSON.stringify(demographics) },
     ),
 }

@@ -24,7 +24,7 @@ import analytics_helpers
 import nl_agent
 import nl_agent_tools
 import eligibility_api
-import census_api
+import eligibility_worklist_api
 from bedrock_client import (
     invoke_claude_model,
     extract_json_from_claude_response,
@@ -188,20 +188,16 @@ def lambda_handler(event, context):
             lambda event, path_params, body, **kw: eligibility_api.update_config(
                 event=event, path_params=path_params, body=body,
                 authorize_fn=authorize_request),
-        'GET /api/organizations/{orgId}/eligibility/census/latest':
-            lambda event, path_params, body, **kw: census_api.get_latest_run(
+        'GET /api/organizations/{orgId}/eligibility/encounters':
+            lambda event, path_params, body, **kw: eligibility_worklist_api.list_encounters(
                 event=event, path_params=path_params,
                 authorize_fn=authorize_request),
-        'GET /api/organizations/{orgId}/eligibility/census/runs':
-            lambda event, path_params, body, **kw: census_api.list_runs(
-                event=event, path_params=path_params,
-                authorize_fn=authorize_request),
-        'PUT /api/organizations/{orgId}/eligibility/census/items/{runId}/{patientHash}/resolve':
-            lambda event, path_params, body, **kw: census_api.resolve_item(
+        'PUT /api/organizations/{orgId}/eligibility/encounters/{encounterId}/resolve':
+            lambda event, path_params, body, **kw: eligibility_worklist_api.resolve_encounter(
                 event=event, path_params=path_params, body=body,
                 authorize_fn=authorize_request),
-        'POST /api/organizations/{orgId}/eligibility/census/items/{runId}/{patientHash}/rerun':
-            lambda event, path_params, body, **kw: census_api.rerun_census_item(
+        'POST /api/organizations/{orgId}/eligibility/encounters/{encounterId}/rerun':
+            lambda event, path_params, body, **kw: eligibility_worklist_api.rerun_encounter(
                 event=event, path_params=path_params, body=body,
                 authorize_fn=authorize_request),
     }

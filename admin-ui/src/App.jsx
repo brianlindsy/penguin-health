@@ -17,7 +17,7 @@ import { SavedReportPage } from './pages/SavedReportPage.jsx'
 import { DashboardPage } from './pages/DashboardPage.jsx'
 import { UsersPage } from './pages/UsersPage.jsx'
 import { EligibilityPage } from './pages/EligibilityPage.jsx'
-import { CensusPage } from './pages/CensusPage.jsx'
+import { EligibilityWorklistPage } from './pages/EligibilityWorklistPage.jsx'
 import { setTokenProvider, setOnUnauthorized } from './api/client.js'
 import { RoleGuard } from './auth/RoleGuard.jsx'
 
@@ -100,7 +100,12 @@ function App() {
         />
         <Route path="/organizations/:orgId/dashboard" element={<DashboardPage />} />
         <Route path="/organizations/:orgId/eligibility" element={<EligibilityPage />} />
-        <Route path="/organizations/:orgId/eligibility/census" element={<CensusPage />} />
+        <Route path="/organizations/:orgId/eligibility/worklist" element={<EligibilityWorklistPage />} />
+        {/* Legacy URL — preserve bookmarks. */}
+        <Route
+          path="/organizations/:orgId/eligibility/census"
+          element={<Navigate to="../eligibility/worklist" replace relative="path" />}
+        />
         <Route
           path="/organizations/:orgId/users"
           element={
