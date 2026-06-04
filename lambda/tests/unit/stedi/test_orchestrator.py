@@ -262,6 +262,114 @@ def test_recent_inactivation_discrepancy(org_config, fake_audit):
     assert any('terminated' in d.lower() for d in result['discrepancies'])
 
 
+# ---- grace-period discrepancy -------------------------------------------
+
+def _grace_primary(payer_id='68069', *, paid_through=None, has_code_5=False,
+                   additional_info_texts=None):
+    """Build the minimum primary_coverage shape _grace_period_discrepancy
+    inspects. Keeps tests focused on policy, not transformer output."""
+    return {
+        'payer': {'id': payer_id, 'name': 'Ambetter Centene'},
+        'plan': {},
+        'grace_period_signals': {
+            'paid_through': paid_through,
+            'has_code_5': has_code_5,
+            'additional_info_texts': additional_info_texts or [],
+        },
+    }
+
+
+def test_grace_period_fires_for_ambetter_with_past_paid_through():
+    from datetime import date, timedelta
+    today = date.today()
+    paid_through = (today - timedelta(days=10)).strftime('%Y%m%d')
+    primary = _grace_primary(payer_id='68069', paid_through=paid_through)
+
+    result = orchestrator._grace_period_discrepancy(primary, today)
+
+    assert result is not None
+    assert result.startswith('Grace period risk:')
+    iso = (today - timedelta(days=10)).isoformat()
+    assert iso in result
+    assert 'before today' in result
+
+
+def test_grace_period_fires_for_cenpatico_on_code_5():
+    from datetime import date
+    primary = _grace_primary(payer_id='68068', has_code_5=True)
+
+    result = orchestrator._grace_period_discrepancy(primary, date.today())
+
+    assert result is not None
+    assert 'code 5' in result
+    assert 'Active – Pending Investigation' in result
+
+
+def test_grace_period_fires_for_free_text_match():
+    from datetime import date
+    primary = _grace_primary(
+        payer_id='68069',
+        additional_info_texts=['member is in grace period for non-payment.'],
+    )
+
+    result = orchestrator._grace_period_discrepancy(primary, date.today())
+
+    assert result is not None
+    assert 'free-text indicates grace-period status' in result
+
+
+def test_grace_period_does_not_fire_for_non_gated_payer():
+    """Even with all three signals tripped, a non-Ambetter/Cenpatico
+    payer must not get the grace-period discrepancy — Stedi confirmed
+    these signals are unreliable elsewhere."""
+    from datetime import date, timedelta
+    paid_through = (date.today() - timedelta(days=10)).strftime('%Y%m%d')
+    primary = _grace_primary(
+        payer_id='60054',  # Aetna
+        paid_through=paid_through,
+        has_code_5=True,
+        additional_info_texts=['grace period notice'],
+    )
+
+    assert orchestrator._grace_period_discrepancy(primary, date.today()) is None
+
+
+def test_grace_period_does_not_fire_when_paid_through_today_or_future():
+    """Equal-day paid-through means coverage is current; future means
+    the member is paid ahead. Neither flags as delinquent."""
+    from datetime import date, timedelta
+    today = date.today()
+    primary_today = _grace_primary(
+        payer_id='68069', paid_through=today.strftime('%Y%m%d'),
+    )
+    primary_future = _grace_primary(
+        payer_id='68069',
+        paid_through=(today + timedelta(days=30)).strftime('%Y%m%d'),
+    )
+
+    assert orchestrator._grace_period_discrepancy(primary_today, today) is None
+    assert orchestrator._grace_period_discrepancy(primary_future, today) is None
+
+
+def test_grace_period_discrepancy_omits_raw_free_text():
+    """PHI guard: a payer could in principle stuff member-specific info
+    into the additionalInformation description. The discrepancy string
+    must never echo the raw text — only a generic 'free-text indicates'
+    marker."""
+    from datetime import date
+    primary = _grace_primary(
+        payer_id='68069',
+        additional_info_texts=['member ssn 1234 in grace period notes'],
+    )
+
+    result = orchestrator._grace_period_discrepancy(primary, date.today())
+
+    assert result is not None
+    assert 'free-text' in result
+    assert 'ssn' not in result.lower()
+    assert '1234' not in result
+
+
 # ---- copy block + recent-check dedup ------------------------------------
 
 def test_copy_block_included(org_config, fake_audit):

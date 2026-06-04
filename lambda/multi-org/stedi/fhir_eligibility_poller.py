@@ -363,6 +363,8 @@ def _build_item_row(org_id, encounter, encounter_id, expires_at,
     review_needed = verify_result.get('discovery_review_needed') or []
     encounter_last_updated = (encounter.get('meta') or {}).get('lastUpdated')
     encounter_class = (encounter.get('class') or {}).get('code')
+    discrepancies = verify_result.get('discrepancies') or []
+    grace_period_risk = any(d.startswith('Grace period risk') for d in discrepancies)
 
     return {
         'pk': f'ORG#{org_id}',
@@ -392,7 +394,8 @@ def _build_item_row(org_id, encounter, encounter_id, expires_at,
             'service_type_status': primary.get('service_type_status'),
             'service_types': primary.get('service_types') or [],
             'active': primary.get('active'),
-            'discrepancies': verify_result.get('discrepancies') or [],
+            'discrepancies': discrepancies,
+            'grace_period_risk': grace_period_risk,
             'secondary_count': len(secondaries),
             'review_needed_count': len(review_needed),
             'cob_check': verify_result.get('cob_check') or {'checked': False},

@@ -220,6 +220,9 @@ function EncounterRow({ item, expanded, onToggle, onResolve, onRerun }) {
           {summary.auth_required === true && (
             <span className="ml-1 text-xs rounded bg-red-100 text-red-800 border border-red-200 px-1.5 py-0.5">Auth required</span>
           )}
+          {summary.grace_period_risk === true && (
+            <span className="ml-1 text-xs rounded bg-orange-100 text-orange-800 border border-orange-200 px-1.5 py-0.5">Grace risk</span>
+          )}
         </td>
         <td className="px-3 py-2 text-gray-700">
           {summary.payer_name || '—'}

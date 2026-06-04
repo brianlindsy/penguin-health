@@ -141,12 +141,17 @@ Both surface as text strings in the `discrepancies[]` field.
     ],
     "payer": { "id": "60054", "name": "Aetna Comm & MCR", "payer_name_unknown": False },
     "subscriber": { "first_name", "last_name", "member_id", "group_number", "dob" },
-    "plan": { "name", "effective_date", "expiration_date" },
+    "plan": { "name", "effective_date", "expiration_date", "premium_paid_through" },
     "copays": [{ "service_type", "amount" }],
     "deductibles": [...],
     "oop_max": [...],
     "auth_required": True | False | None,  # convenience summary across inpatient-BH benefits
     "notes": [str, ...],
+    "grace_period_signals": {              # payer-agnostic raw extraction;
+        "paid_through": "YYYYMMDD" | None, #   orchestrator gates on payer ID
+        "has_code_5": bool,                #   (Ambetter 68069 / Cenpatico 68068)
+        "additional_info_texts": [str],    #   before emitting a discrepancy
+    },
     "raw": <full Stedi 271 pass-through>,
 }
 ```
@@ -239,7 +244,7 @@ result_summary: {
     effective_date, expiration_date,
     auth_required, service_type_status,
     service_types: [...],                              # full per-code breakdown
-    active, discrepancies, secondary_count, review_needed_count,
+    active, discrepancies, grace_period_risk, secondary_count, review_needed_count,
 },
 audit_ids: [...],                                      # links to STEDI_AUDIT# rows for this verify
 resolution: {                                          # UR's workflow state on top of the underlying status
@@ -312,7 +317,7 @@ When `STEDI_CONFIG.demo_mode == true`:
 - For `check_eligibility`, falls back to `(member_id, payer_id)` lookup in `ELIGIBILITY_DIRECT_SCENARIOS`.
 - If neither lookup matches **and** `real_client is None`, returns an empty-but-valid response (no crashes when UR reruns with edits that no longer match a fixture).
 
-### The 10-patient demo roster
+### The 11-patient demo roster
 
 | # | Name | DOB | Path | What it demonstrates |
 |---|---|---|---|---|
@@ -326,6 +331,7 @@ When `STEDI_CONFIG.demo_mode == true`:
 | 8 | Patricia Stub | 19710505 | **direct** | Sunshine FL Medicaid with `authOrCertIndicator: Y` |
 | 9 | James Example | 19831120 | discovery-first | Cigna active overall but inpatient BH non-covered → `service_type_denied` |
 | 10 | Sarah Placeholder | 20030414 | discovery-first | Aged out at 26; Aetna inactive 2 days ago |
+| 11 | Karen Examplez | 19840922 | discovery-first | Ambetter Marketplace, premium delinquent → grace-period risk discrepancy |
 
 Every patient is intentionally a synthetic surname so screenshots never read as real.
 
@@ -444,11 +450,12 @@ For each non-✅ row, UR can:
 
 ### 4. Discrepancies surface their causes
 
-The orchestrator surfaces two specific discrepancy types based on audit history:
+The orchestrator surfaces three specific discrepancy types:
 - **Primary payer changed** — current verify returned payer A; a recent audit (last 30 days) shows the same patient on payer B. Catches the "Inovalon doesn't show other primary insurance" failure mode.
 - **Recently terminated** — current eligibility says inactive, with `expiration_date >= today - 30d`. Catches the "Inovalon doesn't show inactivations within the last 30 days" failure mode.
+- **Grace-period risk** — *only* for payers `68069` (Ambetter/Centene) and `68068` (Cenpatico Sunshine State), the two payers in the client's mix that reliably surface non-payment signals. Fires when any of three signals show up on the 271: `planDateInformation.premiumPaidToDateEnd` strictly before today, a `benefitsInformation` entry with code `5` ("Active – Pending Investigation"), or `additionalInformation[].description` matching grace-period language. The raw description text is intentionally **never** echoed into the discrepancy string (PHI guard) — only a generic "payer free-text indicates grace-period status" marker. Catches the "Availity shows active but member is in grace period and will be retro-terminated to day 31" failure mode.
 
-Both render in the worklist as red discrepancy banners with the explanation.
+All three render in the worklist as amber discrepancy banners with the explanation. Grace-period rows additionally get an orange inline "Grace risk" badge next to the status pill (driven by `result_summary.grace_period_risk: bool`) so UR can spot them at a glance.
 
 ### 5. Handoff to Admissions
 

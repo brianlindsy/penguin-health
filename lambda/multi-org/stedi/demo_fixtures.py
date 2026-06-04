@@ -194,6 +194,46 @@ def _eligibility_cigna_no_bh(member_id, first, last, dob):
     }
 
 
+def _eligibility_ambetter_grace_period(member_id, first, last, dob):
+    """Ambetter (Centene) ACA marketplace plan that reads 'active' overall
+    but is in the non-payment grace period. All three signals Stedi
+    confirmed for Ambetter/Centene fire:
+      - planDateInformation.premiumPaidToDateEnd before today
+      - benefit code "5" (Active – Pending Investigation)
+      - additionalInformation free-text indicating grace-period status
+    """
+    paid_through = (date.today() - timedelta(days=35)).strftime("%Y%m%d")
+    return {
+        "controlNumber": "demo-ctrl-ambetter-grace",
+        "tradingPartnerServiceId": "68069",
+        "subscriber": {
+            "firstName": first,
+            "lastName": last,
+            "memberId": member_id,
+            "dateOfBirth": dob,
+            "groupNumber": "AMB-MKTPL-FL",
+        },
+        "planInformation": {"planName": "Ambetter Balanced Care 12"},
+        "planDateInformation": {
+            "planBegin": "20260101",
+            "planEnd": "20261231",
+            "premiumPaidToDateEnd": paid_through,
+        },
+        "benefitsInformation": [
+            {"code": "1", "name": "Active Coverage", "serviceTypeCodes": ["30"]},
+            {"code": "1", "name": "Active Coverage", "serviceTypeCodes": ["45", "MH"]},
+            {"code": "5", "name": "Active - Pending Investigation",
+             "serviceTypeCodes": ["30"]},
+            {"code": "B", "name": "Co-Payment", "benefitAmount": "75.00",
+             "serviceTypeCodes": ["45"], "authOrCertIndicator": "Y"},
+        ],
+        "additionalInformation": [
+            {"description": "Member is in grace period for non-payment of premium."
+                            " Coverage may be terminated retroactively to day 31."}
+        ],
+    }
+
+
 # ---- Discovery responses -----------------------------------------------
 
 _DISCOVERY_JANE_SAMPLE_REVIEW_NEEDED = {
@@ -398,6 +438,38 @@ _DISCOVERY_SARAH_PLACEHOLDER_AGED_OUT = {
 }
 
 
+_DISCOVERY_KAREN_EXAMPLEZ_AMBETTER = {
+    "coveragesFound": 1,
+    "discoveryId": "demo-disc-karen-examplez",
+    "status": "COMPLETE",
+    "meta": {"applicationMode": "demo", "traceId": "demo-trace-karen"},
+    "items": [
+        {
+            "tradingPartnerServiceId": "68069",
+            "payer": {"name": "Ambetter Centene", "payorIdentification": "68069"},
+            "subscriber": {
+                "memberId": "AMB-GRACE-006",
+                "firstName": "KAREN",
+                "lastName": "EXAMPLEZ",
+                "groupNumber": "AMB-MKTPL-FL",
+            },
+            # Discovery-side equivalent of the eligibility paid-through
+            # signal. Carried forward by discovery_transformer so it shows
+            # up on the DiscoveryItem; the eligibility follow-up call then
+            # supplies the richer signal set.
+            "planDateInformation": {
+                "premiumPaidUpTo": (date.today() - timedelta(days=35)).strftime("%Y%m%d"),
+            },
+            "confidence": {
+                "level": "HIGH",
+                "reason": "Exact match on demographics; coverage active overall but premium delinquent.",
+            },
+        },
+    ],
+    "errors": [],
+}
+
+
 # ---- COB responses ------------------------------------------------------
 # Stedi /coordination-of-benefits returns a ranked primacy decision. We
 # only attach a COB fixture to scenarios that produce ≥2 active coverages
@@ -495,6 +567,14 @@ SCENARIOS = {
             "68068": lambda m: _eligibility_medicaid_auth_required(m, "PATRICIA", "STUB", "19710505"),
         },
     },
+    ("karen", "examplez"): {
+        "expected_dob": "19840922",
+        "summary": "Karen Examplez — Ambetter Marketplace, premium delinquent (grace-period risk discrepancy)",
+        "discovery": _DISCOVERY_KAREN_EXAMPLEZ_AMBETTER,
+        "eligibility_by_payer": {
+            "68069": lambda m: _eligibility_ambetter_grace_period(m, "KAREN", "EXAMPLEZ", "19840922"),
+        },
+    },
     ("james", "example"): {
         "expected_dob": "19831120",
         "summary": "James Example — Cigna active overall but inpatient BH is non-covered (service-type denied)",
@@ -552,6 +632,9 @@ ELIGIBILITY_DIRECT_SCENARIOS = {
     # Sarah Placeholder — aged out of Aetna.
     ("AETNA-AGED-005", "60054"): lambda: _eligibility_aetna_inactive(
         "AETNA-AGED-005", "SARAH", "PLACEHOLDER", "20030414", terminated_days_ago=2),
+    # Karen Examplez — Ambetter Marketplace plan in non-payment grace period.
+    ("AMB-GRACE-006", "68069"): lambda: _eligibility_ambetter_grace_period(
+        "AMB-GRACE-006", "KAREN", "EXAMPLEZ", "19840922"),
 }
 
 
@@ -614,6 +697,12 @@ CENSUS_ROSTER = [
         "dob": "20030414", "gender": "F", "ssn_last4": "9988",
         "address1": "55 College Way", "address2": None,
         "city": "Gainesville", "state": "FL", "postal_code": "32601",
+    },
+    {
+        "first_name": "Karen", "middle_name": None, "last_name": "Examplez", "suffix": None,
+        "dob": "19840922", "gender": "F", "ssn_last4": "7711",
+        "address1": "210 Marketplace Ln", "address2": None,
+        "city": "Tampa", "state": "FL", "postal_code": "33602",
     },
     # Direct-path patients (returning, member ID + payer already on file).
     {
@@ -700,9 +789,14 @@ def list_scenarios():
 # on so the demo flow exercises the new pipeline without a real FHIR
 # endpoint. Each entry mirrors a FHIR R4 Encounter resource referencing a
 # synthetic Patient built from CENSUS_ROSTER. meta.lastUpdated is
-# monotonically increasing from a fixed epoch so reruns are deterministic.
+# monotonically increasing from a rolling epoch so reruns stay deterministic
+# within a Lambda invocation while remaining visible to the poller — the
+# poller's default cursor (no FHIR_POLL_CURSOR row yet) reaches back 1 hour,
+# so demo encounters need to be newer than that to get picked up. We anchor
+# 30 minutes before module load: well inside the lookback window, with
+# headroom for clock drift and per-encounter minute offsets.
 
-_DEMO_EPOCH = datetime(2026, 1, 15, 8, 0, 0, tzinfo=timezone.utc)
+_DEMO_EPOCH = datetime.now(timezone.utc) - timedelta(minutes=30)
 
 
 def _demo_patient_id(roster_entry):

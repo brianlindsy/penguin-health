@@ -98,12 +98,13 @@ def transform(stedi_response, *, requested_payer_id=None):
         ],
         payer: { id, name, payer_name_unknown },
         subscriber: { first_name, last_name, member_id, group_number, dob },
-        plan: { name, effective_date, expiration_date },
+        plan: { name, effective_date, expiration_date, premium_paid_through },
         copays: [{ service_type, amount }],
         deductibles: [{ in_or_out_of_network, total, remaining }],
         oop_max: [{ in_or_out_of_network, total, remaining }],
         auth_required: bool | None,
         notes: [str, ...],
+        grace_period_signals: { paid_through, has_code_5, additional_info_texts },
         raw: <pass-through>,
       }
     """
@@ -126,6 +127,8 @@ def transform(stedi_response, *, requested_payer_id=None):
     if status == "active" and service_type_status == "not_covered":
         notes.append("Plan is active overall but does NOT cover inpatient behavioral health.")
 
+    grace_period_signals = _extract_grace_period_signals(stedi_response)
+
     return {
         "active": status == "active",
         "status": status,
@@ -139,6 +142,7 @@ def transform(stedi_response, *, requested_payer_id=None):
         "oop_max": oop_max,
         "auth_required": auth_required,
         "notes": notes,
+        "grace_period_signals": grace_period_signals,
         "raw": stedi_response,
     }
 
@@ -185,6 +189,40 @@ def _extract_plan(response):
             or dates.get('eligibilityEnd')
             or eligibility_dates.get('end')
         ),
+        "premium_paid_through": dates.get('premiumPaidToDateEnd'),
+    }
+
+
+def _extract_grace_period_signals(response):
+    """Raw, payer-agnostic extraction of the three grace-period signals.
+
+    The orchestrator gates these on payer ID and decides whether to emit a
+    discrepancy. Storing them on every EligibilityResult keeps the
+    transformer pure and keeps payer policy in one place.
+
+    Returns:
+      {
+        paid_through:          str | None,   # raw YYYYMMDD from premiumPaidToDateEnd
+        has_code_5:            bool,         # any benefitsInformation entry with code == "5"
+        additional_info_texts: [str],        # trimmed+lowercased descriptions from top-level additionalInformation[]
+      }
+    """
+    dates = response.get('planDateInformation') or {}
+    benefits = response.get('benefitsInformation') or []
+    additional = response.get('additionalInformation') or []
+
+    texts = []
+    for entry in additional:
+        if not isinstance(entry, dict):
+            continue
+        desc = entry.get('description')
+        if isinstance(desc, str) and desc.strip():
+            texts.append(desc.strip().lower())
+
+    return {
+        "paid_through": dates.get('premiumPaidToDateEnd'),
+        "has_code_5": any(b.get('code') == '5' for b in benefits),
+        "additional_info_texts": texts,
     }
 
 

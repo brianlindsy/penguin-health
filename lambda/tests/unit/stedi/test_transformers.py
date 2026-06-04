@@ -142,6 +142,94 @@ def test_eligibility_unknown_payer_flagged():
     assert result['payer']['id'] == 'OBSCURE_PAYER'
 
 
+def test_eligibility_extracts_grace_period_signals_when_present():
+    """All three grace-period signals (paid-through date, code 5,
+    free-text) extracted payer-agnostically; orchestrator gates on payer."""
+    response = {
+        'tradingPartnerServiceId': '68069',
+        'subscriber': {'memberId': 'AMB1'},
+        'planInformation': {'planName': 'Ambetter Balanced Care 12'},
+        'planDateInformation': {
+            'planBegin': '20260101', 'planEnd': '20261231',
+            'premiumPaidToDateEnd': '20260430',
+        },
+        'benefitsInformation': [
+            {'code': '1', 'name': 'Active Coverage', 'serviceTypeCodes': ['30']},
+            {'code': '5', 'name': 'Active - Pending Investigation',
+             'serviceTypeCodes': ['30']},
+        ],
+        'additionalInformation': [
+            {'description': 'Member in Grace Period for non-payment.'},
+        ],
+    }
+    result = eligibility_transformer.transform(response)
+    assert result['plan']['premium_paid_through'] == '20260430'
+    assert result['grace_period_signals'] == {
+        'paid_through': '20260430',
+        'has_code_5': True,
+        'additional_info_texts': ['member in grace period for non-payment.'],
+    }
+
+
+def test_eligibility_grace_period_signals_default_to_safe_empty():
+    """Absent signal fields should yield safe, non-firing defaults so the
+    orchestrator's payer-gated check can short-circuit cleanly."""
+    response = {
+        'tradingPartnerServiceId': '60054',
+        'subscriber': {},
+        'planInformation': {},
+        'planDateInformation': {},
+        'benefitsInformation': [
+            {'code': '1', 'name': 'Active Coverage', 'serviceTypeCodes': ['30']},
+        ],
+    }
+    result = eligibility_transformer.transform(response)
+    assert result['plan']['premium_paid_through'] is None
+    assert result['grace_period_signals'] == {
+        'paid_through': None,
+        'has_code_5': False,
+        'additional_info_texts': [],
+    }
+
+
+def test_eligibility_code_5_alone_does_not_change_status_derivation():
+    """Code 5 is a grace-period signal, not a status driver. A 271 with
+    only code 5 must still classify as 'unknown' so we don't regress the
+    active/inactive taxonomy or downstream tests."""
+    response = {
+        'tradingPartnerServiceId': '68069',
+        'subscriber': {},
+        'planInformation': {},
+        'planDateInformation': {},
+        'benefitsInformation': [
+            {'code': '5', 'name': 'Active - Pending Investigation',
+             'serviceTypeCodes': ['30']},
+        ],
+    }
+    result = eligibility_transformer.transform(response)
+    assert result['status'] == 'unknown'
+    assert result['active'] is False
+    assert result['grace_period_signals']['has_code_5'] is True
+
+
+def test_discovery_extracts_premium_paid_through_when_present():
+    """Discovery hits carry the discovery-side premiumPaidUpTo so
+    review-needed rows surface the signal without an eligibility call."""
+    response = {
+        'coveragesFound': 1,
+        'discoveryId': 'd-grace',
+        'items': [
+            {'confidence': {'level': 'HIGH'},
+             'tradingPartnerServiceId': '68069',
+             'planDateInformation': {'premiumPaidUpTo': '20260330'},
+             'subscriber': {'memberId': 'AMB1'}},
+        ],
+    }
+    result = discovery_transformer.transform(response)
+    [hit] = result['high_confidence']
+    assert hit['premium_paid_through'] == '20260330'
+
+
 def test_discovery_partitions_high_vs_review_needed():
     response = {
         'coveragesFound': 2,

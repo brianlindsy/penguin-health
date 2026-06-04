@@ -43,6 +43,7 @@ def _normalize_item(item):
     sub = item.get('subscriber') or {}
     dep = item.get('dependent') or {}
     payer_block = item.get('payer') or {}
+    dates = item.get('planDateInformation') or {}
     trading_partner_id = (
         item.get('tradingPartnerServiceId')
         or payer_block.get('tradingPartnerServiceId')
@@ -59,6 +60,11 @@ def _normalize_item(item):
         "trading_partner_service_id": trading_partner_id,
         "member_id": sub.get('memberId'),
         "group_number": sub.get('groupNumber'),
+        # Discovery's premium-paid-through equivalent. Some payers
+        # (notably Ambetter/Centene) surface it here as well as on the
+        # downstream 271. Carried forward so review-needed rows that
+        # skip the eligibility call still expose the signal.
+        "premium_paid_through": dates.get('premiumPaidUpTo'),
         "subscriber_first_name": sub.get('firstName'),
         "subscriber_last_name": sub.get('lastName'),
         # Payer-side subscriber demographics — full picture so UR can see

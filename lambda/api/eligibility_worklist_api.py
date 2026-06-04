@@ -284,6 +284,7 @@ def _summarize_for_rerun(result):
         'service_types': primary.get('service_types') or [],
         'active': primary.get('active'),
         'discrepancies': discrepancies,
+        'grace_period_risk': any(d.startswith('Grace period risk') for d in discrepancies),
         'secondary_count': len(secondaries),
         'review_needed_count': len(review_needed),
         'cob_check': result.get('cob_check') or {'checked': False},

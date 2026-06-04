@@ -34,6 +34,28 @@ _MAX_HIGH_HITS = 3
 _DEDUP_WINDOW_MIN = 30
 _DISCREPANCY_LOOKBACK_DAYS = 30
 
+# Grace-period detection only fires for payers Stedi confirmed reliably
+# surface the three signals (premium paid-through date, X12 code 5,
+# additionalInformation free-text). Other payers in the network either
+# don't have an individual-premium concept (Medicaid/Medicare) or pay in
+# bulk via the employer (commercial group), so the signals don't apply.
+#   68069 — Ambetter / Centene (ACA marketplace)
+#   68068 — Cenpatico Sunshine State (Centene subsidiary)
+_GRACE_PERIOD_PAYER_IDS = {"68069", "68068"}
+
+# Case-insensitive substrings we treat as grace-period language in the
+# payer's free-text additionalInformation. Match → fire the discrepancy;
+# we never echo the raw description text into the discrepancy string
+# (PHI guard, see _grace_period_discrepancy).
+_GRACE_PERIOD_FREE_TEXT_PATTERNS = (
+    "grace period",
+    "premium delinquent",
+    "non-payment",
+    "non payment",
+    "pending termination",
+    "premium past due",
+)
+
 
 def verify(input_, *, org_id, org_config, stedi_client, client_ip, user_email,
            audit=audit_module, eligibility_xform=eligibility_transformer,
@@ -441,7 +463,64 @@ def _derive_discrepancies(primary, org_id, audit, first_name, last_name, dob):
     if primary.get('status') == 'inactive' and exp and _ymd_within(exp, today, days=30):
         out.append(f"Plan terminated on {exp} — was active within the last 30 days.")
 
+    grace = _grace_period_discrepancy(primary, today)
+    if grace:
+        out.append(grace)
+
     return out
+
+
+def _grace_period_discrepancy(primary, today):
+    """Payer-gated detector for non-payment grace-period risk.
+
+    Stedi confirmed three signals surface reliably for Ambetter/Centene
+    and Cenpatico: premiumPaidToDateEnd before today, benefit code 5
+    ("Active – Pending Investigation"), and free-text language in
+    additionalInformation. When any fires for a gated payer, surface a
+    discrepancy so UR can verify before admission — coverage can be
+    retroactively terminated back to day 31 of the grace period.
+
+    PHI guard: the returned string never echoes the payer's raw
+    free-text description, only that a match occurred. Logging follows
+    the same rule.
+    """
+    payer_id = (primary.get('payer') or {}).get('id')
+    if payer_id not in _GRACE_PERIOD_PAYER_IDS:
+        return None
+
+    signals = primary.get('grace_period_signals') or {}
+    reasons = []
+
+    paid_through = signals.get('paid_through')
+    if paid_through:
+        try:
+            parsed = datetime.strptime(paid_through, '%Y%m%d').date()
+        except (ValueError, TypeError):
+            parsed = None
+        if parsed and parsed < today:
+            reasons.append(f"premium paid through {parsed.isoformat()} (before today)")
+
+    if signals.get('has_code_5'):
+        reasons.append("payer returned 'Active – Pending Investigation' (code 5)")
+
+    texts = signals.get('additional_info_texts') or []
+    if any(p in t for t in texts for p in _GRACE_PERIOD_FREE_TEXT_PATTERNS):
+        reasons.append("payer free-text indicates grace-period status")
+
+    if not reasons:
+        return None
+
+    logger.info(
+        "grace_period_discrepancy fired payer_id=%s signals=%s",
+        payer_id,
+        [r.split(' ', 1)[0] for r in reasons],
+    )
+    return (
+        "Grace period risk: "
+        + "; ".join(reasons)
+        + " — coverage may be retroactively terminated to day 31 of the grace period."
+        " Verify premium-payment status with payer before admission."
+    )
 
 
 def _ymd_within(ymd_str, ref_date, *, days):

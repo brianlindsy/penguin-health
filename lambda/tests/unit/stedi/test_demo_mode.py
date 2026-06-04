@@ -273,13 +273,13 @@ def test_lookup_returns_none_for_unknown_patient():
 
 def test_list_scenarios_returns_full_roster():
     scenarios = demo_fixtures.list_scenarios()
-    assert len(scenarios) == 10
+    assert len(scenarios) == 11
     names = {(s['first_name'], s['last_name']) for s in scenarios}
     expected = {
         ('Jane', 'Sample'), ('Robert', 'Testpatient'), ('Maria', 'Mockerson'),
         ('Nora', 'Faker'), ('Daniel', 'Demoson'), ('Linda', 'Sandbox'),
         ('Tyler', 'Fixture'), ('Patricia', 'Stub'), ('James', 'Example'),
-        ('Sarah', 'Placeholder'),
+        ('Sarah', 'Placeholder'), ('Karen', 'Examplez'),
     }
     assert names == expected
 

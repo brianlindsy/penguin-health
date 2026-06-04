@@ -30,9 +30,9 @@ def stedi_table(mock_dynamodb, monkeypatch):
 def demo_config(mock_dynamodb, stedi_table):
     """STEDI_CONFIG for the demo org with census + demo_mode on.
 
-    Also seeds the FHIR_POLL_CURSOR at the unix epoch so the demo encounter
-    stream (whose lastUpdated timestamps are pinned to 2026-01-15) is
-    always 'after the cursor' regardless of when the test runs.
+    Also seeds the FHIR_POLL_CURSOR at the unix epoch so every encounter
+    in the stream is unambiguously 'after the cursor' regardless of where
+    the rolling _DEMO_EPOCH happens to sit at test time.
     """
     org_config_table = mock_dynamodb.Table('penguin-health-org-config')
     item = {
@@ -109,14 +109,14 @@ def test_demo_mode_processes_canned_stream(stedi_table, demo_config):
     result = poller.handler({'organization_id': 'demo'}, None)
 
     assert result['status'] == 'complete'
-    # 10-patient CENSUS_ROSTER -> 10 demo encounters on the first run.
-    assert result['processed'] == 10
+    # 11-patient CENSUS_ROSTER -> 11 demo encounters on the first run.
+    assert result['processed'] == 11
 
     items = stedi_table.query(
         KeyConditionExpression='pk = :p AND begins_with(sk, :s)',
         ExpressionAttributeValues={':p': 'ORG#demo', ':s': 'ENCOUNTER_ITEM#'},
     )['Items']
-    assert len(items) == 10
+    assert len(items) == 11
     # All items have the canonical fields the UI will read.
     for it in items:
         assert it['encounter_class'] == 'IMP'
@@ -134,7 +134,7 @@ def test_cursor_row_written_and_advances(stedi_table, demo_config):
         Key={'pk': 'ORG#demo', 'sk': 'FHIR_POLL_CURSOR'}
     )['Item']
     assert cursor['last_poll_status'] == 'complete'
-    assert int(cursor['last_processed']) == 10
+    assert int(cursor['last_processed']) == 11
     # Cursor watermark equals the last encounter's lastUpdated.
     last_encounter_iso = demo_fixtures.ENCOUNTER_STREAM[-1]['meta']['lastUpdated']
     assert cursor['last_updated_iso'] == last_encounter_iso
@@ -161,8 +161,8 @@ def test_idempotent_writes_when_cursor_reset(stedi_table, demo_config):
         KeyConditionExpression='pk = :p AND begins_with(sk, :s)',
         ExpressionAttributeValues={':p': 'ORG#demo', ':s': 'ENCOUNTER_ITEM#'},
     )['Items']
-    # Still only 10 distinct rows — no duplicates.
-    assert len(items) == 10
+    # Still only 11 distinct rows — no duplicates.
+    assert len(items) == 11
 
 
 # ---- error-path coverage ------------------------------------------------
