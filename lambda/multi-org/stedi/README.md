@@ -285,6 +285,8 @@ created_at, updated_at,
 ```
 
 Provision via [scripts/multi-org/add_stedi_config.py](../../../scripts/multi-org/add_stedi_config.py).
+For choosing `encounter_filter` values on a new org, see
+[docs/stedi-encounter-filter-onboarding.md](../../../docs/stedi-encounter-filter-onboarding.md).
 
 ## HTTP API
 

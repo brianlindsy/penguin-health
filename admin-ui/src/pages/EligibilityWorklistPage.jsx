@@ -28,6 +28,24 @@ function patientDob(item) {
   return (item.submitted_demographics || {}).dob || ''
 }
 
+// Attention-priority for the default sort. Lower = higher priority.
+// Anything not listed (verified, unknown) sinks to the bottom.
+const ATTENTION_PRIORITY = {
+  discrepancy:         0,
+  service_type_denied: 1,
+  no_coverage:         2,
+  review_needed:       3,
+  pediatric_no_info:   4,
+  error:               5,
+  verified:            10,
+}
+
+const SORT_OPTIONS = [
+  { value: 'attention',    label: 'Needs attention first' },
+  { value: 'newest',       label: 'Newest encounter first' },
+  { value: 'oldest',       label: 'Oldest encounter first' },
+]
+
 export function EligibilityWorklistPage() {
   const { orgId } = useParams()
   const [items, setItems] = useState([])
@@ -35,6 +53,11 @@ export function EligibilityWorklistPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [expandedId, setExpandedId] = useState(null)
+  // Multi-select status filter. Empty set = show all (no filter applied).
+  // Special pseudo-statuses: 'resolved' = resolution.state === 'resolved';
+  // 'grace_period_risk' / 'auth_required' = result_summary flags.
+  const [statusFilter, setStatusFilter] = useState(() => new Set())
+  const [sortBy, setSortBy] = useState('attention')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -69,6 +92,24 @@ export function EligibilityWorklistPage() {
     }
     return c
   }, [items, counts])
+
+  const visibleItems = useMemo(() => {
+    const filtered = statusFilter.size === 0
+      ? items
+      : items.filter((it) => matchesAnyFilter(it, statusFilter))
+    return sortItems(filtered, sortBy)
+  }, [items, statusFilter, sortBy])
+
+  function toggleFilter(key) {
+    setStatusFilter((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  function clearFilters() { setStatusFilter(new Set()) }
 
   async function onResolve(item, note) {
     const updated = await api.resolveEligibilityEncounter(orgId, item.encounter_id, {
@@ -109,7 +150,15 @@ export function EligibilityWorklistPage() {
     <div>
       <PageHeader orgId={orgId} />
 
-      <SummaryPills counts={derivedCounts} />
+      <FilterBar
+        counts={derivedCounts}
+        items={items}
+        active={statusFilter}
+        onToggle={toggleFilter}
+        onClear={clearFilters}
+        sortBy={sortBy}
+        onSortChange={setSortBy}
+      />
 
       <div className="mt-6 bg-white border border-gray-200 rounded-lg overflow-hidden">
         <table className="min-w-full text-sm">
@@ -127,7 +176,18 @@ export function EligibilityWorklistPage() {
             </tr>
           </thead>
           <tbody>
-            {items.map((it) => {
+            {visibleItems.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="px-3 py-8 text-center text-sm text-gray-500">
+                  No encounters match the current filters.
+                  <button
+                    type="button"
+                    onClick={clearFilters}
+                    className="ml-2 text-blue-600 hover:underline"
+                  >Clear filters</button>
+                </td>
+              </tr>
+            ) : visibleItems.map((it) => {
               const expanded = expandedId === it.encounter_id
               return (
                 <EncounterRow
@@ -168,34 +228,180 @@ function PageHeader({ orgId }) {
 }
 
 
-function SummaryPills({ counts }) {
-  const pills = [
-    { label: 'Total',         count: counts.total,               cls: 'bg-gray-100 text-gray-800' },
-    { label: 'Verified',      count: counts.verified,            cls: STATUS_META.verified.pill },
-    { label: 'Discrepancy',   count: counts.discrepancy,         cls: STATUS_META.discrepancy.pill },
-    { label: 'Review needed', count: counts.review_needed,       cls: STATUS_META.review_needed.pill },
-    { label: 'No coverage',   count: counts.no_coverage,         cls: STATUS_META.no_coverage.pill },
-    { label: 'Pediatric',     count: counts.pediatric_no_info,   cls: STATUS_META.pediatric_no_info.pill },
-    { label: 'BH not covered',count: counts.service_type_denied, cls: STATUS_META.service_type_denied.pill },
-  ].filter((p) => p.count > 0 || p.label === 'Total')
+function matchesAnyFilter(item, activeFilters) {
+  // OR across selected filters — a row passes if it matches at least one.
+  const status = item.result_status
+  const resolved = item.resolution?.state === 'resolved'
+  const summary = item.result_summary || {}
+  for (const key of activeFilters) {
+    if (key === 'resolved') {
+      if (resolved) return true
+    } else if (key === 'grace_period_risk') {
+      if (summary.grace_period_risk === true) return true
+    } else if (key === 'auth_required') {
+      if (summary.auth_required === true) return true
+    } else if (key === status) {
+      return true
+    }
+  }
+  return false
+}
+
+
+function sortItems(items, sortBy) {
+  const copy = items.slice()
+  if (sortBy === 'newest') {
+    copy.sort((a, b) => cmpUpdated(b, a))
+  } else if (sortBy === 'oldest') {
+    copy.sort((a, b) => cmpUpdated(a, b))
+  } else {
+    // 'attention' (default): resolved rows sink; among the rest, sort by
+    // attention priority (discrepancy → service_type_denied → no_coverage
+    // → review_needed → pediatric → error → verified); tiebreak by
+    // encounter recency (newest first) so the freshest attention-needed
+    // patient is on top.
+    copy.sort((a, b) => {
+      const aResolved = a.resolution?.state === 'resolved' ? 1 : 0
+      const bResolved = b.resolution?.state === 'resolved' ? 1 : 0
+      if (aResolved !== bResolved) return aResolved - bResolved
+      const ap = ATTENTION_PRIORITY[a.result_status] ?? 99
+      const bp = ATTENTION_PRIORITY[b.result_status] ?? 99
+      if (ap !== bp) return ap - bp
+      return cmpUpdated(b, a)
+    })
+  }
+  return copy
+}
+
+
+function cmpUpdated(a, b) {
+  // String compare works on ISO-8601 timestamps. Missing values sort last.
+  const av = a.encounter_lastUpdated || ''
+  const bv = b.encounter_lastUpdated || ''
+  if (av < bv) return -1
+  if (av > bv) return 1
+  return 0
+}
+
+
+// Counts that aren't tied to a result_status — derived from the items
+// because the server doesn't yet send them. Cheap O(n) walk.
+function deriveFlagCounts(items) {
+  let grace = 0
+  let auth = 0
+  for (const it of items) {
+    const s = it.result_summary || {}
+    if (s.grace_period_risk === true) grace += 1
+    if (s.auth_required === true) auth += 1
+  }
+  return { grace_period_risk: grace, auth_required: auth }
+}
+
+
+function FilterBar({ counts, items, active, onToggle, onClear, sortBy, onSortChange }) {
+  const flagCounts = useMemo(() => deriveFlagCounts(items), [items])
+
+  // Status chips render in priority order so the most-actionable pills
+  // sit leftmost. Total renders separately as a non-toggleable label.
+  const statusChips = [
+    { key: 'discrepancy',         label: 'Discrepancy',      count: counts.discrepancy,         cls: STATUS_META.discrepancy.pill },
+    { key: 'service_type_denied', label: 'BH not covered',   count: counts.service_type_denied, cls: STATUS_META.service_type_denied.pill },
+    { key: 'no_coverage',         label: 'No coverage',      count: counts.no_coverage,         cls: STATUS_META.no_coverage.pill },
+    { key: 'review_needed',       label: 'Review needed',    count: counts.review_needed,       cls: STATUS_META.review_needed.pill },
+    { key: 'pediatric_no_info',   label: 'Pediatric',        count: counts.pediatric_no_info,   cls: STATUS_META.pediatric_no_info.pill },
+    { key: 'error',               label: 'Error',            count: counts.error,               cls: STATUS_META.error.pill },
+    { key: 'verified',            label: 'Verified',         count: counts.verified,            cls: STATUS_META.verified.pill },
+  ].filter((c) => c.count > 0)
+
+  const flagChips = [
+    { key: 'grace_period_risk', label: 'Grace risk',    count: flagCounts.grace_period_risk,
+      cls: 'bg-orange-100 text-orange-800 border-orange-200' },
+    { key: 'auth_required',     label: 'Auth required', count: flagCounts.auth_required,
+      cls: 'bg-red-100 text-red-800 border-red-200' },
+  ].filter((c) => c.count > 0)
+
+  const resolvedChip = counts.resolved > 0
+    ? { key: 'resolved', label: 'Resolved', count: counts.resolved,
+        cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
+    : null
 
   return (
-    <div className="mt-4 flex flex-wrap items-center gap-2">
-      {pills.map((p) => (
-        <span key={p.label} className={`text-xs font-medium rounded px-2.5 py-1 border ${p.cls}`}>
-          {p.label}: <strong className="font-semibold">{p.count}</strong>
+    <div className="mt-4 space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium rounded px-2.5 py-1 border bg-gray-100 text-gray-800">
+          Total: <strong className="font-semibold">{counts.total}</strong>
         </span>
-      ))}
-      {counts.attention > 0 && (
-        <span className="ml-2 text-xs text-gray-600">
-          <strong>{counts.attention}</strong> need attention
-          {counts.resolved > 0 && <> · {counts.resolved} resolved</>}
-        </span>
-      )}
-      {counts.attention === 0 && counts.resolved > 0 && (
-        <span className="ml-2 text-xs text-emerald-700 font-medium">Inbox zero ✓</span>
-      )}
+        {counts.attention > 0 && (
+          <span className="text-xs text-gray-600">
+            <strong>{counts.attention}</strong> need attention
+            {counts.resolved > 0 && <> · {counts.resolved} resolved</>}
+          </span>
+        )}
+        {counts.attention === 0 && counts.resolved > 0 && (
+          <span className="text-xs text-emerald-700 font-medium">Inbox zero ✓</span>
+        )}
+
+        <div className="ml-auto flex items-center gap-2">
+          <label htmlFor="worklist-sort" className="text-xs text-gray-500">Sort</label>
+          <select
+            id="worklist-sort"
+            value={sortBy}
+            onChange={(e) => onSortChange(e.target.value)}
+            className="text-xs rounded border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+          >
+            {SORT_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-gray-500 uppercase tracking-wide mr-1">Filter</span>
+        {statusChips.map((c) => (
+          <FilterChip key={c.key} chip={c} active={active.has(c.key)}
+                      onClick={() => onToggle(c.key)} />
+        ))}
+        {flagChips.length > 0 && <span className="mx-1 text-gray-300">|</span>}
+        {flagChips.map((c) => (
+          <FilterChip key={c.key} chip={c} active={active.has(c.key)}
+                      onClick={() => onToggle(c.key)} />
+        ))}
+        {resolvedChip && (
+          <>
+            <span className="mx-1 text-gray-300">|</span>
+            <FilterChip chip={resolvedChip} active={active.has('resolved')}
+                        onClick={() => onToggle('resolved')} />
+          </>
+        )}
+        {active.size > 0 && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="ml-1 text-xs text-blue-600 hover:underline"
+          >Clear</button>
+        )}
+      </div>
     </div>
+  )
+}
+
+
+function FilterChip({ chip, active, onClick }) {
+  // Active = solid border + ring + check; inactive = subtle border.
+  const cls = active
+    ? `${chip.cls} ring-2 ring-offset-1 ring-blue-400`
+    : chip.cls
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`text-xs font-medium rounded px-2.5 py-1 border ${cls} hover:opacity-90 transition-opacity`}
+      aria-pressed={active}
+    >
+      {active && <span className="mr-1">✓</span>}
+      {chip.label}: <strong className="font-semibold">{chip.count}</strong>
+    </button>
   )
 }
 
