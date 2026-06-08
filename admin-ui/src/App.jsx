@@ -18,6 +18,7 @@ import { DashboardPage } from './pages/DashboardPage.jsx'
 import { UsersPage } from './pages/UsersPage.jsx'
 import { EligibilityPage } from './pages/EligibilityPage.jsx'
 import { EligibilityWorklistPage } from './pages/EligibilityWorklistPage.jsx'
+import { NotificationPreferencesPage } from './pages/NotificationPreferencesPage.jsx'
 import { setTokenProvider, setOnUnauthorized } from './api/client.js'
 import { RoleGuard } from './auth/RoleGuard.jsx'
 
@@ -111,6 +112,14 @@ function App() {
           element={
             <RoleGuard requireSuperAdmin>
               <UsersPage />
+            </RoleGuard>
+          }
+        />
+        <Route
+          path="/organizations/:orgId/settings/notifications"
+          element={
+            <RoleGuard requireSuperAdmin>
+              <NotificationPreferencesPage />
             </RoleGuard>
           }
         />

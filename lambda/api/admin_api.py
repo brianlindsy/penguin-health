@@ -168,6 +168,8 @@ def lambda_handler(event, context):
         'PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-resolved': mark_resolved,
         'PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-incorrect': mark_incorrect,
         'GET /api/me/permissions': get_my_permissions,
+        'GET /api/organizations/{orgId}/subscriptions': list_org_subscriptions,
+        'PUT /api/organizations/{orgId}/subscriptions/{email}': upsert_org_user_subscription,
         'GET /api/organizations/{orgId}/users': list_org_users,
         'GET /api/organizations/{orgId}/users/{email}': get_org_user,
         'PUT /api/organizations/{orgId}/users/{email}': upsert_org_user,
@@ -1507,6 +1509,108 @@ def get_my_permissions(event, **kwargs):
     if error:
         return error
     return response(200, perms_module.serialize_for_me_endpoint(claims))
+
+
+_SUBSCRIPTION_EVENT_TYPES = ("validation_run_complete", "eligibility_issue")
+
+
+def list_org_subscriptions(event, path_params, **kwargs):
+    """List every user in the org with their subscription state per event.
+
+    Super-admin only. The user roster comes from the existing USER_PERM
+    rows (same source as listOrgUsers); subscription rows are merged in
+    so missing rows render as enabled=false in the UI without a second
+    round-trip.
+    """
+    org_id = path_params.get('orgId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+    if not is_super_admin(claims):
+        return response(403, {'error': 'Super admin required'})
+
+    perm_rows = table.query(
+        IndexName='gsi1',
+        KeyConditionExpression=Key('gsi1pk').eq('USER_PERM')
+                               & Key('gsi1sk').begins_with(f'ORG#{org_id}#'),
+    ).get('Items', [])
+    emails = sorted({row.get('email') for row in perm_rows if row.get('email')})
+
+    sub_rows = table.query(
+        IndexName='gsi1',
+        KeyConditionExpression=Key('gsi1pk').eq('SUBSCRIPTION')
+                               & Key('gsi1sk').begins_with(f'ORG#{org_id}#'),
+    ).get('Items', [])
+    # subs[email][event_type] = {enabled, updated_at}
+    subs: dict[str, dict[str, dict]] = {}
+    for row in sub_rows:
+        email = row.get('email')
+        event_type = row.get('event_type')
+        if not email or not event_type:
+            continue
+        subs.setdefault(email, {})[event_type] = {
+            'enabled': bool(row.get('enabled')),
+            'updated_at': row.get('updated_at'),
+        }
+
+    users = []
+    for email in emails:
+        user_subs = subs.get(email, {})
+        users.append({
+            'email': email,
+            'subscriptions': [
+                {
+                    'event_type': event_type,
+                    'enabled': bool(user_subs.get(event_type, {}).get('enabled')),
+                    'updated_at': user_subs.get(event_type, {}).get('updated_at'),
+                }
+                for event_type in _SUBSCRIPTION_EVENT_TYPES
+            ],
+        })
+    return response(200, {
+        'users': users,
+        'event_types': list(_SUBSCRIPTION_EVENT_TYPES),
+    })
+
+
+def upsert_org_user_subscription(event, path_params, body, **kwargs):
+    """Super-admin upsert of one subscription row for a specific user.
+
+    Path: PUT /api/organizations/{orgId}/subscriptions/{email}
+    Body: { event_type, enabled }
+    """
+    org_id = path_params.get('orgId')
+    email = path_params.get('email')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+    if not is_super_admin(claims):
+        return response(403, {'error': 'Super admin required'})
+
+    if not body:
+        return response(400, {'error': 'Request body required'})
+    event_type = body.get('event_type')
+    enabled = body.get('enabled')
+    if not event_type:
+        return response(400, {'error': 'event_type is required'})
+    if event_type not in _SUBSCRIPTION_EVENT_TYPES:
+        return response(400, {'error': f'Unknown event_type: {event_type}'})
+    if not isinstance(enabled, bool):
+        return response(400, {'error': 'enabled must be a boolean'})
+
+    from notifications import set_subscription
+    item = set_subscription(
+        email=email, org_id=org_id, event_type=event_type, enabled=enabled,
+    )
+    return response(200, {
+        'email': item['email'],
+        'event_type': item['event_type'],
+        'organization_id': item['organization_id'],
+        'enabled': bool(item['enabled']),
+        'updated_at': item['updated_at'],
+    })
 
 
 def list_org_users(event, path_params, **kwargs):

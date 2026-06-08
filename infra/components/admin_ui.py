@@ -123,6 +123,7 @@ class AdminUi(Construct):
         lambda_multi_org_dir = os.path.join(os.path.dirname(__file__), "..", "..", "lambda", "multi-org")
         rules_engine_dir = os.path.join(lambda_multi_org_dir, "rules-engine")
         stedi_pkg_dir = os.path.join(lambda_multi_org_dir, "stedi")
+        notifications_pkg_dir = os.path.join(lambda_multi_org_dir, "notifications")
 
         # Three modules live in rules-engine/ but are bundled flat into the
         # admin_api asset so `from bedrock_client import ...` resolves at
@@ -142,6 +143,7 @@ class AdminUi(Construct):
             os.path.join(lambda_api_dir, "eligibility_worklist_api.py"),
             os.path.join(lambda_api_dir, "sqlparse"),
             stedi_pkg_dir,
+            notifications_pkg_dir,
         ] + [os.path.join(rules_engine_dir, m) for m in shared_llm_modules]
 
         self.api_function = _lambda.Function(self, "AdminApiFunction",
@@ -175,6 +177,7 @@ class AdminUi(Construct):
                         (os.path.join(lambda_api_dir, "eligibility_worklist_api.py"), None),
                         (os.path.join(lambda_api_dir, "sqlparse"), None),
                         (stedi_pkg_dir, "stedi"),
+                        (notifications_pkg_dir, "notifications"),
                     ] + [
                         (os.path.join(rules_engine_dir, m), None)
                         for m in shared_llm_modules
@@ -185,6 +188,7 @@ class AdminUi(Construct):
             memory_size=config.LAMBDA_DEFAULT_MEMORY_MB,
             environment={
                 "DYNAMODB_TABLE": org_config_table.table_name,
+                "ORG_CONFIG_TABLE_NAME": org_config_table.table_name,
                 "COGNITO_USER_POOL_ID": self.user_pool.user_pool_id,
                 "ANALYTICS_REPORTS_TABLE": analytics_reports_table.table_name,
                 "DEEP_JOBS_TABLE": deep_jobs_table.table_name,
@@ -213,6 +217,7 @@ class AdminUi(Construct):
             os.path.join(lambda_api_dir, "nl_agent.py"),
             os.path.join(lambda_api_dir, "nl_agent_tools.py"),
             os.path.join(lambda_api_dir, "sqlparse"),
+            notifications_pkg_dir,
         ] + [os.path.join(rules_engine_dir, m) for m in shared_llm_modules]
 
         self.deep_worker_function = _lambda.Function(self, "DeepAnalyticsWorkerFunction",
@@ -241,6 +246,7 @@ class AdminUi(Construct):
                         (os.path.join(lambda_api_dir, "nl_agent.py"), None),
                         (os.path.join(lambda_api_dir, "nl_agent_tools.py"), None),
                         (os.path.join(lambda_api_dir, "sqlparse"), None),
+                        (notifications_pkg_dir, "notifications"),
                     ] + [
                         (os.path.join(rules_engine_dir, m), None)
                         for m in shared_llm_modules
@@ -253,6 +259,7 @@ class AdminUi(Construct):
             memory_size=config.LAMBDA_DEFAULT_MEMORY_MB,
             environment={
                 "DEEP_JOBS_TABLE": deep_jobs_table.table_name,
+                "ORG_CONFIG_TABLE_NAME": org_config_table.table_name,
             },
         )
 
@@ -263,7 +270,7 @@ class AdminUi(Construct):
         # stedi.orchestrator.verify for each. Pinned to Python 3.13 to match
         # the FHIR materializer's PyJWT[crypto] wheel availability.
         fhir_pkg_dir = os.path.join(lambda_multi_org_dir, "fhir")
-        fhir_eligibility_poller_sources = [stedi_pkg_dir, fhir_pkg_dir]
+        fhir_eligibility_poller_sources = [stedi_pkg_dir, fhir_pkg_dir, notifications_pkg_dir]
 
         self.fhir_eligibility_poller_fn = _lambda.Function(
             self, "FhirEligibilityPollerFunction",
@@ -272,7 +279,7 @@ class AdminUi(Construct):
             handler="stedi.fhir_eligibility_poller.handler",
             code=_lambda.Code.from_asset(
                 lambda_multi_org_dir,
-                exclude=["*", "!stedi/**", "!fhir/**"],
+                exclude=["*", "!stedi/**", "!fhir/**", "!notifications/**"],
                 asset_hash_type=AssetHashType.CUSTOM,
                 asset_hash=_hash_sources(fhir_eligibility_poller_sources),
                 bundling=BundlingOptions(
@@ -282,6 +289,7 @@ class AdminUi(Construct):
                         source_dirs=[
                             (stedi_pkg_dir, "stedi"),
                             (fhir_pkg_dir, "fhir"),
+                            (notifications_pkg_dir, "notifications"),
                         ],
                         requirements=[
                             # PyJWT[crypto] for FHIR private_key_jwt auth.
@@ -299,6 +307,7 @@ class AdminUi(Construct):
             environment={
                 "STEDI_TABLE_NAME": stedi_table.table_name,
                 "STEDI_API_KEY_SECRET": "penguin-health/stedi/api-key",
+                "ORG_CONFIG_TABLE_NAME": org_config_table.table_name,
             },
         )
 
@@ -363,7 +372,11 @@ class AdminUi(Construct):
         stedi_table.grant_read_write_data(self.fhir_eligibility_poller_fn)
         self.fhir_eligibility_poller_fn.add_to_role_policy(iam.PolicyStatement(
             actions=["dynamodb:Query"],
-            resources=[f"{stedi_table.table_arn}/index/*"],
+            resources=[
+                f"{stedi_table.table_arn}/index/*",
+                # Read subscriber lists for opt-in eligibility notifications.
+                f"{org_config_table.table_arn}/index/*",
+            ],
         ))
         self.fhir_eligibility_poller_fn.add_to_role_policy(iam.PolicyStatement(
             actions=["secretsmanager:GetSecretValue"],
@@ -531,6 +544,30 @@ class AdminUi(Construct):
             ],
         ))
 
+        # ----- Email notifications (SES) -----
+        # The admin API itself doesn't currently send mail, but the
+        # subscription endpoints + the deep-worker share the same code
+        # asset as the validation/eligibility paths; granting ses:SendEmail
+        # here keeps the policy in one place. Resource is "*" because the
+        # sending identity ARN isn't known to this stack — DNS verification
+        # of penguinhealth.io is an out-of-band step. Tighten to the
+        # specific identity ARN once it's verified and added to config.
+        email_from_address = "noreply@penguinhealth.io"
+        admin_ui_base_url = "https://app.penguinhealth.io"
+        ses_send_email = iam.PolicyStatement(
+            actions=["ses:SendEmail", "ses:SendRawEmail"],
+            resources=["*"],
+        )
+        email_env = {
+            "EMAIL_FROM_ADDRESS": email_from_address,
+            "EMAIL_REPLY_TO": email_from_address,
+            "ADMIN_UI_BASE_URL": admin_ui_base_url,
+        }
+        for fn in (self.api_function, self.fhir_eligibility_poller_fn):
+            fn.add_to_role_policy(ses_send_email)
+            for k, v in email_env.items():
+                fn.add_environment(k, v)
+
         # ----- API Gateway HTTP API -----
         jwt_authorizer = HttpJwtAuthorizer(
             "CognitoAuthorizer",
@@ -582,6 +619,8 @@ class AdminUi(Construct):
             ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-resolved"),
             ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-incorrect"),
             ("GET",  "/api/me/permissions"),
+            ("GET",  "/api/organizations/{orgId}/subscriptions"),
+            ("PUT",  "/api/organizations/{orgId}/subscriptions/{email}"),
             ("GET",  "/api/organizations/{orgId}/users"),
             ("GET",  "/api/organizations/{orgId}/users/{email}"),
             ("PUT",  "/api/organizations/{orgId}/users/{email}"),

@@ -136,6 +136,16 @@ export const api = {
   // RBAC
   getMyPermissions: () => request('/api/me/permissions'),
 
+  // Notification subscriptions — super-admin manages every user's prefs.
+  listOrgSubscriptions: (orgId) =>
+    request(`/api/organizations/${orgId}/subscriptions`),
+
+  setOrgUserSubscription: (orgId, email, eventType, enabled) =>
+    request(`/api/organizations/${orgId}/subscriptions/${encodeURIComponent(email)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ event_type: eventType, enabled }),
+    }),
+
   listOrgUsers: (orgId) =>
     request(`/api/organizations/${orgId}/users`),
 

@@ -30,6 +30,18 @@ from results_handler import (
 )
 from parquet_writer import save_parquet_to_s3
 
+try:
+    # Bundled as a flat `notifications` package via rules-engine asset.
+    from notifications import (
+        send_email,
+        get_subscribers,
+        EVENT_VALIDATION_RUN_COMPLETE,
+    )
+    from notifications.templates import render_validation_run_complete
+    _NOTIFICATIONS_AVAILABLE = True
+except ImportError:  # pragma: no cover — fail-safe if asset is older than the code
+    _NOTIFICATIONS_AVAILABLE = False
+
 # Earliest date the new layout supports. Validation runs targeting earlier
 # dates make no sense — there is no data/{date}/ folder for them.
 CUTOVER_DATE = '2026-05-01'
@@ -65,6 +77,32 @@ def invoke_continuation(org_id, validation_run_id, *,
         Payload=json.dumps(payload),
     )
     print(f"Invoked continuation Lambda for run {validation_run_id}")
+
+
+def _notify_validation_run_complete(org_id, validation_run_id, summary):
+    """Best-effort email to opt-in subscribers. Failures here must not
+    crash the run, so we swallow every exception with a single log line."""
+    if not _NOTIFICATIONS_AVAILABLE:
+        return
+    try:
+        recipients = get_subscribers(org_id, EVENT_VALIDATION_RUN_COMPLETE)
+        if not recipients:
+            return
+        subject, body = render_validation_run_complete(
+            org_id=org_id,
+            validation_run_id=validation_run_id,
+            summary=summary,
+        )
+        send_email(
+            to=recipients,
+            subject=subject,
+            body_text=body,
+            event_type=EVENT_VALIDATION_RUN_COMPLETE,
+            org_id=org_id,
+            template_name="validation_run_complete",
+        )
+    except Exception as e:  # noqa: BLE001 — email must never fail the run
+        print(f"WARN: validation-complete email failed for run {validation_run_id}: {e}")
 
 
 def filter_rules_by_categories(rules, categories):
@@ -245,6 +283,8 @@ def lambda_handler(event, context):
         store_run_summary(validation_run_id, org_id, summary, env_config,
                           categories=run_categories,
                           dates=dates)
+
+        _notify_validation_run_complete(org_id, validation_run_id, summary)
 
         print(f"Generating CSV report for run: {validation_run_id}")
         csv_report, run_items = generate_csv_from_dynamodb(validation_run_id, env_config)

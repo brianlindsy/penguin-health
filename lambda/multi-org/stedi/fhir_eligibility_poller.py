@@ -33,6 +33,20 @@ from .exceptions import (
     StediOrgNotConfigured,
 )
 
+try:
+    # The notifications package is bundled alongside stedi/ in the
+    # fhir-eligibility-poller asset. Wrapped in try/except so old asset
+    # bundles can still cold-start while the new one rolls out.
+    from notifications import (
+        send_email,
+        get_subscribers,
+        EVENT_ELIGIBILITY_ISSUE,
+    )
+    from notifications.templates import render_eligibility_issue
+    _NOTIFICATIONS_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _NOTIFICATIONS_AVAILABLE = False
+
 
 logger = logging.getLogger(__name__)
 _TABLE_NAME = os.environ.get('STEDI_TABLE_NAME', 'penguin-health-stedi')
@@ -55,6 +69,16 @@ _RESOLUTION_DEFAULT = {
     'resolved_at': None,
     'rerun_audit_id': None,
 }
+
+# Statuses that warrant an email when first seen for an encounter. Plain
+# 'verified' rows never email, and 'error' rows are surfaced to ops via
+# logs/metrics rather than user-facing email.
+_PROBLEM_STATUSES = frozenset({
+    'discrepancy',
+    'no_coverage',
+    'review_needed',
+    'service_type_denied',
+})
 
 
 def handler(event, context):
@@ -268,7 +292,9 @@ def _process_one(org_id, encounter, org_config, stedi_client, expires_at):
         org_id, encounter, encounter_id, expires_at,
         verify_input, p_hash, status, result,
     )
-    _put_item(item)
+    inserted = _put_item(item)
+    if inserted and status in _PROBLEM_STATUSES:
+        _notify_eligibility_issue(org_id, encounter_id, encounter, status)
     return status
 
 
@@ -435,15 +461,62 @@ def _build_error_row(org_id, encounter, encounter_id, expires_at,
     }
 
 
+def _notify_eligibility_issue(org_id, encounter_id, encounter, status):
+    """Email opt-in subscribers when a problem encounter is first seen.
+
+    Body content is intentionally minimal: encounter date/time + the issue
+    category + the deep link. No patient identifiers, no payer details, no
+    discrepancy strings — recipients click through to the authenticated UI
+    for the rest. Failures here must not crash the poll."""
+    if not _NOTIFICATIONS_AVAILABLE:
+        return
+    try:
+        recipients = get_subscribers(org_id, EVENT_ELIGIBILITY_ISSUE)
+        if not recipients:
+            return
+        encounter_datetime = _encounter_datetime(encounter)
+        subject, body = render_eligibility_issue(
+            org_id=org_id,
+            encounter_id=encounter_id,
+            encounter_datetime=encounter_datetime,
+            result_status=status,
+        )
+        send_email(
+            to=recipients,
+            subject=subject,
+            body_text=body,
+            event_type=EVENT_ELIGIBILITY_ISSUE,
+            org_id=org_id,
+            template_name="eligibility_issue",
+        )
+    except Exception:  # noqa: BLE001 — never break the poll on email failure
+        logger.exception(
+            "eligibility-issue email failed org=%s encounter=%s",
+            org_id, encounter_id,
+        )
+
+
+def _encounter_datetime(encounter):
+    """Return a human-readable encounter timestamp for email rendering.
+
+    Prefers period.start (the scheduled or actual service start time);
+    falls back to meta.lastUpdated. No PHI lives in these fields."""
+    period = encounter.get('period') or {}
+    return period.get('start') or (encounter.get('meta') or {}).get('lastUpdated')
+
+
 def _put_item(item):
     """Idempotent put — if the same encounter_id row already exists from a
-    prior retry, treat the second write as a no-op."""
+    prior retry, treat the second write as a no-op. Returns True iff this
+    put actually wrote a new row (used downstream to gate first-time
+    notifications)."""
     try:
         _table.put_item(Item=item, ConditionExpression='attribute_not_exists(sk)')
+        return True
     except ClientError as e:
         if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
             logger.info("encounter item already exists, skipping: %s", item['sk'])
-            return
+            return False
         raise
 
 

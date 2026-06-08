@@ -39,6 +39,7 @@ class AuditEngine(Construct):
         csv_splitter_dir = os.path.join(lambda_dir, "csv-splitter")
         fhir_dir = os.path.join(lambda_dir, "fhir")
         fhir_materializer_dir = os.path.join(lambda_dir, "fhir-materializer")
+        notifications_pkg_dir = os.path.join(lambda_dir, "notifications")
 
         # Wildcard ARN for all per-org PHI buckets (`penguin-health-{org_id}`).
         # NOTE: the JWKS hosting bucket is deliberately named `phealth-fhir-jwks`
@@ -163,6 +164,7 @@ class AuditEngine(Construct):
                             os.path.join(rules_engine_dir, m)
                             for m in rules_engine_modules
                         ],
+                        source_dirs=[(notifications_pkg_dir, "notifications")],
                         requirements=rules_engine_requirements,
                         python_version="3.13",
                     ),
@@ -170,6 +172,13 @@ class AuditEngine(Construct):
             ),
             timeout=Duration.minutes(15),  # Max Lambda timeout for continuation pattern
             memory_size=512,
+            environment={
+                "ORG_CONFIG_TABLE_NAME": org_config_table.table_name,
+                "STEDI_TABLE_NAME": "penguin-health-stedi",
+                "EMAIL_FROM_ADDRESS": "noreply@penguinhealth.io",
+                "EMAIL_REPLY_TO": "noreply@penguinhealth.io",
+                "ADMIN_UI_BASE_URL": "https://app.penguinhealth.io",
+            },
         )
 
         self.rules_engine_fn.add_to_role_policy(s3_policy)
@@ -204,6 +213,30 @@ class AuditEngine(Construct):
             resources=[
                 f"arn:aws:lambda:{config.AWS_REGION}:*:function:{config.PROJECT_NAME}-rules-engine-rag"
             ],
+        ))
+        # Email notifications: SES send + DynamoDB write on penguin-health-stedi
+        # for the EMAIL_AUDIT# rows that mirror the existing AUDIT# pattern.
+        # Sending identity isn't yet verified; tighten resource to the
+        # identity ARN once DNS verification of penguinhealth.io completes.
+        self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["ses:SendEmail", "ses:SendRawEmail"],
+            resources=["*"],
+        ))
+        self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=[
+                "dynamodb:PutItem",
+                "dynamodb:Query",
+                "dynamodb:GetItem",
+            ],
+            resources=[
+                f"arn:aws:dynamodb:{config.AWS_REGION}:*:table/penguin-health-stedi",
+                f"arn:aws:dynamodb:{config.AWS_REGION}:*:table/penguin-health-stedi/index/*",
+            ],
+        ))
+        # Read subscriber list (SUBSCRIPTION gsi1pk on penguin-health-org-config).
+        self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["dynamodb:Query"],
+            resources=[f"{org_config_table.table_arn}/index/*"],
         ))
 
         # ----- csv-splitter-multi-org -----
