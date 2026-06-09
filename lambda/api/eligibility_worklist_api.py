@@ -20,6 +20,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 import permissions as perms_module
+from audit import audited
 from stedi import client_factory, config as stedi_config
 from stedi import orchestrator
 from stedi.exceptions import (
@@ -56,6 +57,8 @@ def _response(status_code, body):
 
 # ---- GET /eligibility/encounters ----------------------------------------
 
+@audited(action='read', resource_type='EncounterWorklist',
+         purpose_of_use='ELIGIBILITY', call_type='worklist_list')
 def list_encounters(event, path_params, authorize_fn, **_):
     """Return the rolling list of recently-verified encounters for the org,
     newest first. Drives the worklist UI."""
@@ -81,6 +84,9 @@ def list_encounters(event, path_params, authorize_fn, **_):
 
 # ---- PUT /eligibility/encounters/{encounterId}/resolve ------------------
 
+@audited(action='write', resource_type='Encounter',
+         resource_from_path='encounterId',
+         purpose_of_use='ELIGIBILITY', call_type='worklist_resolve')
 def resolve_encounter(event, path_params, body, authorize_fn, **_):
     org_id = path_params.get('orgId')
     claims, error = authorize_fn(event, org_id=org_id)
@@ -142,11 +148,21 @@ _RERUN_DEMOGRAPHIC_FIELDS = (
 )
 
 
+@audited(action='execute', resource_type='Encounter',
+         resource_from_path='encounterId',
+         purpose_of_use='ELIGIBILITY', call_type='worklist_rerun')
 def rerun_encounter(event, path_params, body, authorize_fn, **_):
     """Re-run discovery + eligibility for a single encounter row with
     corrected demographics. Updates the item in place — result_summary,
     payer_demographics, and corrected_demographics — and appends to the
-    rerun_history audit trail."""
+    rerun_history audit trail.
+
+    Emits TWO audit events per call: (1) the worklist-action event from
+    the decorator above, capturing who hit the rerun endpoint; (2) the
+    eligibility audit emitted by orchestrator.verify() inside this
+    handler for the actual Stedi call. Both are correct — they describe
+    different things.
+    """
     org_id = path_params.get('orgId')
     claims, error = authorize_fn(event, org_id=org_id)
     if error:

@@ -1,10 +1,17 @@
 import json
+import os
 import boto3
 from datetime import datetime
+
+from audit import SystemPrincipal, emit as audit_emit
 from multi_org_config import extract_org_id_from_bucket, load_chart_config
 
 s3_client = boto3.client('s3')
 textract_client = boto3.client('textract')
+
+_AUDIT_PRINCIPAL = SystemPrincipal(
+    os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'textract-result-handler-multi-org')
+)
 
 def lambda_handler(event, context):
     """
@@ -59,6 +66,19 @@ def lambda_handler(event, context):
                 # Process and store results
                 process_and_store_results(job_id, source_file_key, config, textract_results)
 
+                # One audit event per completed Textract job. external_control_number
+                # = job_id joins this row to the textract_start event emitted
+                # by process_raw_charts_multi_org.start_textract_analysis.
+                audit_emit(
+                    action='read',
+                    resource={'type': 'Document', 'id': source_file_key, 'org': org_id},
+                    actor=_AUDIT_PRINCIPAL.as_actor(),
+                    org_id=org_id,
+                    purpose_of_use='DOC_PROCESSING',
+                    call_type='textract_result',
+                    external_control_number=job_id,
+                )
+
                 # Clean up metadata file after successful processing
                 if metadata_result and metadata_result.get('metadata_key'):
                     try:
@@ -69,7 +89,26 @@ def lambda_handler(event, context):
 
             elif status == 'FAILED':
                 print(f"Textract job {job_id} failed")
-                # Optionally handle failed jobs (e.g., move to error folder, send alert)
+                # The SNS message contains the source bucket/key for failed
+                # jobs too, so we can still produce a useful audit row. If
+                # for some reason it doesn't, the emit falls back to nulls.
+                doc_location = message.get('DocumentLocation', {})
+                fail_bucket = doc_location.get('S3Bucket')
+                fail_key = doc_location.get('S3ObjectName')
+                fail_org = (
+                    extract_org_id_from_bucket(fail_bucket)
+                    if fail_bucket else 'unknown'
+                )
+                audit_emit(
+                    action='read',
+                    resource={'type': 'Document', 'id': fail_key, 'org': fail_org},
+                    actor=_AUDIT_PRINCIPAL.as_actor(),
+                    org_id=fail_org,
+                    outcome='major-failure',
+                    purpose_of_use='DOC_PROCESSING',
+                    call_type='textract_result',
+                    external_control_number=job_id,
+                )
 
         return {
             'statusCode': 200,

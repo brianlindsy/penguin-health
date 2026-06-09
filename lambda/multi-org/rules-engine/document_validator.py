@@ -11,7 +11,14 @@ import os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import os
+
+from audit import SystemPrincipal, emit as audit_emit
 from bedrock_client import invoke_claude_model, MODEL_ID
+
+_AUDIT_PRINCIPAL = SystemPrincipal(
+    os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'rules-engine-rag')
+)
 from field_extractor import extract_fields
 from deterministic_evaluator import evaluate_deterministic_rule
 
@@ -174,6 +181,20 @@ Please respond with JSON, with the key: 'fields'. The value should be an object 
         ]
     }
 
+    # Audit the Bedrock call BEFORE invocation so a Lambda crash during
+    # invocation still leaves a trail of what we sent. The model_id is
+    # the resource_id; the validation_run_id is the parent so an Athena
+    # query can group all per-rule Bedrock calls under a single run.
+    audit_emit(
+        action='execute',
+        resource={'type': 'BedrockPrompt', 'id': model_id, 'org': org_id},
+        actor=_AUDIT_PRINCIPAL.as_actor(),
+        org_id=org_id or 'unknown',
+        purpose_of_use='DOC_PROCESSING',
+        call_type='bedrock_invoke',
+        external_control_number=validation_run_id,
+    )
+
     response_json = invoke_claude_model(
         inference_profile_id=model_id,
         body=body,
@@ -239,6 +260,16 @@ Please respond with JSON, with the keys: 'status' and 'reasoning'. The status sh
         'temperature': 0.01,
         'messages': [{"role": "user", "content": content}]
     }
+
+    audit_emit(
+        action='execute',
+        resource={'type': 'BedrockPrompt', 'id': model_id, 'org': org_id},
+        actor=_AUDIT_PRINCIPAL.as_actor(),
+        org_id=org_id or 'unknown',
+        purpose_of_use='DOC_PROCESSING',
+        call_type='bedrock_invoke',
+        external_control_number=validation_run_id,
+    )
 
     response_json = invoke_claude_model(
         inference_profile_id=model_id,

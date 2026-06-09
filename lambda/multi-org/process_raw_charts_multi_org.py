@@ -3,8 +3,14 @@ import boto3
 import os
 from datetime import datetime
 
+from audit import SystemPrincipal, emit as audit_emit
+
 s3_client = boto3.client('s3')
 textract_client = boto3.client('textract')
+
+_AUDIT_PRINCIPAL = SystemPrincipal(
+    os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'process-raw-charts-multi-org')
+)
 
 
 def lambda_handler(event, context):
@@ -155,10 +161,34 @@ def start_textract_analysis(file_key, config):
         job_id = response['JobId']
         org_id = config.get('ORGANIZATION_ID', 'unknown')
         print(f"Started Textract analysis job {job_id} for {file_key} (org: {org_id})")
+        # One audit event per Textract job kicked off. The job id flows
+        # to textract_result_handler when the SNS notification fires;
+        # both events share `external_control_number=job_id` so they
+        # join in Athena.
+        audit_emit(
+            action='execute',
+            resource={'type': 'Document', 'id': file_key, 'org': org_id},
+            actor=_AUDIT_PRINCIPAL.as_actor(),
+            org_id=org_id,
+            purpose_of_use='DOC_PROCESSING',
+            call_type='textract_start',
+            external_control_number=job_id,
+        )
         return job_id
 
     except Exception as e:
-        print(f"Error starting Textract for {file_key}: {str(e)}")
+        print(f"Error starting Textract for {file_key}: {type(e).__name__}")
+        audit_emit(
+            action='execute',
+            resource={'type': 'Document', 'id': file_key,
+                      'org': config.get('ORGANIZATION_ID', 'unknown')},
+            actor=_AUDIT_PRINCIPAL.as_actor(),
+            org_id=config.get('ORGANIZATION_ID', 'unknown'),
+            outcome='major-failure',
+            purpose_of_use='DOC_PROCESSING',
+            call_type='textract_start',
+            error_class=type(e).__name__,
+        )
         return None
 
 

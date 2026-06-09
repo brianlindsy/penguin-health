@@ -19,8 +19,6 @@ from constructs import Construct
 
 import config
 from components.bundler import (
-    CopyFileBundler,
-    MultiFileBundler,
     DirectoryBundler,
     PipInstallBundler,
 )
@@ -40,6 +38,7 @@ class AuditEngine(Construct):
         fhir_dir = os.path.join(lambda_dir, "fhir")
         fhir_materializer_dir = os.path.join(lambda_dir, "fhir-materializer")
         notifications_pkg_dir = os.path.join(lambda_dir, "notifications")
+        audit_pkg_dir = os.path.join(lambda_dir, "audit")
 
         # Wildcard ARN for all per-org PHI buckets (`penguin-health-{org_id}`).
         # NOTE: the JWKS hosting bucket is deliberately named `phealth-fhir-jwks`
@@ -68,12 +67,13 @@ class AuditEngine(Construct):
             handler="process_raw_charts_multi_org.lambda_handler",
             code=_lambda.Code.from_asset(
                 lambda_dir,
-                exclude=["*", "!process_raw_charts_multi_org.py"],
+                exclude=["*", "!process_raw_charts_multi_org.py", "!audit/**"],
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
-                    local=CopyFileBundler(
-                        os.path.join(lambda_dir, "process_raw_charts_multi_org.py")
-                    ),
+                    local=DirectoryBundler([
+                        (os.path.join(lambda_dir, "process_raw_charts_multi_org.py"), None),
+                        (audit_pkg_dir, "audit"),
+                    ]),
                 ),
             ),
             timeout=Duration.seconds(config.LAMBDA_DEFAULT_TIMEOUT_SECONDS),
@@ -101,12 +101,14 @@ class AuditEngine(Construct):
             handler="textract_result_handler_multi_org.lambda_handler",
             code=_lambda.Code.from_asset(
                 lambda_dir,
-                exclude=["*", "!textract_result_handler_multi_org.py", "!rules-engine/multi_org_config.py"],
+                exclude=["*", "!textract_result_handler_multi_org.py",
+                         "!rules-engine/multi_org_config.py", "!audit/**"],
                 bundling=BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_14.bundling_image,
-                    local=MultiFileBundler([
-                        os.path.join(lambda_dir, "textract_result_handler_multi_org.py"),
-                        os.path.join(rules_engine_dir, "multi_org_config.py"),
+                    local=DirectoryBundler([
+                        (os.path.join(lambda_dir, "textract_result_handler_multi_org.py"), None),
+                        (os.path.join(rules_engine_dir, "multi_org_config.py"), None),
+                        (audit_pkg_dir, "audit"),
                     ]),
                 ),
             ),
@@ -164,7 +166,10 @@ class AuditEngine(Construct):
                             os.path.join(rules_engine_dir, m)
                             for m in rules_engine_modules
                         ],
-                        source_dirs=[(notifications_pkg_dir, "notifications")],
+                        source_dirs=[
+                            (notifications_pkg_dir, "notifications"),
+                            (audit_pkg_dir, "audit"),
+                        ],
                         requirements=rules_engine_requirements,
                         python_version="3.13",
                     ),
@@ -253,6 +258,7 @@ class AuditEngine(Construct):
                         (os.path.join(csv_splitter_dir, "csv_splitter_multi_org.py"), None),
                         (os.path.join(csv_splitter_dir, "splitters"), "splitters"),
                         (os.path.join(rules_engine_dir, "multi_org_config.py"), None),
+                        (audit_pkg_dir, "audit"),
                     ]),
                 ),
             ),
@@ -296,7 +302,10 @@ class AuditEngine(Construct):
                     image=_lambda.Runtime.PYTHON_3_13.bundling_image,
                     local=PipInstallBundler(
                         source_paths=fhir_materializer_source_files,
-                        source_dirs=[(fhir_dir, "fhir")],
+                        source_dirs=[
+                            (fhir_dir, "fhir"),
+                            (audit_pkg_dir, "audit"),
+                        ],
                         requirements=[
                             "fastparquet==2024.11.0",
                             # PyJWT for private_key_jwt client authentication.

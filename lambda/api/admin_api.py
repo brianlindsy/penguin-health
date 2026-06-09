@@ -25,6 +25,11 @@ import nl_agent
 import nl_agent_tools
 import eligibility_api
 import eligibility_worklist_api
+from audit import SystemPrincipal, audited, emit as audit_emit
+
+_NL_AGENT_PRINCIPAL = SystemPrincipal(
+    os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'admin-api-nl-agent')
+)
 from bedrock_client import (
     invoke_claude_model,
     extract_json_from_claude_response,
@@ -703,6 +708,8 @@ def list_validation_runs(event, path_params, **kwargs):
     return response(200, {'runs': runs, 'count': len(runs), 'truncated': truncated})
 
 
+@audited(action='read', resource_type='ValidationRun',
+         resource_from_path='runId', purpose_of_use='OPERATIONS')
 def get_validation_run(event, path_params, **kwargs):
     """
     Get all validation results for a specific run.
@@ -748,6 +755,8 @@ def get_validation_run(event, path_params, **kwargs):
     })
 
 
+@audited(action='read', resource_type='ValidationResult',
+         resource_from_path='docId', purpose_of_use='OPERATIONS')
 def get_validation_result(event, path_params, **kwargs):
     """
     Get detailed validation result for a single document.
@@ -793,12 +802,19 @@ def get_validation_result(event, path_params, **kwargs):
     })
 
 
+@audited(action='write', resource_type='ValidationFinding',
+         resource_from_path='docId', purpose_of_use='OPERATIONS',
+         call_type='ddb_write')
 def confirm_finding(event, path_params, body, **kwargs):
     """
     Confirm a finding for a specific rule on a document validation.
 
     Expects body with rule_id to identify which rule's finding is being confirmed.
     Updates the specific rule within the document's rules array to set finding_confirmed=true.
+
+    The in-place row mutation (finding_confirmed_by, finding_confirmed_at) is
+    intentionally kept as a UI summary field — the immutable record of who
+    confirmed this lives in the audit event emitted by the decorator above.
     """
     org_id = path_params.get('orgId')
     run_id = path_params.get('runId')
@@ -885,12 +901,23 @@ def confirm_finding(event, path_params, body, **kwargs):
         return response(500, {'error': str(e)})
 
 
+@audited(action='write', resource_type='ValidationFinding',
+         resource_from_path='docId', purpose_of_use='OPERATIONS',
+         call_type='ddb_write')
 def mark_resolved(event, path_params, body, **kwargs):
     """
     Mark a rule finding as resolved/fixed.
 
     Expects body with rule_id to identify which rule is being resolved.
     Sets fixed=true, fixed_at, fixed_by and removes finding_confirmed attributes.
+
+    NOTE: this handler intentionally REMOVEs `finding_confirmed_*` from the
+    DDB item — the prior confirmation evidence is destroyed on the row. The
+    immutable record of the prior confirmation (and this resolution) lives
+    in the audit event emitted by the decorator above and in the WORM S3
+    archive. This is the right trade-off: the row stays small and the UI
+    has a single "currently resolved" summary, while history is preserved
+    in the audit log.
     """
     org_id = path_params.get('orgId')
     run_id = path_params.get('runId')
@@ -978,6 +1005,9 @@ def mark_resolved(event, path_params, body, **kwargs):
         return response(500, {'error': str(e)})
 
 
+@audited(action='write', resource_type='ValidationFinding',
+         resource_from_path='docId', purpose_of_use='OPERATIONS',
+         call_type='ddb_write')
 def mark_incorrect(event, path_params, body, **kwargs):
     """
     Mark a rule finding as incorrect (false positive).
@@ -1833,6 +1863,8 @@ viz_type guidance:
 _VALID_VIZ_TYPES = {"bar", "line", "pie", "table"}
 
 
+@audited(action='read', resource_type='AnalyticsResult',
+         purpose_of_use='ANALYTICS', call_type='nl_query')
 def nl_query(event, path_params, body, **kwargs):
     """
     Kick off an agent job to answer a natural-language question.
@@ -1941,6 +1973,19 @@ def _deep_extract_for_row(question: str, row_payload: dict,
         f"Extract the answer as a short string. If the answer cannot be "
         f"determined from this row, respond with \"unknown\"."
     )
+    # Audit the Bedrock invocation. Every deep-extract row contains
+    # patient-level data; without this emit, the analytics path would
+    # be the largest unaudited PHI-to-Bedrock surface in the app.
+    audit_emit(
+        action='execute',
+        resource={'type': 'BedrockPrompt', 'id': MODEL_ID,
+                  'org': org_id or 'unknown'},
+        actor=_NL_AGENT_PRINCIPAL.as_actor(),
+        org_id=org_id or 'unknown',
+        purpose_of_use='ANALYTICS',
+        call_type='bedrock_invoke',
+        external_control_number=parent_request_id,
+    )
     try:
         resp = invoke_claude_model(
             inference_profile_id=MODEL_ID,
@@ -1962,7 +2007,7 @@ def _deep_extract_for_row(question: str, row_payload: dict,
         if isinstance(resp, dict) and isinstance(resp.get('value'), str):
             return resp['value'].strip() or 'unknown'
     except Exception as e:
-        print(f"deep_extract row error: {e}")
+        print(f"deep_extract row error: {type(e).__name__}")
     return 'unknown'
 
 
@@ -1974,6 +2019,8 @@ def _deep_job_sk(job_id: str) -> str:
     return f'JOB#{job_id}'
 
 
+@audited(action='read', resource_type='AnalyticsResult',
+         purpose_of_use='ANALYTICS', call_type='nl_query_deep')
 def nl_query_deep(event, path_params, body, **kwargs):
     """
     Kick off an async deep-analysis job: validate the scope SQL, run the
@@ -2094,6 +2141,9 @@ def nl_query_deep(event, path_params, body, **kwargs):
     })
 
 
+@audited(action='read', resource_type='AnalyticsResult',
+         resource_from_path='jobId',
+         purpose_of_use='ANALYTICS', call_type='nl_query_deep_poll')
 def get_deep_job(event, path_params, **kwargs):
     """
     Return current state of an async deep-analysis job. While running,
@@ -2698,6 +2748,8 @@ def _strip_report_keys(item: dict) -> dict:
     return convert_decimals(out)
 
 
+@audited(action='write', resource_type='AnalyticsReport',
+         purpose_of_use='ANALYTICS', call_type='ddb_write')
 def save_report(event, path_params, body, **kwargs):
     """Persist a snapshot of a successful NL-analytics result."""
     org_id = path_params.get('orgId')
@@ -2803,6 +2855,8 @@ def _find_report_item(org_id: str, report_id: str) -> Optional[dict]:
     return None
 
 
+@audited(action='read', resource_type='AnalyticsReport',
+         resource_from_path='reportId', purpose_of_use='ANALYTICS')
 def get_report(event, path_params, **kwargs):
     """Return a single saved report including columns/rows."""
     org_id = path_params.get('orgId')

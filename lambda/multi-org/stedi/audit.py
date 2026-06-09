@@ -20,9 +20,18 @@ from .exceptions import StediDailyCapExceeded
 
 
 _TABLE_NAME = os.environ.get('STEDI_TABLE_NAME', 'penguin-health-stedi')
+_AUDIT_TABLE_NAME = os.environ.get('AUDIT_TABLE_NAME', 'penguin-health-audit')
 _dynamodb = boto3.resource('dynamodb')
 _table = _dynamodb.Table(_TABLE_NAME)
+# Phase 2: dedup + history reads land on the new audit table. The
+# legacy table still receives writes (AUDIT# rows) until Phase 3 — see
+# write_audit below.
+_audit_table = _dynamodb.Table(_AUDIT_TABLE_NAME)
 
+# `_SEVEN_YEARS_SECONDS` is no longer used inside this module after the
+# Phase 3 cutover, but `fhir_eligibility_poller._ensure_demo_history_seeds`
+# imports it from here for the demo-mode seeds it writes directly to the
+# legacy table. Keep the constant exported.
 _SEVEN_YEARS_SECONDS = 7 * 365 * 24 * 60 * 60
 _NINETY_DAYS_SECONDS = 90 * 24 * 60 * 60
 
@@ -66,53 +75,73 @@ def write_audit(*, org_id, user_email, call_type, patient, result, client_ip,
                 stedi_control_number=None, duration_ms=None, member_id=None,
                 payer=None, request_id=None):
     """Write one immutable audit row. Returns the request_id (caller can
-    pre-generate it to echo in the API response)."""
+    pre-generate it to echo in the API response).
+
+    Phase 3 of the audit-layer migration: legacy `AUDIT#` row writes on
+    `penguin-health-stedi` have been removed; this function now only
+    emits through the new audit layer (S3 Object Lock WORM + DDB hot
+    mirror). The existing 7-year `AUDIT#` rows on `penguin-health-stedi`
+    stay in place and age out via their `expires_at` TTL through ~2032 —
+    do not delete them; they are still the source of truth for that
+    historical window.
+
+    Phases:
+      1. Dual-write (legacy AUDIT# + new audit.emit).
+      2. Cut reads (`recent_checks_for_patient`) over to the new table.
+      3. Stop dual-writing — this is the state of the code right now.
+    """
     request_id = request_id or str(uuid.uuid4())
-    now = datetime.now(timezone.utc)
-    iso_ts = now.isoformat()
-    expires_at = int(now.timestamp()) + _SEVEN_YEARS_SECONDS
 
-    p_hash = patient_hash(patient.get('first_name'), patient.get('last_name'), patient.get('dob'))
-    member_id_last4 = member_id[-4:] if member_id and len(member_id) >= 4 else None
-    payer_name = (payer or {}).get('name')
-    payer_id = (payer or {}).get('id')
+    # Stedi audit rows always describe a PHI access against an external
+    # payer/clearinghouse, so action='read' and purpose='ELIGIBILITY'.
+    # `discovery` and `cob` calls land here too — same purpose, the
+    # call_type field differentiates in Athena.
+    from audit import emit as _emit  # imported lazily so a bundle without
+    # the audit package fails loudly at first call, not at import-time.
 
-    item = {
-        'pk': f'ORG#{org_id}',
-        'sk': f'AUDIT#{iso_ts}#{request_id}',
-        'gsi1pk': f'PATIENT#{org_id}#{p_hash}',
-        'gsi1sk': iso_ts,
-        'request_id': request_id,
-        'user_email': user_email,
-        'requested_at': iso_ts,
-        'call_type': call_type,
-        'patient_hash': p_hash,
-        'patient_first_initial': (patient.get('first_name') or '?')[:1].upper(),
-        'patient_last_initial': (patient.get('last_name') or '?')[:1].upper(),
-        'patient_dob': patient.get('dob'),
+    actor = {
+        'agent_type': 'human',
+        'agent_id': user_email,
+        'agent_email': user_email,
+        'agent_groups': [],
         'client_ip': client_ip,
-        'result_status': (result or {}).get('status'),
-        'result_summary': _slim_result(result),
-        'expires_at': expires_at,
+        'user_agent': None,
     }
-    if member_id_last4:
-        item['member_id_last4'] = member_id_last4
-    if payer_name:
-        item['payer_name'] = payer_name
-    if payer_id:
-        item['payer_id'] = payer_id
-    if stedi_control_number:
-        item['stedi_control_number'] = stedi_control_number
-    if duration_ms is not None:
-        item['duration_ms'] = int(duration_ms)
-
-    _table.put_item(Item=item, ConditionExpression='attribute_not_exists(pk)')
+    _emit(
+        action='read',
+        resource={'type': 'Coverage', 'id': None, 'org': org_id},
+        actor=actor,
+        org_id=org_id,
+        purpose_of_use='ELIGIBILITY',
+        call_type=call_type,
+        patient=patient,
+        member_id=member_id,
+        payer=payer,
+        external_control_number=stedi_control_number,
+        duration_ms=duration_ms,
+        result=result,
+        request_id=request_id,
+    )
     return request_id
 
 
 def recent_checks_for_patient(org_id, first_name, last_name, dob, limit=20, since=None):
     """Return up to `limit` recent audit rows for this patient, newest-first.
-    `since` is an optional datetime — only rows >= since are returned."""
+    `since` is an optional datetime — only rows >= since are returned.
+
+    Phase 2 cutover: reads land on `penguin-health-audit` (the new layer).
+    The 30-day backfill (scripts/backfill_audit_layer.py) must be run
+    before this code path is deployed, otherwise the eligibility dedup
+    window starts empty. Rows produced by the dual-write in write_audit
+    use the same gsi1pk/gsi1sk shape as the legacy table, so consumers
+    of this function don't need to change.
+
+    Each returned item exposes both the legacy field names (user_email,
+    requested_at, result_status) — translated from the new schema — and
+    the new ones (agent_email, event_time, etc.). Callers using the
+    legacy names (eligibility_api.history._format_history_row) continue
+    to work without modification.
+    """
     p_hash = patient_hash(first_name, last_name, dob)
     expression_values = {':pk': f'PATIENT#{org_id}#{p_hash}'}
     key_condition = 'gsi1pk = :pk'
@@ -120,14 +149,14 @@ def recent_checks_for_patient(org_id, first_name, last_name, dob, limit=20, sinc
         expression_values[':since'] = since.isoformat()
         key_condition += ' AND gsi1sk >= :since'
 
-    response = _table.query(
+    response = _audit_table.query(
         IndexName='gsi1',
         KeyConditionExpression=key_condition,
         ExpressionAttributeValues=expression_values,
         ScanIndexForward=False,
         Limit=limit,
     )
-    return response.get('Items', [])
+    return [_legacy_view(it) for it in response.get('Items', [])]
 
 
 def recent_check_summary(org_id, first_name, last_name, dob, within_minutes=30):
@@ -147,18 +176,35 @@ def recent_check_summary(org_id, first_name, last_name, dob, within_minutes=30):
     }
 
 
-def _slim_result(result):
-    """Keep the audit row well under the 400KB item cap by storing only
-    the fields the UI needs for history rendering. The full Stedi response
-    is recoverable from Stedi via the controlNumber if ever needed."""
-    if not result:
-        return None
-    plan = result.get('plan') or {}
-    return {
-        'status': result.get('status'),
-        'active': result.get('active'),
-        'plan_name': plan.get('name'),
-        'effective_date': plan.get('effective_date'),
-        'expiration_date': plan.get('expiration_date'),
-        'auth_required': result.get('auth_required'),
-    }
+def _legacy_view(item):
+    """Translate a new-schema audit row into the legacy field names that
+    downstream consumers (eligibility_api.history, orchestrator dedup,
+    discrepancy derivation) expect. The new fields are kept too — callers
+    that already use them keep working.
+
+    Mapping:
+      legacy             ← new
+      user_email          agent_email
+      requested_at        event_time
+      result_status       event.result_summary.status OR top-level result_status
+      result_summary      event.result_summary
+      stedi_control_number event.external_control_number
+    """
+    if not item:
+        return item
+    legacy = dict(item)  # don't mutate the underlying boto3 dict
+    event = item.get('event') or {}
+    legacy.setdefault('user_email', item.get('agent_email'))
+    legacy.setdefault('requested_at', item.get('event_time'))
+    result_summary = event.get('result_summary') or item.get('result_summary')
+    if result_summary is not None:
+        legacy.setdefault('result_summary', result_summary)
+        legacy.setdefault('result_status',
+                          (result_summary or {}).get('status'))
+    legacy.setdefault(
+        'stedi_control_number', event.get('external_control_number')
+    )
+    legacy.setdefault('request_id', item.get('event_id'))
+    return legacy
+
+

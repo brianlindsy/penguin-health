@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 import boto3
 
+from audit import SystemPrincipal, emit as audit_emit
 from multi_org_config import load_org_rules, build_env_config
 from document_validator import validate_document
 from results_handler import (
@@ -27,6 +28,10 @@ from results_handler import (
     generate_csv_from_dynamodb,
     save_csv_to_s3,
     get_processed_s3_keys,
+)
+
+_AUDIT_PRINCIPAL = SystemPrincipal(
+    os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'rules-engine-rag')
 )
 from parquet_writer import save_parquet_to_s3
 
@@ -229,6 +234,19 @@ def lambda_handler(event, context):
         print(f"Continuing validation run: {validation_run_id}")
     else:
         print(f"Starting validation run: {validation_run_id}")
+        # Audit the run kickoff. Continuations don't re-emit because they
+        # are conceptually the same run — Athena queries can correlate via
+        # external_control_number=validation_run_id.
+        audit_emit(
+            action='execute',
+            resource={'type': 'ValidationRun', 'id': validation_run_id,
+                      'org': org_id},
+            actor=_AUDIT_PRINCIPAL.as_actor(),
+            org_id=org_id,
+            purpose_of_use='DOC_PROCESSING',
+            call_type='validation_run_start',
+            external_control_number=validation_run_id,
+        )
 
     try:
         bucket = env_config['BUCKET_NAME']

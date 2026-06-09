@@ -18,6 +18,7 @@ import config
 from components.database import Database
 from components.admin_ui import AdminUi
 from components.audit_engine import AuditEngine
+from components.audit_layer import AuditLayer
 from components.analytics import Analytics
 from components.jwks_hosting import JwksHosting
 
@@ -48,6 +49,23 @@ class PenguinHealthStack(Stack):
             org_config_table=db.org_config_table,
             validation_results_table=db.validation_results_table,
             notifications_topic=db.notifications_topic,
+        )
+
+        # ----- Audit Layer -----
+        # HIPAA-compliant audit substrate (S3 Object Lock + Firehose +
+        # DDB hot mirror) plus IAM grants to every emitting Lambda. See
+        # lambda/multi-org/audit/ for the application-level emitter.
+        audit = AuditLayer(self, "AuditLayer",
+            emitting_fns=[
+                admin_ui.api_function,
+                admin_ui.deep_worker_function,
+                admin_ui.fhir_eligibility_poller_fn,
+                audit_engine.process_fn,
+                audit_engine.textract_handler_fn,
+                audit_engine.rules_engine_fn,
+                audit_engine.csv_splitter_fn,
+                audit_engine.fhir_materializer_fn,
+            ],
         )
 
         # ----- Analytics (Athena + Glue) -----
@@ -111,6 +129,24 @@ class PenguinHealthStack(Stack):
         CfnOutput(self, "NotificationsTopicArn",
             value=db.notifications_topic.topic_arn,
             description="SNS topic ARN for Textract notifications",
+        )
+
+        # ----- Outputs: Audit Layer -----
+        CfnOutput(self, "AuditBucketName",
+            value=audit.bucket.bucket_name,
+            description="WORM (Object Lock Compliance) bucket for audit Parquet",
+        )
+        CfnOutput(self, "AuditTableName",
+            value=audit.table.table_name,
+            description="DynamoDB hot mirror for the most recent 90d of audit events",
+        )
+        CfnOutput(self, "AuditFirehoseName",
+            value=audit.stream.delivery_stream_name or "",
+            description="Kinesis Firehose delivery stream for audit events",
+        )
+        CfnOutput(self, "AuditKeyArn",
+            value=audit.key.key_arn,
+            description="KMS CMK protecting all audit-layer storage",
         )
 
         # ----- Outputs: Analytics -----

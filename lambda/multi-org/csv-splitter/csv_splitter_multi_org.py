@@ -10,11 +10,13 @@ csv-staging/, which is no longer read by anything.
 """
 
 import json
+import os
 from datetime import datetime, timezone
 
 import boto3
 from urllib.parse import unquote_plus
 
+from audit import SystemPrincipal, emit as audit_emit
 from multi_org_config import extract_org_id_from_bucket
 
 # Import all splitters
@@ -24,6 +26,10 @@ from splitters.demo import DemoSplitter
 
 s3_client = boto3.client('s3')
 events_client = boto3.client('events')
+
+_AUDIT_PRINCIPAL = SystemPrincipal(
+    os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'csv-splitter-multi-org')
+)
 
 
 SFTP_INGEST_COMPLETE_SOURCE = 'penguin-health.csv-splitter'
@@ -116,7 +122,29 @@ def lambda_handler(event, context):
             print(f"Split {key} into {len(charts)} charts")
         except Exception as e:
             print(f"ERROR splitting CSV: {e}")
+            audit_emit(
+                action='execute', resource={'type': 'S3Object', 'id': key, 'org': org_id},
+                actor=_AUDIT_PRINCIPAL.as_actor(), org_id=org_id,
+                outcome='major-failure', purpose_of_use='DOC_PROCESSING',
+                call_type='csv_split', error_class=type(e).__name__,
+            )
             continue
+
+        # One audit event per bulk CSV processed. `resource_id` is the
+        # source S3 key so an auditor can join to S3 access logs; the
+        # number of charts produced lives in the structured event so
+        # Athena queries can quantify "how much PHI flowed through this
+        # ingest" without scanning the data.
+        audit_emit(
+            action='execute',
+            resource={'type': 'S3Object', 'id': key, 'org': org_id},
+            actor=_AUDIT_PRINCIPAL.as_actor(),
+            org_id=org_id,
+            purpose_of_use='DOC_PROCESSING',
+            call_type='csv_split',
+            result={'status': 'split_complete', 'active': True,
+                    'plan': {'name': f'{len(charts)} charts'}},
+        )
 
         # Compute one ingest timestamp per splitter invocation. All charts
         # split from the same bulk CSV share the same date folder and the

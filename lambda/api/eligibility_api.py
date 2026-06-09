@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 import boto3
 
 import permissions as perms_module
+from audit import audited
 from stedi import audit as stedi_audit
 from stedi import client_factory, config as stedi_config
 from stedi import demo_fixtures, payer_registry, orchestrator
@@ -55,6 +56,11 @@ def _client_ip(event):
 
 
 # ---- POST /eligibility/verify ----
+#
+# verify() is NOT @audited because the audit event is already emitted by
+# orchestrator.verify() → stedi.audit.write_audit() → audit.emit (Phase
+# 1 dual-write). Adding a second decorator event would double-count the
+# eligibility access.
 
 def verify(event, path_params, body, authorize_fn, **_):
     org_id = path_params.get('orgId')
@@ -105,6 +111,8 @@ def verify(event, path_params, body, authorize_fn, **_):
 
 # ---- GET /eligibility/history ----
 
+@audited(action='read', resource_type='EligibilityHistory',
+         purpose_of_use='ELIGIBILITY', call_type='eligibility_history')
 def history(event, path_params, authorize_fn, **_):
     org_id = path_params.get('orgId')
     claims, error = authorize_fn(event, org_id=org_id)
@@ -131,6 +139,8 @@ def history(event, path_params, authorize_fn, **_):
 
 # ---- GET/PUT /eligibility/config ----
 
+@audited(action='read', resource_type='StediConfig',
+         purpose_of_use='ADMIN_CONFIG')
 def get_config(event, path_params, authorize_fn, **_):
     org_id = path_params.get('orgId')
     claims, error = authorize_fn(event, org_id=org_id)

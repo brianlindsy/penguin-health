@@ -30,6 +30,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'multi-org'))
 # Lambda assets. Tests reach them the same way the Lambda runtime does.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'multi-org', 'rules-engine'))
 
+# Audit emitter / decorator / actor live in lambda/multi-org/audit and are
+# bundled as `audit/` into every emitting Lambda. lambda/multi-org is already
+# on sys.path above, which makes `from audit import emit` resolve.
+
 import pytest
 import boto3
 from moto import mock_aws
@@ -60,6 +64,25 @@ def _reset_permission_cache():
     try:
         import permissions as _perms
         _perms.invalidate_cache()
+    except ImportError:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_audit_clients():
+    """Drop the audit emitter's cached boto3 handles so each test's moto
+    context gets fresh, properly-mocked clients. Without this, the first
+    test to call audit.emit caches a client that subsequent moto contexts
+    can't replace."""
+    try:
+        from audit import emitter as _audit_emitter
+        _audit_emitter._reset_for_tests()
+    except ImportError:
+        pass
+    yield
+    try:
+        from audit import emitter as _audit_emitter
+        _audit_emitter._reset_for_tests()
     except ImportError:
         pass
 
@@ -154,6 +177,33 @@ def mock_dynamodb(aws_credentials):
                 {'AttributeName': 'pk', 'AttributeType': 'S'},
                 {'AttributeName': 'sk', 'AttributeType': 'S'},
             ],
+            BillingMode='PAY_PER_REQUEST',
+        )
+
+        # penguin-health-audit table
+        # Used by: audit.emit (HIPAA audit hot mirror, 90d TTL).
+        # Schema mirrors penguin-health-stedi's AUDIT# row layout so
+        # post-cutover the stedi dedup queries keep working.
+        dynamodb.create_table(
+            TableName='penguin-health-audit',
+            KeySchema=[
+                {'AttributeName': 'pk', 'KeyType': 'HASH'},
+                {'AttributeName': 'sk', 'KeyType': 'RANGE'},
+            ],
+            AttributeDefinitions=[
+                {'AttributeName': 'pk', 'AttributeType': 'S'},
+                {'AttributeName': 'sk', 'AttributeType': 'S'},
+                {'AttributeName': 'gsi1pk', 'AttributeType': 'S'},
+                {'AttributeName': 'gsi1sk', 'AttributeType': 'S'},
+            ],
+            GlobalSecondaryIndexes=[{
+                'IndexName': 'gsi1',
+                'KeySchema': [
+                    {'AttributeName': 'gsi1pk', 'KeyType': 'HASH'},
+                    {'AttributeName': 'gsi1sk', 'KeyType': 'RANGE'},
+                ],
+                'Projection': {'ProjectionType': 'ALL'},
+            }],
             BillingMode='PAY_PER_REQUEST',
         )
 

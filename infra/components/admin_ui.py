@@ -27,9 +27,7 @@ from constructs import Construct
 
 import config
 from components.bundler import (
-    CopyFileBundler,
     DirectoryBundler,
-    MultiFileBundler,
     PipInstallBundler,
 )
 
@@ -133,6 +131,8 @@ class AdminUi(Construct):
         # is bedrock_client's transitive dependency.
         shared_llm_modules = ["bedrock_client.py", "claude_cost.py", "rate_limiter.py"]
 
+        audit_pkg_dir = os.path.join(lambda_multi_org_dir, "audit")
+
         admin_api_sources = [
             os.path.join(lambda_api_dir, "admin_api.py"),
             os.path.join(lambda_api_dir, "permissions.py"),
@@ -144,6 +144,7 @@ class AdminUi(Construct):
             os.path.join(lambda_api_dir, "sqlparse"),
             stedi_pkg_dir,
             notifications_pkg_dir,
+            audit_pkg_dir,
         ] + [os.path.join(rules_engine_dir, m) for m in shared_llm_modules]
 
         self.api_function = _lambda.Function(self, "AdminApiFunction",
@@ -178,6 +179,7 @@ class AdminUi(Construct):
                         (os.path.join(lambda_api_dir, "sqlparse"), None),
                         (stedi_pkg_dir, "stedi"),
                         (notifications_pkg_dir, "notifications"),
+                        (audit_pkg_dir, "audit"),
                     ] + [
                         (os.path.join(rules_engine_dir, m), None)
                         for m in shared_llm_modules
@@ -218,6 +220,7 @@ class AdminUi(Construct):
             os.path.join(lambda_api_dir, "nl_agent_tools.py"),
             os.path.join(lambda_api_dir, "sqlparse"),
             notifications_pkg_dir,
+            audit_pkg_dir,
         ] + [os.path.join(rules_engine_dir, m) for m in shared_llm_modules]
 
         self.deep_worker_function = _lambda.Function(self, "DeepAnalyticsWorkerFunction",
@@ -247,6 +250,7 @@ class AdminUi(Construct):
                         (os.path.join(lambda_api_dir, "nl_agent_tools.py"), None),
                         (os.path.join(lambda_api_dir, "sqlparse"), None),
                         (notifications_pkg_dir, "notifications"),
+                        (audit_pkg_dir, "audit"),
                     ] + [
                         (os.path.join(rules_engine_dir, m), None)
                         for m in shared_llm_modules
@@ -270,7 +274,9 @@ class AdminUi(Construct):
         # stedi.orchestrator.verify for each. Pinned to Python 3.13 to match
         # the FHIR materializer's PyJWT[crypto] wheel availability.
         fhir_pkg_dir = os.path.join(lambda_multi_org_dir, "fhir")
-        fhir_eligibility_poller_sources = [stedi_pkg_dir, fhir_pkg_dir, notifications_pkg_dir]
+        fhir_eligibility_poller_sources = [
+            stedi_pkg_dir, fhir_pkg_dir, notifications_pkg_dir, audit_pkg_dir,
+        ]
 
         self.fhir_eligibility_poller_fn = _lambda.Function(
             self, "FhirEligibilityPollerFunction",
@@ -279,7 +285,7 @@ class AdminUi(Construct):
             handler="stedi.fhir_eligibility_poller.handler",
             code=_lambda.Code.from_asset(
                 lambda_multi_org_dir,
-                exclude=["*", "!stedi/**", "!fhir/**", "!notifications/**"],
+                exclude=["*", "!stedi/**", "!fhir/**", "!notifications/**", "!audit/**"],
                 asset_hash_type=AssetHashType.CUSTOM,
                 asset_hash=_hash_sources(fhir_eligibility_poller_sources),
                 bundling=BundlingOptions(
@@ -290,6 +296,7 @@ class AdminUi(Construct):
                             (stedi_pkg_dir, "stedi"),
                             (fhir_pkg_dir, "fhir"),
                             (notifications_pkg_dir, "notifications"),
+                            (audit_pkg_dir, "audit"),
                         ],
                         requirements=[
                             # PyJWT[crypto] for FHIR private_key_jwt auth.

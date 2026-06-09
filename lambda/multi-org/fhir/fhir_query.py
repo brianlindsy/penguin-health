@@ -1,9 +1,23 @@
+import os
 import threading
+import time
+
+from audit import SystemPrincipal, emit as _audit_emit
 
 from .config import load_fhir_config
 from .credible_client import CredibleFhirClient
 from .exceptions import FhirAuthError, FhirOrgNotConfigured
 from .kms_resolver import resolve_alias
+
+# Module-level principal — every FHIR fetch from this Lambda is attributed
+# to the Lambda function name. The poller and materializer can override
+# the actor by calling audit.emit themselves at a higher layer if they
+# want richer attribution (e.g. linking a fetch to the validation_run_id
+# that triggered it). The point of the emit here is that no FHIR fetch
+# can happen without leaving an audit trail.
+_PRINCIPAL = SystemPrincipal(
+    os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "fhir-query")
+)
 
 
 _VENDORS = {
@@ -44,13 +58,59 @@ def get_client(org_id):
 
 
 def get_resource(org_id, resource_type, resource_id):
-    return get_client(org_id).get_resource(resource_type, resource_id)
+    """Fetch a single FHIR resource. Emits one audit event per call,
+    success or failure."""
+    started = time.monotonic()
+    actor = _PRINCIPAL.as_actor()
+    try:
+        resource = get_client(org_id).get_resource(resource_type, resource_id)
+        _audit_emit(
+            action="read",
+            resource={"type": resource_type, "id": resource_id, "org": org_id},
+            actor=actor,
+            org_id=org_id,
+            purpose_of_use="OPERATIONS",
+            call_type="fhir_fetch",
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+        return resource
+    except Exception as e:
+        _audit_emit(
+            action="read",
+            resource={"type": resource_type, "id": resource_id, "org": org_id},
+            actor=actor,
+            org_id=org_id,
+            outcome="major-failure",
+            purpose_of_use="OPERATIONS",
+            call_type="fhir_fetch",
+            error_class=type(e).__name__,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+        raise
 
 
 def search(org_id, resource_type, params, *, max_results=None, max_pages=None):
-    yield from get_client(org_id).search(
+    """Bulk FHIR search. Emits one audit event per yielded resource so an
+    Athena query for "every patient touched by this search" stays accurate.
+
+    Emitting at the wrapper (not per-page inside `_request_json_url`) keeps
+    the audit trail aligned with what the caller actually consumed —
+    a max_results cap or early `break` correctly truncates the trail too.
+    """
+    actor = _PRINCIPAL.as_actor()
+    for resource in get_client(org_id).search(
         resource_type, params, max_results=max_results, max_pages=max_pages
-    )
+    ):
+        _audit_emit(
+            action="read",
+            resource={"type": resource_type, "id": resource.get("id"),
+                      "org": org_id},
+            actor=actor,
+            org_id=org_id,
+            purpose_of_use="OPERATIONS",
+            call_type="fhir_search",
+        )
+        yield resource
 
 
 def reset_clients_for_tests():

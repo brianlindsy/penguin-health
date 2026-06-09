@@ -77,11 +77,26 @@ class Database(Construct):
 
         # ----- penguin-health-stedi -----
         # Stedi eligibility audit log + daily usage counter.
-        # Two row types share the table:
-        #   sk=AUDIT#{iso_ts}#{request_id}  — one per Stedi call, immutable, 7y TTL
-        #   sk=USAGE#{yyyy-mm-dd}           — one per org per day, atomic counter, 90d TTL
-        # GSI1 keyed by patient_hash so the "recent checks for this patient"
-        # dedup lookup is O(1) instead of scanning AUDIT# rows.
+        #
+        # MIGRATION NOTE (2026 audit-layer cutover): the AUDIT# rows on this
+        # table are LEGACY. New `audit.emit` calls land on
+        # penguin-health-audit (see AuditLayer construct). The existing
+        # AUDIT# rows here age out via their 7y `expires_at` TTL through
+        # roughly mid-2032 — keep them in place; they are the source of
+        # truth for that historical window. The USAGE# rows (daily cap
+        # counter), ENCOUNTER_ITEM# rows (worklist), EMAIL_AUDIT# rows
+        # (SES send ledger), and FHIR_CURSOR rows remain on this table
+        # and are unaffected by the audit cutover.
+        #
+        # Row types living on this table:
+        #   sk=AUDIT#{iso_ts}#{request_id}  — LEGACY, 7y TTL, no new writes
+        #   sk=USAGE#{yyyy-mm-dd}           — daily cap counter, 90d TTL
+        #   sk=ENCOUNTER_ITEM#{id}          — worklist row, 90d TTL
+        #   sk=EMAIL_AUDIT#{ts}#{id}        — SES send ledger, 7y TTL
+        # GSI1 keyed by patient_hash so the legacy "recent checks" dedup
+        # lookup is O(1); the new layer uses the same GSI shape on
+        # penguin-health-audit so the read-path cutover was a single
+        # function rebind (see lambda/multi-org/stedi/audit.py).
         self.stedi_table = dynamodb.Table(self, "StediTable",
             table_name=f"{config.PROJECT_NAME}-stedi",
             partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),

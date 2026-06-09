@@ -23,6 +23,11 @@ from fhir import (
     load_fhir_config,
     project_encounter,
 )
+from audit import SystemPrincipal, emit as audit_emit
+
+_AUDIT_PRINCIPAL = SystemPrincipal(
+    os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'fhir-encounter-materializer')
+)
 
 import metrics
 from athena import (
@@ -105,6 +110,23 @@ def lambda_handler(event, context):
         print(f"no encounters to fetch for org={org_id} date={ingest_date}")
         return _result(org_id, ingest_date, action='noop', fetched=0)
 
+    # One run-level audit event covers the materializer kickoff. Each
+    # encounter fetch below also emits a per-resource event via
+    # fhir.get_resource → fhir_query — so Athena queries can join
+    # encounter-level rows under run_id via external_control_number.
+    # Continuation legs do not re-emit the start event; they share
+    # `external_control_number=run_id`.
+    if not is_continuation:
+        audit_emit(
+            action='execute',
+            resource={'type': 'MaterializerRun', 'id': run_id, 'org': org_id},
+            actor=_AUDIT_PRINCIPAL.as_actor(),
+            org_id=org_id,
+            purpose_of_use='OPERATIONS',
+            call_type='fhir_materialize',
+            external_control_number=run_id,
+        )
+
     # ----- Fetch + project (with continuation guard) -----
     bucket = f"penguin-health-{org_id}"
     n_key = ndjson_key(ingest_date, run_id, leg=leg)
@@ -118,7 +140,7 @@ def lambda_handler(event, context):
 
     while remaining:
         if context is not None and _approaching_timeout(context):
-            _flush(bucket, n_key, p_key, successes, rows)
+            _flush(bucket, n_key, p_key, successes, rows, org_id, run_id)
             return _self_invoke_continuation(
                 context.function_name, org_id, ingest_date,
                 remaining, run_id, leg + 1,
@@ -135,7 +157,7 @@ def lambda_handler(event, context):
         except FhirRateLimited:
             metrics.emit('FhirMaterializerFailed', org_id, reason='upstream_unavailable')
             remaining.insert(0, encounter_id)
-            _flush(bucket, n_key, p_key, successes, rows)
+            _flush(bucket, n_key, p_key, successes, rows, org_id, run_id)
             raise
         except (FhirUpstreamError, FhirAuthError):
             metrics.emit(
@@ -143,7 +165,7 @@ def lambda_handler(event, context):
                 reason='upstream_unavailable',
             )
             remaining.insert(0, encounter_id)
-            _flush(bucket, n_key, p_key, successes, rows)
+            _flush(bucket, n_key, p_key, successes, rows, org_id, run_id)
             raise
 
         successes.append((line_no, resource))
@@ -154,7 +176,7 @@ def lambda_handler(event, context):
             status='ok',
         ))
 
-    _flush(bucket, n_key, p_key, successes, rows)
+    _flush(bucket, n_key, p_key, successes, rows, org_id, run_id)
 
     metrics.emit('FhirEncountersFetched', org_id, value=len(successes))
     if not_found_count:
@@ -196,11 +218,35 @@ def _diff_ids(org_id, ingest_date, source_column):
     return sorted(needed - have)
 
 
-def _flush(bucket, n_key, p_key, successes, rows):
+def _flush(bucket, n_key, p_key, successes, rows, org_id, run_id):
+    """Write the buffered FHIR resources to S3. Emits one s3_write audit
+    event per object created so an Athena query can answer "what PHI did
+    this materializer run write, and where".
+    """
     if successes:
         write_ndjson(bucket, n_key, successes)
+        audit_emit(
+            action='write',
+            resource={'type': 'FhirResource', 'id': f's3://{bucket}/{n_key}',
+                      'org': org_id},
+            actor=_AUDIT_PRINCIPAL.as_actor(),
+            org_id=org_id,
+            purpose_of_use='OPERATIONS',
+            call_type='s3_write',
+            external_control_number=run_id,
+        )
     if rows:
         write_parquet(bucket, p_key, rows)
+        audit_emit(
+            action='write',
+            resource={'type': 'FhirResource', 'id': f's3://{bucket}/{p_key}',
+                      'org': org_id},
+            actor=_AUDIT_PRINCIPAL.as_actor(),
+            org_id=org_id,
+            purpose_of_use='OPERATIONS',
+            call_type='s3_write',
+            external_control_number=run_id,
+        )
 
 
 def _approaching_timeout(context):

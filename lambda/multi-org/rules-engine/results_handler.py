@@ -9,6 +9,7 @@ Handles:
 """
 
 import json
+import os
 import csv
 import io
 from datetime import datetime
@@ -16,8 +17,14 @@ from decimal import Decimal
 
 import boto3
 
+from audit import SystemPrincipal, emit as audit_emit
+
 dynamodb = boto3.resource('dynamodb')
 s3_client = boto3.client('s3')
+
+_AUDIT_PRINCIPAL = SystemPrincipal(
+    os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'rules-engine-rag')
+)
 
 
 def store_results(results, env_config):
@@ -48,8 +55,36 @@ def store_results(results, env_config):
 
         print(f"Stored results for document {results['document_id']} in DynamoDB (run: {results['validation_run_id']})")
 
+        # One audit event per persisted validation result. The DDB row
+        # carries the full extracted chart text + per-rule findings — i.e.
+        # PHI — so the audit must record every write.
+        audit_emit(
+            action='write',
+            resource={'type': 'ValidationResult',
+                      'id': results['document_id'],
+                      'org': results.get('organization_id', 'unknown')},
+            actor=_AUDIT_PRINCIPAL.as_actor(),
+            org_id=results.get('organization_id', 'unknown'),
+            purpose_of_use='DOC_PROCESSING',
+            call_type='ddb_write',
+            external_control_number=results.get('validation_run_id'),
+        )
+
     except Exception as e:
-        print(f"Error storing results in DynamoDB: {str(e)}")
+        print(f"Error storing results in DynamoDB: {type(e).__name__}")
+        audit_emit(
+            action='write',
+            resource={'type': 'ValidationResult',
+                      'id': results.get('document_id'),
+                      'org': results.get('organization_id', 'unknown')},
+            actor=_AUDIT_PRINCIPAL.as_actor(),
+            org_id=results.get('organization_id', 'unknown'),
+            outcome='major-failure',
+            purpose_of_use='DOC_PROCESSING',
+            call_type='ddb_write',
+            error_class=type(e).__name__,
+            external_control_number=results.get('validation_run_id'),
+        )
 
 
 def get_processed_s3_keys(validation_run_id, env_config):

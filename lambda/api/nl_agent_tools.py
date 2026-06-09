@@ -15,12 +15,18 @@ carry an `output_s3_key` pointer when the payload spilled.
 """
 
 import json
+import os
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 
 import analytics_helpers
+from audit import SystemPrincipal, emit as audit_emit
+
+_AUDIT_PRINCIPAL = SystemPrincipal(
+    os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'admin-api-nl-agent')
+)
 
 
 # Bytes threshold above which we spill a tool output to S3 instead of
@@ -1228,7 +1234,8 @@ def org_data_bucket(org_id: str) -> str:
     return f"penguin-health-{org_id}"
 
 
-def make_s3_spill(s3_client, bucket: str, job_id: str) -> Callable[[bytes, str], str]:
+def make_s3_spill(s3_client, bucket: str, job_id: str,
+                  *, org_id: Optional[str] = None) -> Callable[[bytes, str], str]:
     """Return a spill(bytes, suffix_hint) -> s3_key function for one job.
 
     Writes to `agent-io/{job_id}/{ts}-{rand}-{hint}` in the given bucket.
@@ -1236,10 +1243,29 @@ def make_s3_spill(s3_client, bucket: str, job_id: str) -> Callable[[bytes, str],
     should apply a lifecycle rule on `agent-io/` matching the DynamoDB
     job TTL (24h) so spilled payloads expire alongside the job item that
     references them.
+
+    When `org_id` is provided, emits one s3_write audit event per spill so
+    the analytics-result payload (derivative PHI) has the same audit
+    coverage as primary data writes. `org_id` is keyword-only for
+    backwards compatibility with existing call sites — callers without
+    org_id get the legacy un-audited behavior, which is acceptable only
+    for tests.
     """
+    bucket_org = org_id or bucket.removeprefix("penguin-health-")
+
     def spill(data: bytes, suffix_hint: str) -> str:
         key = f"agent-io/{job_id}/{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}-{suffix_hint}"
         s3_client.put_object(Bucket=bucket, Key=key, Body=data, ContentType="application/json")
+        audit_emit(
+            action='write',
+            resource={'type': 'S3Object', 'id': f's3://{bucket}/{key}',
+                      'org': bucket_org},
+            actor=_AUDIT_PRINCIPAL.as_actor(),
+            org_id=bucket_org,
+            purpose_of_use='ANALYTICS',
+            call_type='s3_write',
+            external_control_number=job_id,
+        )
         return key
     return spill
 
