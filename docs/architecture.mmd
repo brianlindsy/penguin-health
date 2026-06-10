@@ -1,0 +1,201 @@
+flowchart LR
+    %% ============== EXTERNAL ==============
+    subgraph EXT[External actors]
+        SFTP["SFTP partners<br/>orgs upload bulk CSV"]
+        Vendor["FHIR vendors<br/>Credible, etc."]
+        StediAPI["Stedi 270/271<br/>eligibility"]
+        Payer["Payers via Stedi"]
+        Browser["Admin user<br/>browser"]
+    end
+
+    %% ============== EDGE ==============
+    subgraph EDGE["CloudFront + ACM us-east-1"]
+        CF_APP["CloudFront<br/>AdminDistribution<br/>app.penguinhealth.io"]
+        CF_JWKS["CloudFront<br/>FhirJwksDistribution<br/>keys.penguinhealth.io"]
+    end
+
+    %% ============== AUTH ==============
+    subgraph AUTH[Identity]
+        Cognito[("Cognito User Pool<br/>penguin-health-admin-pool<br/>custom organization_id<br/>Admins group")]
+    end
+
+    %% ============== API ==============
+    subgraph APIGW["API Gateway HTTP API v2"]
+        Routes["JWT-authorized routes<br/>/api/organizations/*<br/>/api/me/permissions"]
+    end
+
+    %% ============== LAMBDAS ==============
+    subgraph LAMBDA["Lambda compute"]
+        AdminAPI["admin-api<br/>Py 3.14, 256MB, 60s"]
+        DeepWorker["deep-analytics-worker<br/>Py 3.14, 256MB, 10min"]
+        FhirPoller["fhir-eligibility-poller<br/>Py 3.13, 256MB, 10min"]
+        ProcessRaw["process-raw-charts-multi-org<br/>Py 3.14, 256MB, 15min"]
+        TextractHandler["textract-result-handler-multi-org<br/>Py 3.14, 512MB, 5min"]
+        RulesEngine["rules-engine-rag<br/>Py 3.13, 512MB, 15min"]
+        CsvSplitter["csv-splitter-multi-org<br/>Py 3.14, 256MB, 60s"]
+        FhirMat["fhir-encounter-materializer<br/>Py 3.13, 512MB, 15min"]
+    end
+
+    %% ============== EVENTS ==============
+    subgraph EVT["EventBridge + SNS"]
+        SnsTextract[("SNS Topic<br/>penguin-health-notifications-multi-org")]
+        EBPoller["EventBridge Rule<br/>fhir-eligibility-poller<br/>rate 15 min"]
+        EBMat["EventBridge Rule<br/>fhir-encounter-materializer<br/>SftpIngestComplete pattern"]
+        EBCron["EventBridge Rules<br/>per-org cron validation<br/>MON catch-up, TUE-FRI daily"]
+    end
+
+    %% ============== STORAGE ==============
+    subgraph DDB[DynamoDB]
+        OrgCfg[("penguin-health-org-config<br/>pk/sk + gsi1<br/>RETAIN, PPR")]
+        ValRes[("penguin-health-validation-results<br/>pk/sk + gsi1 + gsi2<br/>RETAIN, PPR")]
+        Reports[("penguin-health-analytics-reports<br/>RETAIN, PPR")]
+        DeepJobs[("penguin-health-analytics-deep-jobs<br/>TTL ttl, DESTROY")]
+        Stedi[("penguin-health-stedi<br/>TTL expires_at, PITR<br/>gsi1 patient_hash<br/>RETAIN")]
+        Audit[("penguin-health-audit<br/>KMS CMK, PITR<br/>TTL 90d, gsi1 patient<br/>RETAIN")]
+    end
+
+    subgraph S3STORE[S3]
+        PerOrg[("penguin-health-ORG_ID<br/>per-org PHI buckets<br/>data/, analytics/,<br/>textract-*/<br/>uploaded-data-sftp/<br/>athena-results/, agent-io/")]
+        FrontBucket[("penguin-health-admin-ui<br/>SPA bundle, versioned")]
+        AuditBucket[("penguin-health-audit<br/>Object Lock COMPLIANCE 7y<br/>KMS, versioned,<br/>deny destructive")]
+        JwksBucket[("phealth-fhir-jwks<br/>public JWK Sets,<br/>OAC-only access")]
+    end
+
+    %% ============== ANALYTICS ==============
+    subgraph ANALYTICS["Glue + Athena"]
+        GlueDB1["Glue DB<br/>penguin_health_analytics"]
+        GlueDB2["Glue DB<br/>penguin_health_audit"]
+        WG["Per-org Athena workgroups<br/>penguin-health-analytics-ORG_ID<br/>enforce_work_group_configuration"]
+    end
+
+    %% ============== STREAMING ==============
+    subgraph FH["Streaming + KMS"]
+        Firehose[("Kinesis Firehose<br/>penguin-health-audit<br/>DirectPut to Parquet via Glue<br/>60s/64MB buffer<br/>dynamic partitioning year/month/day")]
+        AuditKey["KMS CMK<br/>alias penguin-health-audit<br/>rotation enabled"]
+        FhirKeys["KMS asymmetric keys<br/>alias penguin-health-fhir-*<br/>per-org sign-only"]
+    end
+
+    %% ============== AI ==============
+    subgraph AI["AI + secrets"]
+        Bedrock["Bedrock Runtime<br/>anthropic.* + inference profiles"]
+        Secrets["Secrets Manager<br/>penguin-health/stedi/*"]
+        SES["SES SendEmail<br/>noreply at penguinhealth.io"]
+        TextractSvc["Textract<br/>StartDocumentAnalysis FORMS"]
+    end
+
+    CWMet[("CloudWatch<br/>Metrics + Logs")]
+    AuditEmit{{"audit.emit<br/>DDB PutItem sync<br/>+ Firehose PutRecord async"}}
+
+    %% ============== USER FLOWS ==============
+    Browser -->|HTTPS| CF_APP
+    CF_APP -->|default behavior| FrontBucket
+    CF_APP -->|/api/*| Routes
+    Browser -.->|SRP, ID/Access token| Cognito
+    Routes -->|JWT verified by HttpJwtAuthorizer| AdminAPI
+
+    %% Admin API outflows
+    AdminAPI <-->|R/W + GSI Query| OrgCfg
+    AdminAPI <-->|R/W + 2 GSIs| ValRes
+    AdminAPI <-->|R/W| Reports
+    AdminAPI <-->|R/W| DeepJobs
+    AdminAPI <-->|R/W + gsi1| Stedi
+    AdminAPI -->|GetSecretValue scoped| Secrets
+    AdminAPI -->|InvokeModel| Bedrock
+    AdminAPI -->|StartQueryExecution<br/>per-org workgroup| WG
+    AdminAPI -->|GetTable, GetPartitions| GlueDB1
+    AdminAPI -->|GetObject, PutObject<br/>athena-results/, agent-io/| PerOrg
+    AdminAPI -->|InvokeFunction Event| DeepWorker
+    AdminAPI -->|InvokeFunction Event<br/>rules-engine-rag| RulesEngine
+    AdminAPI -->|verify| StediAPI
+    AdminAPI -->|SES SendEmail| SES
+
+    %% Deep worker
+    DeepWorker <-->|R/W| DeepJobs
+    DeepWorker -->|read| OrgCfg
+    DeepWorker -->|InvokeModel + tool loop| Bedrock
+    DeepWorker -->|run_sql tool| WG
+    DeepWorker -->|GetTable/Partitions| GlueDB1
+    DeepWorker -->|spill agent-io/| PerOrg
+
+    %% Ingest pipeline
+    SFTP -->|s3 PutObject<br/>uploaded-data-sftp/| PerOrg
+    PerOrg -->|S3 ObjectCreated event| CsvSplitter
+    CsvSplitter -->|writes data/DATE/<br/>archives source| PerOrg
+    CsvSplitter -->|read| OrgCfg
+    CsvSplitter -->|PutEvents<br/>SftpIngestComplete| EBMat
+    EBMat -->|invoke| FhirMat
+
+    %% PDF/Textract path
+    PerOrg -->|polled list of<br/>textract-to-be-processed/| ProcessRaw
+    ProcessRaw -->|StartDocumentAnalysis<br/>FORMS feature| TextractSvc
+    TextractSvc -->|completion notification| SnsTextract
+    SnsTextract -->|LambdaSubscription| TextractHandler
+    TextractHandler -->|GetDocumentAnalysis| TextractSvc
+    TextractHandler -->|write textract-processed/| PerOrg
+    TextractHandler -->|read org chart_config| OrgCfg
+
+    %% Rules engine
+    EBCron -->|cron, per org payload| RulesEngine
+    AdminAPI -->|InvokeFunction Event<br/>manual run| RulesEngine
+    RulesEngine -->|R/W charts + Parquet| PerOrg
+    RulesEngine -->|read rules + chart_config| OrgCfg
+    RulesEngine -->|store findings + summaries| ValRes
+    RulesEngine -->|InvokeModel + crossregion profile| Bedrock
+    RulesEngine -->|InvokeFunction self<br/>continuation| RulesEngine
+    RulesEngine -->|SES SendEmail<br/>+ EMAIL_AUDIT row| Stedi
+    RulesEngine -->|SES SendEmail| SES
+
+    %% FHIR materializer
+    FhirMat -->|read FHIR_CONFIG| OrgCfg
+    FhirMat -->|kms Sign + GetPublicKey<br/>private_key_jwt| FhirKeys
+    FhirKeys -.->|public JWKS<br/>provision_fhir_keypair.py| JwksBucket
+    JwksBucket --> CF_JWKS
+    CF_JWKS -->|HTTPS| Vendor
+    FhirMat -->|client_assertion<br/>fetch Encounter| Vendor
+    FhirMat -->|StartQueryExecution<br/>per-org WG| WG
+    FhirMat -->|GetTable/Partitions| GlueDB1
+    FhirMat -->|write data/fhir/encounter/<br/>analytics/fhir/encounter/ Parquet| PerOrg
+    FhirMat -->|InvokeFunction self<br/>continuation| FhirMat
+
+    %% FHIR eligibility poller
+    EBPoller -->|rate 15min<br/>per-org payload| FhirPoller
+    FhirPoller -->|read STEDI_CONFIG, FHIR_CONFIG<br/>+ subscriber list| OrgCfg
+    FhirPoller -->|R/W ENCOUNTER_ITEM, USAGE,<br/>FHIR_POLL_CURSOR + gsi1| Stedi
+    FhirPoller -->|GetSecretValue<br/>penguin-health/stedi/api-key| Secrets
+    FhirPoller -->|kms Sign| FhirKeys
+    FhirPoller -->|client_assertion<br/>Encounter+Patient search| Vendor
+    FhirPoller -->|verify| StediAPI
+    StediAPI -->|270/271| Payer
+    FhirPoller -->|SES SendEmail<br/>+ EMAIL_AUDIT row| Stedi
+    FhirPoller -->|SES SendEmail| SES
+    FhirPoller -->|PutMetricData<br/>PenguinHealth/FhirEligibilityPoller| CWMet
+
+    %% Audit substrate
+    AdminAPI -.->|emit| AuditEmit
+    DeepWorker -.->|emit| AuditEmit
+    FhirPoller -.->|emit| AuditEmit
+    ProcessRaw -.->|emit| AuditEmit
+    TextractHandler -.->|emit| AuditEmit
+    RulesEngine -.->|emit| AuditEmit
+    CsvSplitter -.->|emit| AuditEmit
+    FhirMat -.->|emit| AuditEmit
+    AuditEmit --> Audit
+    AuditEmit --> Firehose
+    Firehose -->|Parquet via Glue schema<br/>year=/month=/day=| AuditBucket
+    AuditBucket -.->|EXTERNAL_TABLE<br/>partition projection| GlueDB2
+    AuditKey -.encrypts.-> Audit
+    AuditKey -.encrypts.-> AuditBucket
+    AuditKey -.encrypts.-> Firehose
+
+    Cognito -.->|JWT claims include<br/>custom organization_id +<br/>cognito groups| AdminAPI
+
+    classDef ext fill:#fef3c7,stroke:#92400e
+    classDef store fill:#dbeafe,stroke:#1e3a8a
+    classDef compute fill:#dcfce7,stroke:#166534
+    classDef edge fill:#fae8ff,stroke:#86198f
+    classDef sec fill:#fee2e2,stroke:#991b1b
+    class SFTP,Vendor,StediAPI,Payer,Browser ext
+    class OrgCfg,ValRes,Reports,DeepJobs,Stedi,Audit,PerOrg,FrontBucket,AuditBucket,JwksBucket store
+    class AdminAPI,DeepWorker,FhirPoller,ProcessRaw,TextractHandler,RulesEngine,CsvSplitter,FhirMat compute
+    class CF_APP,CF_JWKS edge
+    class Firehose,AuditKey,FhirKeys sec

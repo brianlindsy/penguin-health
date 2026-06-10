@@ -1,0 +1,130 @@
+flowchart TB
+    %% Simplified data-flow overview. The full resource-level diagram is in architecture.mmd.
+
+    Browser["Admin user<br/>browser"]
+    SFTP["SFTP partners"]
+    Vendor["FHIR vendors"]
+
+    subgraph EDGE["Edge"]
+        CF_APP["CloudFront<br/>app.penguinhealth.io"]
+        CF_JWKS["CloudFront<br/>keys.penguinhealth.io"]
+    end
+
+    subgraph IDENTITY["Identity + API"]
+        Cognito[("Cognito Pool<br/>JWT issuer")]
+        APIGW["HTTP API v2<br/>JWT authorizer"]
+    end
+
+    subgraph APP["Application Lambdas"]
+        AdminAPI["admin-api"]
+        DeepWorker["deep-analytics-worker"]
+        FhirPoller["fhir-eligibility-poller"]
+        StediAPI["Stedi 270/271"]
+    end
+
+    subgraph INGEST["Ingest pipeline Lambdas"]
+        CsvSplitter["csv-splitter"]
+        ProcessRaw["process-raw-charts"]
+        TextractHandler["textract-result-handler"]
+        RulesEngine["rules-engine-rag"]
+        FhirMat["fhir-encounter-materializer"]
+    end
+
+    subgraph STATE["Per-org state"]
+        PerOrg[("S3 per-org buckets<br/>penguin-health-ORG")]
+        OrgCfg[("DDB org-config")]
+        ValRes[("DDB validation-results")]
+        Stedi[("DDB stedi worklist")]
+    end
+
+    subgraph ANALYTICS["Analytics"]
+        Glue["Glue catalog"]
+        Athena["Athena per-org workgroups"]
+    end
+
+    subgraph AUDIT["HIPAA Audit substrate"]
+        AuditDDB[("DDB audit hot mirror<br/>90d TTL, KMS")]
+        Firehose[("Firehose Parquet")]
+        AuditS3[("S3 Object Lock<br/>COMPLIANCE 7y")]
+    end
+
+    subgraph EXT["AWS services"]
+        Bedrock["Bedrock"]
+        Textract["Textract"]
+        SES["SES"]
+        KMS["KMS<br/>audit CMK + FHIR sign keys"]
+        Secrets["Secrets Manager<br/>Stedi API key"]
+    end
+
+    Browser --> CF_APP
+    CF_APP --> APIGW
+    Browser -.SRP.-> Cognito
+    Cognito -.JWT.-> APIGW
+    APIGW --> AdminAPI
+
+    AdminAPI --> DeepWorker
+    AdminAPI --> RulesEngine
+    AdminAPI <--> OrgCfg
+    AdminAPI <--> ValRes
+    AdminAPI <--> Stedi
+    AdminAPI --> Athena
+    AdminAPI --> Bedrock
+    AdminAPI --> StediAPI
+    DeepWorker --> Athena
+    DeepWorker --> Bedrock
+
+    SFTP --> PerOrg
+    PerOrg -.S3 event.-> CsvSplitter
+    CsvSplitter --> PerOrg
+    CsvSplitter -.SftpIngestComplete.-> FhirMat
+    PerOrg --> ProcessRaw
+    ProcessRaw --> Textract
+    Textract -.SNS.-> TextractHandler
+    TextractHandler --> PerOrg
+
+    RulesEngine --> PerOrg
+    RulesEngine --> ValRes
+    RulesEngine --> Bedrock
+    RulesEngine --> SES
+
+    FhirMat --> Vendor
+    FhirMat --> PerOrg
+    FhirMat --> Athena
+    FhirPoller --> Vendor
+    FhirPoller --> StediAPI
+    FhirPoller --> Stedi
+    FhirPoller --> Secrets
+    FhirPoller --> SES
+
+    CF_JWKS --> Vendor
+    KMS -.sign assertion.-> FhirPoller
+    KMS -.sign assertion.-> FhirMat
+
+    Athena --> Glue
+    PerOrg --> Glue
+
+    AdminAPI -.audit emit.-> AuditDDB
+    DeepWorker -.audit emit.-> AuditDDB
+    FhirPoller -.audit emit.-> AuditDDB
+    CsvSplitter -.audit emit.-> AuditDDB
+    ProcessRaw -.audit emit.-> AuditDDB
+    TextractHandler -.audit emit.-> AuditDDB
+    RulesEngine -.audit emit.-> AuditDDB
+    FhirMat -.audit emit.-> AuditDDB
+    AuditDDB --> Firehose
+    Firehose --> AuditS3
+    KMS -.encrypts.-> AuditDDB
+    KMS -.encrypts.-> AuditS3
+
+    classDef ext fill:#fef3c7,stroke:#92400e,color:#000
+    classDef store fill:#dbeafe,stroke:#1e3a8a,color:#000
+    classDef compute fill:#dcfce7,stroke:#166534,color:#000
+    classDef edge fill:#fae8ff,stroke:#86198f,color:#000
+    classDef sec fill:#fee2e2,stroke:#991b1b,color:#000
+
+    class Browser,SFTP,Vendor ext
+    class PerOrg,OrgCfg,ValRes,Stedi,AuditDDB,AuditS3,Firehose,Cognito store
+    class AdminAPI,DeepWorker,FhirPoller,CsvSplitter,ProcessRaw,TextractHandler,RulesEngine,FhirMat compute
+    class StediAPI ext
+    class CF_APP,CF_JWKS,APIGW edge
+    class KMS,Secrets,Bedrock,Textract,SES sec
