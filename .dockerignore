@@ -1,0 +1,45 @@
+# Excludes for the `fargate/rpa_runner/Dockerfile` build context.
+#
+# CDK uses the repo root as the build context (see
+# infra/components/rpa.py:RpaRunnerImage) so the Dockerfile can `COPY`
+# from both `fargate/rpa_runner/` and `lambda/multi-org/`. Everything
+# else is wasted bytes — and a few things (cdk.out, .git, node_modules)
+# cause real problems if included.
+
+# CDK synthesizes assets into cdk.out under each asset's own subdir,
+# which without this exclude recurses infinitely when the build context
+# is the repo root that contains cdk.out.
+infra/cdk.out
+**/cdk.out
+
+# Version-control + IDE noise
+.git
+.github
+.vscode
+.idea
+
+# Node / Python / OS noise
+node_modules
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+.DS_Store
+htmlcov
+.coverage*
+
+# Tests + docs aren't needed in the runner image; the runner imports
+# from `lambda/multi-org/rpa/` and `lambda/multi-org/audit/` only.
+lambda/tests
+docs
+
+# Frontend assets — not needed in the Python runner.
+admin-ui/node_modules
+admin-ui/dist
+
+# Local env files must never enter the image.
+.env
+.env.*
+**/.env
+**/.env.*

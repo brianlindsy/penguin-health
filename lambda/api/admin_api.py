@@ -25,6 +25,7 @@ import nl_agent
 import nl_agent_tools
 import eligibility_api
 import eligibility_worklist_api
+import rpa_api
 from audit import SystemPrincipal, audited, emit as audit_emit
 
 _NL_AGENT_PRINCIPAL = SystemPrincipal(
@@ -206,6 +207,22 @@ def lambda_handler(event, context):
         'POST /api/organizations/{orgId}/eligibility/encounters/{encounterId}/rerun':
             lambda event, path_params, body, **kw: eligibility_worklist_api.rerun_encounter(
                 event=event, path_params=path_params, body=body,
+                authorize_fn=authorize_request),
+        'GET /api/organizations/{orgId}/rpa/config':
+            lambda event, path_params, body, **kw: rpa_api.get_config(
+                event=event, path_params=path_params,
+                authorize_fn=authorize_request),
+        'POST /api/organizations/{orgId}/rpa/run':
+            lambda event, path_params, body, **kw: rpa_api.trigger_run(
+                event=event, path_params=path_params, body=body,
+                authorize_fn=authorize_request),
+        'GET /api/organizations/{orgId}/rpa/runs':
+            lambda event, path_params, body, **kw: rpa_api.list_runs(
+                event=event, path_params=path_params,
+                authorize_fn=authorize_request),
+        'GET /api/organizations/{orgId}/rpa/runs/{runId}':
+            lambda event, path_params, body, **kw: rpa_api.get_run(
+                event=event, path_params=path_params,
                 authorize_fn=authorize_request),
     }
 

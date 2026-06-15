@@ -21,6 +21,7 @@ from components.audit_engine import AuditEngine
 from components.audit_layer import AuditLayer
 from components.analytics import Analytics
 from components.jwks_hosting import JwksHosting
+from components.rpa import Rpa
 
 
 class PenguinHealthStack(Stack):
@@ -35,6 +36,14 @@ class PenguinHealthStack(Stack):
         # ----- Database + SNS -----
         db = Database(self, "Database")
 
+        # ----- RPA (Fargate + Step Functions + per-org schedules) -----
+        # Stand up before AdminUi so the admin Lambda can be wired with
+        # the state-machine ARN + StartExecution / DescribeExecution
+        # grants needed by lambda/api/rpa_api.py.
+        rpa = Rpa(self, "Rpa",
+            org_config_table=db.org_config_table,
+        )
+
         # ----- Admin UI -----
         admin_ui = AdminUi(self, "AdminUi",
             org_config_table=db.org_config_table,
@@ -42,6 +51,7 @@ class PenguinHealthStack(Stack):
             analytics_reports_table=db.analytics_reports_table,
             deep_jobs_table=db.deep_jobs_table,
             stedi_table=db.stedi_table,
+            rpa_state_machine=rpa.state_machine,
         )
 
         # ----- Audit Engine -----
@@ -158,6 +168,24 @@ class PenguinHealthStack(Stack):
                 value=wg.name,
                 description=f"Athena workgroup for {org_id}",
             )
+
+        # ----- Outputs: RPA -----
+        CfnOutput(self, "RpaStateMachineArn",
+            value=rpa.state_machine.state_machine_arn,
+            description="Step Functions state machine that wraps the RPA Fargate task",
+        )
+        CfnOutput(self, "RpaClusterName",
+            value=rpa.cluster.cluster_name,
+            description="ECS Fargate cluster hosting the RPA runner",
+        )
+        CfnOutput(self, "RpaRunnerImageUri",
+            value=rpa.image_asset.image_uri,
+            description="ECR image URI for the RPA runner container",
+        )
+        CfnOutput(self, "RpaLogGroupName",
+            value=rpa.log_group.log_group_name,
+            description="CloudWatch log group for RPA runner stdout/stderr",
+        )
 
         # ----- Outputs: JWKS -----
         CfnOutput(self, "JwksBucketName",

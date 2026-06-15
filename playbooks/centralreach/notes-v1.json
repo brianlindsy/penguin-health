@@ -1,0 +1,100 @@
+{
+  "description": "Walk the clinician worklist and extract one clinical note per row. Read-only; matches the rule-coverage fields the audit pipeline needs (visit_date, signed_at, billed_*, provider_*, supervisor_*).",
+  "auth": {
+    "strategy": "session_cookie",
+    "comment": "CentralReach uses the crsd + crud cookies set on the BrowserContext by the centralreach authenticator. No bearer header."
+  },
+  "default_timeouts": {
+    "navigation_ms": 15000,
+    "selector_ms": 8000
+  },
+  "steps": [
+    {
+      "op": "navigate",
+      "url": "https://members.centralreach.com/clinicians/worklist"
+    },
+    {
+      "op": "wait_for_selector",
+      "selector": "table.patient-list tbody tr"
+    },
+    {
+      "op": "if_exists",
+      "selector": "section.empty-state",
+      "then": [
+        {"op": "log", "message": "worklist_empty"},
+        {"op": "stop"}
+      ]
+    },
+    {
+      "op": "loop_over_list",
+      "selector": "table.patient-list tbody tr",
+      "max_items": 50,
+      "body": [
+        {
+          "op": "extract",
+          "fields": {
+            "source_patient_id": {"selector": "td.mrn"},
+            "first_name": {"selector": "td.first-name"},
+            "last_name": {"selector": "td.last-name"},
+            "dob": {"selector": "td.dob"}
+          }
+        },
+        {
+          "op": "click",
+          "selector": "a.open-chart"
+        },
+        {
+          "op": "wait_for_selector",
+          "selector": "section.notes-list .note-row"
+        },
+        {
+          "op": "loop_over_list",
+          "selector": "section.notes-list .note-row",
+          "body": [
+            {
+              "op": "click",
+              "selector": ".note-title"
+            },
+            {
+              "op": "wait_for_selector",
+              "selector": ".note-detail .note-body"
+            },
+            {
+              "op": "extract",
+              "fields": {
+                "source_record_id": {"selector": ".note-detail", "attr": "data-note-id"},
+                "note_type": {"selector": ".note-detail .note-type"},
+                "visit_date": {"selector": ".note-detail .visit-date"},
+                "provider_display": {"selector": ".note-detail .author-signature"},
+                "text": {"selector": ".note-detail .note-body", "attr": "innerText"},
+                "body_html": {"selector": ".note-detail .note-body", "attr": "innerHTML"}
+              }
+            },
+            {
+              "op": "extract",
+              "fields": {
+                "signed_at": {"selector": ".note-detail .signed-at", "attr": "datetime"},
+                "billed_start": {"selector": ".note-detail .billed-start", "attr": "datetime"},
+                "billed_end": {"selector": ".note-detail .billed-end", "attr": "datetime"},
+                "billed_duration_minutes": {"selector": ".note-detail .billed-duration"},
+                "billed_location": {"selector": ".note-detail .billed-location"},
+                "note_location": {"selector": ".note-detail .note-location"},
+                "provider_billed": {"selector": ".note-detail .billed-provider"},
+                "provider_signature": {"selector": ".note-detail .provider-signature"},
+                "supervisor_name": {"selector": ".note-detail .supervisor-name"},
+                "supervisor_signature": {"selector": ".note-detail .supervisor-signature"},
+                "note_created_at": {"selector": ".note-detail .created-at", "attr": "datetime"},
+                "session_duration_minutes": {"selector": ".note-detail .session-duration"}
+              }
+            },
+            {"op": "emit_note"},
+            {"op": "click", "selector": "a.back-to-chart"},
+            {"op": "wait_for_selector", "selector": "section.notes-list .note-row"}
+          ]
+        },
+        {"op": "click", "selector": "a.back-to-worklist"},
+        {"op": "wait_for_selector", "selector": "table.patient-list tbody tr"}
+      ]
+    }
+  ]
+}
