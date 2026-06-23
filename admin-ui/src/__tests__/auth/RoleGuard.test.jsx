@@ -9,11 +9,11 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { RoleGuard } from '../../auth/RoleGuard.jsx'
 
-vi.mock('../../auth/AuthProvider.jsx', () => ({
+vi.mock('../../auth/useAuth.js', () => ({
   useAuth: vi.fn(),
 }))
 
-import { useAuth } from '../../auth/AuthProvider.jsx'
+import { useAuth } from '../../auth/useAuth.js'
 
 function setAuth(value) {
   useAuth.mockReturnValue(value)

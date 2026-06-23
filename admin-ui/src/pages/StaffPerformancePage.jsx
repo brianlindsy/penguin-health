@@ -10,9 +10,9 @@ const getCredibleLink = (documentId) =>
 // Given a period filter preset + optional custom dates, compute { start, end }
 // as epoch-ms cutoffs (start inclusive, end exclusive). end is inclusive-of-day
 // for custom ranges. Returns { start: null, end: null } when "all time".
-function resolveDateCutoffs(period, customStart, customEnd) {
+// `now` is injected so callers stay pure (no Date.now() in render).
+function resolveDateCutoffs(period, customStart, customEnd, now) {
   const dayMs = 24 * 60 * 60 * 1000
-  const now = Date.now()
   if (period === '24h') return { start: now - dayMs, end: null }
   if (period === '7d') return { start: now - 7 * dayMs, end: null }
   if (period === '30d') return { start: now - 30 * dayMs, end: null }
@@ -38,7 +38,10 @@ export function StaffPerformancePage() {
   const [ruleDefinitions, setRuleDefinitions] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [selectedStaff, setSelectedStaff] = useState(null)
+  // Store only the staff name so re-derivations across filtered lists stay
+  // automatic and we don't need a sync effect; the selected staff object
+  // is computed from `filteredStaff` during render.
+  const [selectedStaffName, setSelectedStaffName] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
   // Validation report filter = pick a specific report by its date, or "All".
   // Value is 'all' or a validation_run_id.
@@ -49,6 +52,8 @@ export function StaffPerformancePage() {
   const [serviceCustomEndDate, setServiceCustomEndDate] = useState('')
   const [sortOrder, setSortOrder] = useState('asc') // 'asc' = worst first, 'desc' = best first
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  // Snapshot "now" once so rolling-window cutoffs stay pure across renders.
+  const [nowMs] = useState(() => Date.now())
 
   useEffect(() => {
     // Load rule definitions + validation runs in parallel. Rule definitions
@@ -106,10 +111,14 @@ export function StaffPerformancePage() {
 
   // Predicate applied to each note — separate from the run-level filter so a
   // user can combine "validated in the last 7 days" with "service date in Q1".
+  const serviceDateCutoffs = useMemo(
+    () => resolveDateCutoffs(serviceDateFilter, serviceCustomStartDate, serviceCustomEndDate, nowMs),
+    [serviceDateFilter, serviceCustomStartDate, serviceCustomEndDate, nowMs],
+  )
   const passesServiceDate = useMemo(() => {
-    const { start, end } = resolveDateCutoffs(serviceDateFilter, serviceCustomStartDate, serviceCustomEndDate)
-    if (start == null && end == null) return () => true
+    const { start, end } = serviceDateCutoffs
     return (doc) => {
+      if (start == null && end == null) return true
       const raw = doc?.field_values?.date
       if (!raw) return false
       const t = new Date(raw).getTime()
@@ -118,7 +127,7 @@ export function StaffPerformancePage() {
       if (end != null && t >= end) return false
       return true
     }
-  }, [serviceDateFilter, serviceCustomStartDate, serviceCustomEndDate])
+  }, [serviceDateCutoffs])
 
   // Aggregate staff performance from all validation runs
   const staffPerformance = useMemo(() => {
@@ -226,22 +235,13 @@ export function StaffPerformancePage() {
     })
   }, [staffPerformance, searchTerm, sortOrder])
 
-  // Keep the selected staff's data in sync as filters change; drop the
-  // Keep the selected staff's data in sync as filters change; drop the
-  // selection (falling back to the summary view) if they disappear.
-  useEffect(() => {
-    if (!selectedStaff) return
-    if (filteredStaff.length === 0) {
-      setSelectedStaff(null)
-      return
-    }
-    const match = filteredStaff.find(s => s.name === selectedStaff.name)
-    if (match && match !== selectedStaff) {
-      setSelectedStaff(match)
-    } else if (!match) {
-      setSelectedStaff(null)
-    }
-  }, [filteredStaff, selectedStaff])
+  // Derive the selected-staff object from the current filtered list; if the
+  // staff is no longer present (filters changed), this resolves to null and
+  // the UI falls back to the summary view.
+  const selectedStaff = useMemo(
+    () => (selectedStaffName ? filteredStaff.find(s => s.name === selectedStaffName) || null : null),
+    [filteredStaff, selectedStaffName],
+  )
 
 
   if (loading) {
@@ -331,7 +331,7 @@ export function StaffPerformancePage() {
                 key={staff.name}
                 staff={staff}
                 selected={selectedStaff?.name === staff.name}
-                onClick={() => setSelectedStaff(staff)}
+                onClick={() => setSelectedStaffName(staff.name)}
               />
             ))}
             {filteredStaff.length === 0 && (
@@ -347,7 +347,7 @@ export function StaffPerformancePage() {
           <StaffDetailPanel
             staff={selectedStaff}
             orgId={orgId}
-            onBack={() => setSelectedStaff(null)}
+            onBack={() => setSelectedStaffName(null)}
             filterBar={
               <FilterBar
                 periodFilter={serviceDateFilter}
@@ -358,10 +358,7 @@ export function StaffPerformancePage() {
                 onCustomEndChange={setServiceCustomEndDate}
                 allStaff={staffPerformance}
                 selectedStaffName={selectedStaff?.name || ''}
-                onSelectStaffName={(name) => {
-                  const staff = staffPerformance.find(s => s.name === name)
-                  if (staff) setSelectedStaff(staff)
-                }}
+                onSelectStaffName={(name) => setSelectedStaffName(name)}
               />
             }
           />
@@ -382,7 +379,7 @@ export function StaffPerformancePage() {
             onServiceCustomStartChange={setServiceCustomStartDate}
             serviceCustomEndDate={serviceCustomEndDate}
             onServiceCustomEndChange={setServiceCustomEndDate}
-            onSelectStaff={setSelectedStaff}
+            onSelectStaff={(staff) => setSelectedStaffName(staff?.name ?? null)}
             onSelectProgram={(program) => setSearchTerm(program)}
           />
         )}
@@ -437,8 +434,6 @@ function ProgramSummaryView({
 }) {
   // 'staff' = staff ranked by errors; 'rules' = recurring rule failures; 'analytics' = deeper metrics (late notes to start).
   const [viewMode, setViewMode] = useState('staff')
-  // Which analytic is selected under the Analytics view. More to come.
-  const [analyticKey, setAnalyticKey] = useState('late-notes')
   // Set of category strings to include; empty Set = no filter (show everything).
   const [categoryFilter, setCategoryFilter] = useState(() => new Set())
 
@@ -454,19 +449,17 @@ function ProgramSummaryView({
     return Array.from(set).sort()
   }, [ruleDefinitions])
 
-  // Resolve a validation-result rule's category from the authoritative
-  // definition by rule_id; only falls back to any category on the result
-  // itself if we somehow don't have the definition loaded.
-  const categoryForRule = (r) => {
-    if (r?.rule_id && ruleCategoryById.has(r.rule_id)) return ruleCategoryById.get(r.rule_id)
-    return r?.category || null
-  }
-
   // Group staff by program, sort each list by errors desc (tie-break by name),
   // and sort programs by total errors desc (most problematic first). Re-derive
   // per-staff error counts + per-program rule failures from the raw failed
   // documents so the category filter can be applied cleanly.
   const programs = useMemo(() => {
+    // Resolve a validation-result rule's category from the authoritative
+    // definition by rule_id; falls back to a category on the result itself.
+    const categoryForRule = (r) => {
+      if (r?.rule_id && ruleCategoryById.has(r.rule_id)) return ruleCategoryById.get(r.rule_id)
+      return r?.category || null
+    }
     const isIncluded = (category) =>
       categoryFilter.size === 0 || categoryFilter.has(category)
 
@@ -557,14 +550,6 @@ function ProgramSummaryView({
     map.forEach(b => { b.lateNotes.sort((a, b) => b.businessHours - a.businessHours) })
     return map
   }, [filteredRuns, passesServiceDate])
-
-  if (staffPerformance.length === 0) {
-    return (
-      <div className="flex-1 flex items-center justify-center bg-white rounded-lg shadow">
-        <p className="text-gray-500">No staff data available.</p>
-      </div>
-    )
-  }
 
   const toggleCategory = (cat) => {
     setCategoryFilter(prev => {
@@ -658,6 +643,14 @@ function ProgramSummaryView({
     }).filter(e => e.total > 0)
     return entries.sort((a, b) => b.late - a.late || a.program.localeCompare(b.program))
   }, [programs, lateNotesByProgram])
+
+  if (staffPerformance.length === 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-white rounded-lg shadow">
+        <p className="text-gray-500">No staff data available.</p>
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col">
@@ -1570,6 +1563,14 @@ function StaffDetailPanel({ staff, orgId, filterBar, onBack }) {
   // notes that actually failed this rule, and each card surfaces that rule's
   // reasoning (rather than just the first fail).
   const [selectedRuleName, setSelectedRuleName] = useState(null)
+  // Reset the drill-down whenever we switch staff. Using a "track previous
+  // value during render" pattern instead of an effect avoids a cascading
+  // render and the react-hooks/set-state-in-effect rule.
+  const [prevStaffName, setPrevStaffName] = useState(staff.name)
+  if (prevStaffName !== staff.name) {
+    setPrevStaffName(staff.name)
+    setSelectedRuleName(null)
+  }
 
   // Navigate to the validation run detail page with the specific document selected
   const handleDocumentClick = (doc) => {
@@ -1577,11 +1578,6 @@ function StaffDetailPanel({ staff, orgId, filterBar, onBack }) {
       navigate(`/organizations/${orgId}/validation-runs/${doc.validation_run_id}?doc=${doc.document_id}`)
     }
   }
-
-  // Reset the drill-down whenever we switch staff.
-  useEffect(() => {
-    setSelectedRuleName(null)
-  }, [staff.name])
 
   const visibleFailedDocuments = selectedRuleName
     ? staff.failedDocuments.filter(doc =>

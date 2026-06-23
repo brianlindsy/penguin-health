@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
@@ -15,18 +15,22 @@ export function UsersPage() {
   const [editing, setEditing] = useState(null) // { email, role, report_permissions, analytics_permissions, isNew }
   const [savingMsg, setSavingMsg] = useState('')
 
-  const loadUsers = () => {
+  const loadUsers = useCallback(() => {
     setLoading(true)
     setError('')
     api.listOrgUsers(orgId)
       .then(data => setUsers(data.users || []))
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
-  }
+  }, [orgId])
 
   useEffect(() => {
+    // Standard "fetch on mount / when orgId changes" pattern. The setState
+    // inside loadUsers is exactly what the rule warns about, but here it's
+    // the intended initial-load handshake.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadUsers()
-  }, [orgId])
+  }, [loadUsers])
 
   const startCreate = () => {
     setEditing({

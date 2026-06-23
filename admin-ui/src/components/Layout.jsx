@@ -1,5 +1,5 @@
 import { Outlet, Link, useLocation } from 'react-router-dom'
-import { useAuth } from '../auth/AuthProvider.jsx'
+import { useAuth } from '../auth/useAuth.js'
 import { useEffect } from 'react'
 import { setTokenProvider } from '../api/client.js'
 

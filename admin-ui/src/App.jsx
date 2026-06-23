@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { Routes, Route, Navigate, useParams } from 'react-router-dom'
-import { useAuth } from './auth/AuthProvider.jsx'
+import { useAuth } from './auth/useAuth.js'
 import { ProtectedRoute } from './auth/ProtectedRoute.jsx'
 import { LoginPage } from './auth/LoginPage.jsx'
 import { Layout } from './components/Layout.jsx'

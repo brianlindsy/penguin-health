@@ -2,10 +2,10 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { StatusBadge } from '../components/StatusBadge.jsx'
-import { useAuth } from '../auth/AuthProvider.jsx'
+import { useAuth } from '../auth/useAuth.js'
 
 export function OrganizationsPage() {
-  const { isSuperAdmin, userClaims } = useAuth()
+  const { isSuperAdmin } = useAuth()
   const [orgs, setOrgs] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')

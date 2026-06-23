@@ -19,7 +19,7 @@ beforeEach(() => {
 })
 
 // AuthProvider isn't wrapped here, so usePermissions reads useAuth via mock.
-vi.mock('../../auth/AuthProvider.jsx', () => ({
+vi.mock('../../auth/useAuth.js', () => ({
   useAuth: () => ({ isSuperAdmin: true, permissions: null }),
 }))
 

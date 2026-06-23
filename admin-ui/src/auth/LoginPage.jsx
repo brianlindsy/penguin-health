@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useAuth } from './AuthProvider.jsx'
+import { useAuth } from './useAuth.js'
 
 export function LoginPage() {
   const { login, completeNewPassword } = useAuth()

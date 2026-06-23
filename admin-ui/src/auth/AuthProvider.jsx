@@ -1,12 +1,11 @@
-import { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   CognitoUserPool,
   CognitoUser,
   AuthenticationDetails,
 } from 'amazon-cognito-identity-js'
 import { api } from '../api/client.js'
-
-const AuthContext = createContext(null)
+import { AuthContext } from './AuthContext.js'
 
 const userPool = new CognitoUserPool({
   UserPoolId: import.meta.env.VITE_COGNITO_USER_POOL_ID,
@@ -89,7 +88,10 @@ export function AuthProvider({ children }) {
         }
       })
     } else {
-      setLoading(false)
+      // Deferred to escape the effect body — initial-load handshake when no
+      // session exists; setting loading synchronously here trips
+      // react-hooks/set-state-in-effect.
+      queueMicrotask(() => setLoading(false))
     }
   }, [refreshPermissions])
 
@@ -127,7 +129,7 @@ export function AuthProvider({ children }) {
         },
       })
     })
-  }, [])
+  }, [refreshPermissions])
 
   const completeNewPassword = useCallback((cognitoUser, newPassword) => {
     return new Promise((resolve, reject) => {
@@ -147,7 +149,7 @@ export function AuthProvider({ children }) {
         onFailure: reject,
       })
     })
-  }, [])
+  }, [refreshPermissions])
 
   const logout = useCallback(() => {
     const cognitoUser = userPool.getCurrentUser()
@@ -192,10 +194,4 @@ export function AuthProvider({ children }) {
       {children}
     </AuthContext.Provider>
   )
-}
-
-export function useAuth() {
-  const ctx = useContext(AuthContext)
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider')
-  return ctx
 }

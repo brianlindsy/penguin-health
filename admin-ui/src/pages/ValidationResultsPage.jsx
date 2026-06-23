@@ -35,6 +35,8 @@ export function ValidationResultsPage() {
   const [periodFilter, setPeriodFilter] = useState('all')
   const [customStartDate, setCustomStartDate] = useState('')
   const [customEndDate, setCustomEndDate] = useState('')
+  // Snapshot "now" once so rolling-window cutoffs stay pure across renders.
+  const [nowMs] = useState(() => Date.now())
 
   useEffect(() => {
     let cancelled = false
@@ -69,7 +71,7 @@ export function ValidationResultsPage() {
   // Apply date window filter based on the run's own timestamp.
   const filteredRuns = useMemo(() => {
     const dayMs = 24 * 60 * 60 * 1000
-    const now = Date.now()
+    const now = nowMs
     let startCutoff = null
     let endCutoff = null
     if (periodFilter === '24h') startCutoff = now - dayMs
@@ -88,7 +90,7 @@ export function ValidationResultsPage() {
       if (endCutoff != null && t >= endCutoff) return false
       return true
     })
-  }, [runs, periodFilter, customStartDate, customEndDate])
+  }, [runs, periodFilter, customStartDate, customEndDate, nowMs])
 
   // Ordered newest first, same as the admin table used to render.
   const sortedRuns = useMemo(() => {
@@ -245,7 +247,6 @@ function RunCard({ orgId, run, awaiting }) {
   const skipped = run.skipped || 0
   const processed = Math.max(passed + failed + skipped, 1)
   const passPct = (passed / processed) * 100
-  const failPct = (failed / processed) * 100
   const skipPct = (skipped / processed) * 100
   const overallStatus = failed > 0 ? 'FAIL' : 'PASS'
 

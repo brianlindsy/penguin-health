@@ -10,11 +10,11 @@ import { renderHook } from '@testing-library/react'
 import { usePermissions } from '../../auth/usePermissions.js'
 
 // Mock useAuth so we can plug different permission shapes in.
-vi.mock('../../auth/AuthProvider.jsx', () => ({
+vi.mock('../../auth/useAuth.js', () => ({
   useAuth: vi.fn(),
 }))
 
-import { useAuth } from '../../auth/AuthProvider.jsx'
+import { useAuth } from '../../auth/useAuth.js'
 
 function setup(authValue) {
   useAuth.mockReturnValue(authValue)

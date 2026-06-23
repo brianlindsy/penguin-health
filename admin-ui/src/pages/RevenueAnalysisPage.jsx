@@ -18,6 +18,9 @@ export function RevenueAnalysisPage() {
   const [periodFilter, setPeriodFilter] = useState('all')
   const [customStartDate, setCustomStartDate] = useState('')
   const [customEndDate, setCustomEndDate] = useState('')
+  // Snapshot "now" once at mount so the rolling-window memo stays pure.
+  // Refreshing requires a page reload — acceptable for an analysis view.
+  const [nowMs] = useState(() => Date.now())
 
   useEffect(() => {
     api.listValidationRuns(orgId)
@@ -42,7 +45,7 @@ export function RevenueAnalysisPage() {
     if (!runs) return null
 
     const dayMs = 24 * 60 * 60 * 1000
-    const now = Date.now()
+    const now = nowMs
     let startCutoff = null
     let endCutoff = null
     if (periodFilter === '24h') startCutoff = now - dayMs
@@ -119,7 +122,7 @@ export function RevenueAnalysisPage() {
       byDx: toSortedEntries(byDx),
       byStaff: toSortedEntries(byStaff),
     }
-  }, [runs, periodFilter, customStartDate, customEndDate])
+  }, [runs, periodFilter, customStartDate, customEndDate, nowMs])
 
   return (
     <OrgWorkspaceLayout>

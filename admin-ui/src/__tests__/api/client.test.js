@@ -15,7 +15,7 @@ describe('API Client', () => {
   let fetchSpy
 
   beforeEach(() => {
-    fetchSpy = vi.spyOn(global, 'fetch')
+    fetchSpy = vi.spyOn(globalThis, 'fetch')
   })
 
   afterEach(() => {

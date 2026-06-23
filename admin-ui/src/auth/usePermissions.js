@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useAuth } from './AuthProvider.jsx'
+import { useAuth } from './useAuth.js'
 
 export const CATEGORIES = ['Intake', 'Billing', 'Compliance Audit', 'Quality Assurance', 'Eligibility']
 export const ANALYTICS_PAGES = ['staff_performance', 'revenue_analysis']
@@ -32,7 +32,7 @@ export function usePermissions() {
       if (isOrgAdmin) return new Set(CATEGORIES)
       return new Set(
         Object.entries(reportPerms)
-          .filter(([_, verbs]) => Array.isArray(verbs) && verbs.includes('view'))
+          .filter(([, verbs]) => Array.isArray(verbs) && verbs.includes('view'))
           .map(([cat]) => cat)
       )
     }
@@ -41,7 +41,7 @@ export function usePermissions() {
       if (isOrgAdmin) return new Set(CATEGORIES)
       return new Set(
         Object.entries(reportPerms)
-          .filter(([_, verbs]) => Array.isArray(verbs) && verbs.includes('run'))
+          .filter(([, verbs]) => Array.isArray(verbs) && verbs.includes('run'))
           .map(([cat]) => cat)
       )
     }

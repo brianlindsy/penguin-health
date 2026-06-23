@@ -27,7 +27,8 @@ vi.mock('amazon-cognito-identity-js', () => ({
 }))
 
 // Import after mocking
-import { AuthProvider, useAuth } from '../../auth/AuthProvider.jsx'
+import { AuthProvider } from '../../auth/AuthProvider.jsx'
+import { useAuth } from '../../auth/useAuth.js'
 
 // Test component to access auth context
 function TestConsumer() {

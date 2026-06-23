@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { StatusBadge } from '../components/StatusBadge.jsx'
@@ -409,21 +409,24 @@ function ValidationResultsTab({ orgId }) {
     && runDateEnd <= today
 
   // Keep `selectedCategories` aligned with `runnable` once permissions arrive.
+  const runnableKey = runnable.join('|')
   useEffect(() => {
     setSelectedCategories(runnable)
-  }, [runnable.join('|')])
+    // runnable identity changes every render; runnableKey is the stable signal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runnableKey])
 
-  const loadRuns = () => {
+  const loadRuns = useCallback(() => {
     setLoading(true)
     api.listValidationRuns(orgId)
       .then(data => setRuns(data.runs || []))
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
-  }
+  }, [orgId])
 
   useEffect(() => {
     loadRuns()
-  }, [orgId])
+  }, [loadRuns])
 
   const toggleCategory = (cat) => {
     setSelectedCategories(prev =>

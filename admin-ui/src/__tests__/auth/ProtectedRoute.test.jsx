@@ -12,11 +12,11 @@ import { render, screen } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
 // Mock the AuthProvider
-vi.mock('../../auth/AuthProvider.jsx', () => ({
+vi.mock('../../auth/useAuth.js', () => ({
   useAuth: vi.fn(),
 }))
 
-import { useAuth } from '../../auth/AuthProvider.jsx'
+import { useAuth } from '../../auth/useAuth.js'
 import { ProtectedRoute } from '../../auth/ProtectedRoute.jsx'
 
 describe('ProtectedRoute', () => {
