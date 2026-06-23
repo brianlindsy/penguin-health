@@ -75,6 +75,24 @@ class Database(Construct):
             removal_policy=RemovalPolicy.DESTROY,
         )
 
+        # ----- penguin-health-narrative-hashes -----
+        # Cross-document duplicate-detection index for the supportive-care
+        # "narratives must be individualized" rule. Point lookups only
+        # (no Scan, no Query): pk=ORG#{org_id}, sk=HASH#{sha256_hex}.
+        # `ttl` (epoch seconds) drives DynamoDB's 7-day rolling-window
+        # eviction — the rule never reads items older than 7 days.
+        self.narrative_hashes_table = dynamodb.Table(self, "NarrativeHashesTable",
+            table_name=f"{config.PROJECT_NAME}-narrative-hashes",
+            partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            time_to_live_attribute="ttl",
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True,
+            ),
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+
         # ----- penguin-health-stedi -----
         # Stedi eligibility audit log + daily usage counter.
         #

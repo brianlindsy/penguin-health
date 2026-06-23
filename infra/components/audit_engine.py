@@ -29,6 +29,7 @@ class AuditEngine(Construct):
     def __init__(self, scope: Construct, id: str, *,
                  org_config_table: dynamodb.ITable,
                  validation_results_table: dynamodb.ITable,
+                 narrative_hashes_table: dynamodb.ITable,
                  notifications_topic: sns.ITopic) -> None:
         super().__init__(scope, id)
 
@@ -180,6 +181,7 @@ class AuditEngine(Construct):
             environment={
                 "ORG_CONFIG_TABLE_NAME": org_config_table.table_name,
                 "STEDI_TABLE_NAME": "penguin-health-stedi",
+                "NARRATIVE_HASH_TABLE": narrative_hashes_table.table_name,
                 "EMAIL_FROM_ADDRESS": "noreply@penguinhealth.io",
                 "EMAIL_REPLY_TO": "noreply@penguinhealth.io",
                 "ADMIN_UI_BASE_URL": "https://app.penguinhealth.io",
@@ -189,6 +191,13 @@ class AuditEngine(Construct):
         self.rules_engine_fn.add_to_role_policy(s3_policy)
         org_config_table.grant_read_data(self.rules_engine_fn)
         validation_results_table.grant_read_write_data(self.rules_engine_fn)
+        # Least-privilege grants for the supportive-care "narratives must be
+        # individualized" rule: point GetItem + PutItem only, no Scan/Query.
+        narrative_hashes_table.grant(
+            self.rules_engine_fn,
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+        )
 
         # Bedrock permissions for LLM-based rule evaluation
         self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(

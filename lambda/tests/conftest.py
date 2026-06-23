@@ -207,6 +207,24 @@ def mock_dynamodb(aws_credentials):
             BillingMode='PAY_PER_REQUEST',
         )
 
+        # penguin-health-narrative-hashes table
+        # Used by: deterministic_evaluator.op_narrative_hash_unique (rule 1
+        # of the supportive-care org's compliance rules). TTL attribute is
+        # `ttl` but moto doesn't enforce eviction — tests must rely on
+        # explicit deletions / fresh fixtures rather than TTL aging.
+        dynamodb.create_table(
+            TableName='penguin-health-narrative-hashes',
+            KeySchema=[
+                {'AttributeName': 'pk', 'KeyType': 'HASH'},
+                {'AttributeName': 'sk', 'KeyType': 'RANGE'},
+            ],
+            AttributeDefinitions=[
+                {'AttributeName': 'pk', 'AttributeType': 'S'},
+                {'AttributeName': 'sk', 'AttributeType': 'S'},
+            ],
+            BillingMode='PAY_PER_REQUEST',
+        )
+
         # penguin-health-stedi table
         # Used by: stedi.audit (eligibility audit log + daily counter).
         dynamodb.create_table(

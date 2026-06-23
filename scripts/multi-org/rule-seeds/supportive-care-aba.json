@@ -1,0 +1,193 @@
+{
+  "org_id": "supportive-care",
+  "category": "Compliance Audit",
+  "version": "1.0.0",
+  "rules": [
+    {
+      "id": "1",
+      "name": "Narratives are individualized",
+      "description": "No copy/paste across clients, days, or codes within a 7-day rolling window. Exact match only.",
+      "type": "deterministic",
+      "enabled": true,
+      "conditions": [
+        {
+          "field": "narrative_hash",
+          "operator": "narrative_hash_unique",
+          "description": "Narrative is unique within the last 7 days for this org"
+        }
+      ],
+      "logic": "all"
+    },
+    {
+      "id": "2",
+      "name": "Session narrative has >= 2 sentences per hour",
+      "description": "Sentence count must meet 2 x ceil(session_duration_minutes / 60).",
+      "type": "llm",
+      "enabled": true,
+      "rule_text": "Count the number of complete sentences in the session narrative. Compute hours_required = ceil(session_duration_minutes / 60), so a 30-minute session is 1 hour, a 75-minute session is 2 hours, and so on. Compute required_minimum = 2 x hours_required. Pass if sentence_count >= required_minimum, otherwise fail. Treat sentence fragments separated only by bullets or list markers as separate sentences only if each conveys a complete thought.",
+      "fields_to_extract": [
+        {
+          "name": "sentence_count",
+          "type": "integer",
+          "description": "Number of complete sentences in the session narrative."
+        },
+        {
+          "name": "session_duration_minutes",
+          "type": "integer",
+          "description": "Billed session length in minutes."
+        }
+      ]
+    },
+    {
+      "id": "3",
+      "name": "Narrative is written in third person",
+      "description": "Fail when first-person pronouns refer to the provider/clinician.",
+      "type": "llm",
+      "enabled": true,
+      "rule_text": "The narrative must be written in third person. Fail if any first-person pronouns refer to the provider/clinician. References to the client by name or 'the client' are required. Quotes of client speech do not count.",
+      "fields_to_extract": [
+        {
+          "name": "first_person_phrases",
+          "type": "array",
+          "description": "Phrases using 'I', 'me', 'my', 'we', 'our' that refer to the provider."
+        }
+      ]
+    },
+    {
+      "id": "4",
+      "name": "Note signed no earlier than 5 minutes before billed end",
+      "description": "signed_at must be at or after billed_end - 5 min. Signing later is fine.",
+      "type": "deterministic",
+      "enabled": true,
+      "conditions": [
+        {
+          "field": "signed_at",
+          "operator": "datetime_not_before_minus_minutes",
+          "compare_to": "billed_end",
+          "value": 5,
+          "description": "signed_at is within 5 minutes of (or after) billed_end"
+        }
+      ],
+      "logic": "all"
+    },
+    {
+      "id": "5",
+      "name": "Billed time equals session time",
+      "description": "Exact match; no tolerance.",
+      "type": "deterministic",
+      "enabled": true,
+      "conditions": [
+        {
+          "field": "billed_duration_minutes",
+          "operator": "eq",
+          "compare_to": "session_duration_minutes",
+          "description": "billed_duration_minutes == session_duration_minutes"
+        }
+      ],
+      "logic": "all"
+    },
+    {
+      "id": "6",
+      "name": "Location on billed appointment matches session note",
+      "description": "Case-insensitive string match. May be revisited for semantic matching.",
+      "type": "deterministic",
+      "enabled": true,
+      "conditions": [
+        {
+          "field": "billed_location",
+          "operator": "equals_ignore_case",
+          "compare_to": "note_location",
+          "description": "billed_location == note_location (case-insensitive)"
+        }
+      ],
+      "logic": "all"
+    },
+    {
+      "id": "7",
+      "name": "Provider 3-way match (display, billed, signature)",
+      "description": "LLM-based match tolerant of titles, credentials, abbreviations.",
+      "type": "llm",
+      "enabled": true,
+      "rule_text": "Compare provider_display_value, provider_billed_value, and provider_signature_value with human-level reasoning. Pass when all three refer to the same person - minor formatting differences such as titles (Dr., Mr., Mrs.), credentials (MA, MD, BCBA, LCSW), middle initials, hyphenation, abbreviations ('A. Smith' vs. 'Alice Smith'), or name ordering should be considered matches. Fail when any of the three clearly refers to a different person. When in doubt, lean toward pass - false mismatches create noise for reviewers. If any of the three fields is empty, fail with a message indicating which field is missing.",
+      "fields_to_extract": [
+        {"name": "provider_display_value", "type": "string", "description": "Passthrough of provider_display."},
+        {"name": "provider_billed_value", "type": "string", "description": "Passthrough of provider_billed."},
+        {"name": "provider_signature_value", "type": "string", "description": "Passthrough of provider_signature."},
+        {"name": "all_three_refer_to_same_person", "type": "boolean", "description": "True if all three values plausibly refer to the same provider."},
+        {"name": "discrepancy_notes", "type": "string", "description": "Brief explanation of any difference, or which field appears to refer to a different person. Empty if all three match."}
+      ]
+    },
+    {
+      "id": "9",
+      "name": "Client did not nap during session",
+      "description": "Context-aware: a regex on 'nap' alone produces too many false positives.",
+      "type": "llm",
+      "enabled": true,
+      "rule_text": "Determine whether the client fell asleep, dozed, or napped during the billed session time. Pass if there is no indication of the client sleeping during the session. Fail only if the narrative clearly states or strongly implies the client slept during the session. Do NOT fail based on the word 'nap' alone - consider context: a nap mentioned as something the client wanted but did not do, a nap that occurred before or after the session, or a nap referenced as a discussion topic should all pass.",
+      "fields_to_extract": [
+        {"name": "client_fell_asleep_during_session", "type": "boolean", "description": "True if the narrative describes the client sleeping/dozing/napping during the billed window."},
+        {"name": "supporting_quote", "type": "string", "description": "Verbatim quote supporting the determination. Empty if not applicable."}
+      ]
+    },
+    {
+      "id": "10",
+      "name": "Session billed <= 4 hours",
+      "description": "Per-session check (cumulative-per-day interpretation still pending stakeholder reply).",
+      "type": "deterministic",
+      "enabled": true,
+      "conditions": [
+        {
+          "field": "billed_duration_minutes",
+          "operator": "lte",
+          "value": 240,
+          "description": "billed_duration_minutes <= 240"
+        }
+      ],
+      "logic": "all"
+    },
+    {
+      "id": "11",
+      "name": "Raw tracked data is included in the note",
+      "description": "Checks whether tracked data from the data-collection system is reflected in the narrative. Disabled until RPA extracts a tracked_data_summary field.",
+      "type": "llm",
+      "enabled": false,
+      "rule_text": "The narrative must include the raw data tracked during the session. Compare tracked_data_summary against the narrative text. Pass if all tracked data points are represented (verbatim or paraphrased with the same numeric values). Fail if any tracked data is absent from the narrative. If tracked_data_summary is empty, skip the rule.",
+      "fields_to_extract": [
+        {"name": "tracked_data_summary", "type": "string", "description": "Raw data captured by the data-collection system (passthrough)."},
+        {"name": "narrative_includes_tracked_data", "type": "boolean", "description": "True if the narrative explicitly references the tracked data values."},
+        {"name": "missing_data_points", "type": "array", "description": "Tracked data items not reflected in the narrative."}
+      ]
+    },
+    {
+      "id": "12",
+      "name": "Session note converted within 8 days",
+      "description": "note_created_at must be within 8 days of visit_date.",
+      "type": "deterministic",
+      "enabled": true,
+      "conditions": [
+        {
+          "field": "note_created_at",
+          "operator": "within_days",
+          "compare_to": "visit_date",
+          "value": 8,
+          "description": "note_created_at is within 8 days of visit_date"
+        }
+      ],
+      "logic": "all"
+    },
+    {
+      "id": "13",
+      "name": "Supervisor name matches supervisor signature",
+      "description": "LLM-based match tolerant of titles, credentials, abbreviations. Pass when both fields are empty (no supervision required).",
+      "type": "llm",
+      "enabled": true,
+      "rule_text": "Compare supervisor_name_value and supervisor_signature_value with human-level reasoning. Pass when (a) both are empty (rule does not apply, e.g., BCBA-direct sessions with no required supervision), or (b) both are filled and refer to the same person - minor formatting differences such as titles (Dr., Mr., Mrs.), credentials (MA, MD, BCBA, LCSW), middle initials, hyphenation, or name ordering should be considered matches. Fail when (a) exactly one of the two fields is filled while the other is empty (incomplete sign-off), or (b) both are filled but the names clearly refer to different people. When in doubt about whether two names match, lean toward pass - false mismatches create noise for reviewers.",
+      "fields_to_extract": [
+        {"name": "supervisor_name_value", "type": "string", "description": "Passthrough of supervisor_name."},
+        {"name": "supervisor_signature_value", "type": "string", "description": "Passthrough of supervisor_signature."},
+        {"name": "names_refer_to_same_person", "type": "boolean", "description": "True if the name and signature plausibly refer to the same person despite formatting differences."},
+        {"name": "discrepancy_notes", "type": "string", "description": "Brief explanation of any difference. Empty if they match exactly."}
+      ]
+    }
+  ]
+}

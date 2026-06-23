@@ -1,9 +1,13 @@
 """
 Field Extractor for extracting values from document text and CSV content.
 
-Supports two extraction modes:
-1. Text mode: Pattern matching on text lines (for PDFs/text documents)
-2. CSV mode: Column-based extraction using csv_column_mappings (for SFTP CSVs)
+Supports three extraction modes:
+1. JSON-record mode: Read `extracted_fields` from an RpaNoteRecord JSON payload,
+   plus selected top-level keys (org_id, source_record_id) and the flattened
+   `encounter` block (visit_date, provider_display, note_type). Used by the
+   RPA ingestion path.
+2. CSV mode: Column-based extraction using csv_column_mappings (for SFTP CSVs).
+3. Text mode: Pattern matching on text lines (for PDFs/text documents).
 
 Uses organization-specific field mappings from DynamoDB RULES_CONFIG.
 """
@@ -110,26 +114,83 @@ def extract_fields_from_csv(csv_content, csv_column_mappings):
     return fields
 
 
-def extract_fields(data, field_mappings, csv_column_mappings=None):
+def extract_fields_from_json_record(data, field_mappings):
     """
-    Extract fields from document data (text or CSV).
+    Extract fields from an RPA JSON record (RpaNoteRecord shape).
 
-    Automatically detects CSV content and uses appropriate extraction method.
+    The record's `extracted_fields` block is the primary source. Selected
+    top-level keys and the `encounter` block are flattened on top so
+    deterministic rules can reference them without dot notation:
+      - org_id, source_record_id (top-level identifiers)
+      - visit_date, provider_display, note_type (from encounter)
+
+    Per-org `field_mappings` are applied as a final pass: each entry remaps
+    a source key (or list of fallback keys) to a target field name. This
+    lets an org rename a vendor-specific extracted field into the canonical
+    name a rule expects without changing the rule.
 
     Args:
-        data: Dict with 'text' key containing document content
-        field_mappings: Text pattern mappings (for PDFs/text)
-        csv_column_mappings: CSV column mappings (for CSV files), optional
+        data: Parsed JSON dict (must contain 'extracted_fields' key)
+        field_mappings: Per-org renaming map. Each value is either a string
+            (source key) or a list of strings (fallback keys to try in order).
+
+    Returns:
+        dict: Flat dict of field values
+    """
+    fields = {}
+
+    extracted = data.get('extracted_fields') or {}
+    if isinstance(extracted, dict):
+        fields.update(extracted)
+
+    for top_key in ('org_id', 'source_record_id'):
+        if top_key in data and top_key not in fields:
+            fields[top_key] = data[top_key]
+
+    encounter = data.get('encounter') or {}
+    if isinstance(encounter, dict):
+        for enc_key in ('visit_date', 'provider_display', 'note_type'):
+            if enc_key in encounter and enc_key not in fields:
+                fields[enc_key] = encounter[enc_key]
+
+    if field_mappings:
+        for target_name, source_spec in field_mappings.items():
+            source_keys = source_spec if isinstance(source_spec, list) else [source_spec]
+            for source_key in source_keys:
+                if source_key in fields and fields[source_key] is not None:
+                    fields[target_name] = fields[source_key]
+                    break
+
+    print(f"Extracted {len(fields)} fields from JSON record")
+    return fields
+
+
+def extract_fields(data, field_mappings, csv_column_mappings=None):
+    """
+    Extract fields from document data (JSON record, CSV, or text).
+
+    Detection order:
+      1. JSON record — `data` has an `extracted_fields` dict (RpaNoteRecord).
+      2. CSV — `data['text']` has a comma in the first line AND csv_column_mappings
+         is configured.
+      3. Text — fall back to pattern matching on `data['text']`.
+
+    Args:
+        data: Either a parsed JSON dict (RpaNoteRecord) or a dict with 'text' key.
+        field_mappings: Text pattern mappings (text mode) or rename map (JSON mode).
+        csv_column_mappings: CSV column mappings (CSV mode), optional.
 
     Returns:
         dict: Extracted field values
     """
+    if isinstance(data.get('extracted_fields'), dict):
+        return extract_fields_from_json_record(data, field_mappings)
+
     text = data.get('text', '')
 
     if not text:
         return {}
 
-    # Check if content looks like CSV (has comma-separated header row)
     first_line = text.split('\n')[0] if text else ''
     looks_like_csv = csv_column_mappings and ',' in first_line
 
@@ -142,5 +203,4 @@ def extract_fields(data, field_mappings, csv_column_mappings=None):
         except Exception as e:
             print(f"CSV extraction failed, falling back to text: {e}")
 
-    # Fall back to text extraction
     return extract_fields_from_text(text, field_mappings)

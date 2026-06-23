@@ -832,3 +832,182 @@ class TestPsychBedDiagnosisRule:
         status, message = evaluate_deterministic_rule(self.RULE_CONFIG, {}, data)
 
         assert status == 'PASS', message
+
+
+class TestDatetimeNotBeforeMinusMinutesOperator:
+    """Rule 4: 'signed no earlier than 5 minutes before billed end'."""
+
+    def test_signed_exactly_5_min_before_end_passes(self):
+        from deterministic_evaluator import op_datetime_not_before_minus_minutes
+        billed_end = datetime(2026, 6, 22, 10, 0)
+        signed_at = datetime(2026, 6, 22, 9, 55)
+        assert op_datetime_not_before_minus_minutes(signed_at, billed_end, 5) is True
+
+    def test_signed_6_min_before_end_fails(self):
+        from deterministic_evaluator import op_datetime_not_before_minus_minutes
+        billed_end = datetime(2026, 6, 22, 10, 0)
+        signed_at = datetime(2026, 6, 22, 9, 54)
+        assert op_datetime_not_before_minus_minutes(signed_at, billed_end, 5) is False
+
+    def test_signed_at_billed_end_passes(self):
+        from deterministic_evaluator import op_datetime_not_before_minus_minutes
+        billed_end = datetime(2026, 6, 22, 10, 0)
+        assert op_datetime_not_before_minus_minutes(billed_end, billed_end, 5) is True
+
+    def test_signed_hours_after_billed_end_passes(self):
+        from deterministic_evaluator import op_datetime_not_before_minus_minutes
+        billed_end = datetime(2026, 6, 22, 10, 0)
+        signed_at = datetime(2026, 6, 22, 14, 30)
+        assert op_datetime_not_before_minus_minutes(signed_at, billed_end, 5) is True
+
+    def test_missing_value_returns_false(self):
+        from deterministic_evaluator import op_datetime_not_before_minus_minutes
+        billed_end = datetime(2026, 6, 22, 10, 0)
+        signed_at = datetime(2026, 6, 22, 9, 55)
+        assert op_datetime_not_before_minus_minutes(signed_at, billed_end, None) is False
+
+
+class TestJsonRecordModeEvaluation:
+    """The deterministic evaluator must fall through to `fields` when
+    `data['text']` is not CSV (the RPA JSON-record path)."""
+
+    def test_eq_runs_against_fields_for_plain_text_data(self):
+        """Rule 5 shape: numeric equality between two fields, no CSV."""
+        from deterministic_evaluator import evaluate_deterministic_rule
+        rule = {
+            'conditions': [{
+                'field': 'billed_duration_minutes',
+                'operator': 'eq',
+                'compare_to': 'session_duration_minutes',
+            }],
+            'logic': 'all',
+        }
+        fields = {'billed_duration_minutes': 60, 'session_duration_minutes': 60}
+        data = {'text': 'Client engaged in DTT trials...'}  # plain narrative
+        status, message = evaluate_deterministic_rule(rule, fields, data)
+        assert status == 'PASS', message
+
+    def test_eq_fails_when_fields_differ(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+        rule = {
+            'conditions': [{
+                'field': 'billed_duration_minutes',
+                'operator': 'eq',
+                'compare_to': 'session_duration_minutes',
+            }],
+            'logic': 'all',
+        }
+        fields = {'billed_duration_minutes': 60, 'session_duration_minutes': 75}
+        data = {'text': 'Narrative...'}
+        status, _ = evaluate_deterministic_rule(rule, fields, data)
+        assert status == 'FAIL'
+
+    def test_skip_when_no_fields_and_no_csv(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+        rule = {
+            'conditions': [{'field': 'a', 'operator': 'eq', 'value': 1}],
+            'logic': 'all',
+        }
+        status, _ = evaluate_deterministic_rule(rule, {}, {'text': 'plain prose'})
+        assert status == 'SKIP'
+
+    def test_csv_path_still_works(self):
+        """Backwards-compat: CSV-formatted data still parses CSV columns."""
+        from deterministic_evaluator import evaluate_deterministic_rule
+        rule = {
+            'conditions': [{'field': 'foo', 'operator': 'equals', 'value': 'bar'}],
+            'logic': 'all',
+        }
+        data = {'text': 'foo,baz\nbar,qux\n'}
+        status, message = evaluate_deterministic_rule(rule, {}, data)
+        assert status == 'PASS', message
+
+
+class TestNarrativeHashUniqueOperator:
+    """Rule 1: cross-document duplicate detection via DynamoDB."""
+
+    def test_pass_on_first_write(self, mock_dynamodb):
+        from deterministic_evaluator import evaluate_deterministic_rule
+        rule = {
+            'conditions': [{'field': 'narrative_hash', 'operator': 'narrative_hash_unique'}],
+            'logic': 'all',
+        }
+        fields = {
+            'narrative_hash': 'a' * 64,
+            'org_id': 'supportive-care',
+            'source_record_id': 'note-1',
+        }
+        status, message = evaluate_deterministic_rule(rule, fields, {'text': 'narrative'})
+        assert status == 'PASS', message
+
+    def test_fail_on_duplicate_different_source(self, mock_dynamodb):
+        from deterministic_evaluator import evaluate_deterministic_rule
+        rule = {
+            'conditions': [{'field': 'narrative_hash', 'operator': 'narrative_hash_unique'}],
+            'logic': 'all',
+        }
+        first = {
+            'narrative_hash': 'b' * 64,
+            'org_id': 'supportive-care',
+            'source_record_id': 'note-1',
+        }
+        second = {
+            'narrative_hash': 'b' * 64,
+            'org_id': 'supportive-care',
+            'source_record_id': 'note-2',  # different note, same narrative
+        }
+        evaluate_deterministic_rule(rule, first, {'text': 'narrative'})
+        status, message = evaluate_deterministic_rule(rule, second, {'text': 'narrative'})
+        assert status == 'FAIL'
+        assert 'note-1' in message
+
+    def test_reevaluation_of_same_record_passes(self, mock_dynamodb):
+        """The same source_record_id seeing its own hash a second time is
+        NOT a self-collision — replays after deploy must not flag."""
+        from deterministic_evaluator import evaluate_deterministic_rule
+        rule = {
+            'conditions': [{'field': 'narrative_hash', 'operator': 'narrative_hash_unique'}],
+            'logic': 'all',
+        }
+        fields = {
+            'narrative_hash': 'c' * 64,
+            'org_id': 'supportive-care',
+            'source_record_id': 'note-7',
+        }
+        evaluate_deterministic_rule(rule, fields, {'text': 'narrative'})
+        status, message = evaluate_deterministic_rule(rule, fields, {'text': 'narrative'})
+        assert status == 'PASS', message
+
+    def test_different_orgs_do_not_collide(self, mock_dynamodb):
+        from deterministic_evaluator import evaluate_deterministic_rule
+        rule = {
+            'conditions': [{'field': 'narrative_hash', 'operator': 'narrative_hash_unique'}],
+            'logic': 'all',
+        }
+        org_a = {
+            'narrative_hash': 'd' * 64,
+            'org_id': 'org-a',
+            'source_record_id': 'note-1',
+        }
+        org_b = {
+            'narrative_hash': 'd' * 64,  # same hash text
+            'org_id': 'org-b',
+            'source_record_id': 'note-2',
+        }
+        evaluate_deterministic_rule(rule, org_a, {'text': 'narrative'})
+        status, _ = evaluate_deterministic_rule(rule, org_b, {'text': 'narrative'})
+        assert status == 'PASS'  # different partitions
+
+    def test_skip_when_required_field_missing(self, mock_dynamodb):
+        from deterministic_evaluator import evaluate_deterministic_rule
+        rule = {
+            'conditions': [{'field': 'narrative_hash', 'operator': 'narrative_hash_unique'}],
+            'logic': 'all',
+        }
+        # No org_id
+        status, _ = evaluate_deterministic_rule(
+            rule,
+            {'narrative_hash': 'e' * 64, 'source_record_id': 'note-1'},
+            {'text': 'n'},
+        )
+        assert status == 'SKIP'

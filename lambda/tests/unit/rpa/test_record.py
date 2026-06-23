@@ -136,3 +136,40 @@ def test_extracted_fields_allows_clinical_data():
     })
     d = rec.to_json_dict()
     assert d["extracted_fields"]["billed_duration_minutes"] == 90
+
+
+class TestNarrativeHash:
+    """Stable key for the supportive-care 'individualized narrative' rule."""
+
+    def test_deterministic(self):
+        from rpa.record import narrative_hash
+        assert narrative_hash("Client engaged.") == narrative_hash("Client engaged.")
+
+    def test_whitespace_collapse(self):
+        from rpa.record import narrative_hash
+        assert narrative_hash("Client   engaged.") == narrative_hash("Client engaged.")
+
+    def test_case_insensitive(self):
+        from rpa.record import narrative_hash
+        assert narrative_hash("CLIENT engaged.") == narrative_hash("client engaged.")
+
+    def test_punctuation_preserved(self):
+        """Two narratives differing only in trailing punctuation must hash differently."""
+        from rpa.record import narrative_hash
+        assert narrative_hash("Client engaged") != narrative_hash("Client engaged.")
+
+    def test_distinct_narratives_differ(self):
+        from rpa.record import narrative_hash
+        assert narrative_hash("Client engaged in DTT.") != narrative_hash("Client engaged in NET.")
+
+    def test_empty_and_none(self):
+        from rpa.record import narrative_hash
+        h = narrative_hash("")
+        assert len(h) == 64
+        assert narrative_hash(None) == h
+
+    def test_output_shape(self):
+        from rpa.record import narrative_hash
+        h = narrative_hash("Some narrative.")
+        assert len(h) == 64
+        assert all(c in "0123456789abcdef" for c in h)

@@ -18,11 +18,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict, field
 from typing import Any
+import hashlib
 import re
 
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")  # tolerates date-only or full iso
+_WHITESPACE = re.compile(r"\s+")
+
+
+def narrative_hash(narrative_text: str) -> str:
+    """SHA-256 of the narrative after lowercasing and collapsing whitespace.
+
+    Stable key for the "narratives must be individualized" rule
+    (op_narrative_hash_unique in deterministic_evaluator). Punctuation is
+    preserved so near-duplicates hash differently — exact match is the
+    stakeholder-confirmed semantics.
+    """
+    normalized = _WHITESPACE.sub(" ", (narrative_text or "").strip().lower())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 _FORBIDDEN_PATIENT_KEYS = frozenset({
     "first_name", "last_name", "first", "last", "name",

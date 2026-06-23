@@ -8,9 +8,75 @@ The 'field' in conditions refers directly to CSV column headers.
 """
 
 import csv
+import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from io import StringIO
+
+
+_NARRATIVE_HASH_TABLE_NAME = os.environ.get(
+    "NARRATIVE_HASH_TABLE", "penguin-health-narrative-hashes"
+)
+_NARRATIVE_HASH_TTL_DAYS = 7
+
+
+def _narrative_hash_table():
+    """Lazy DynamoDB resource so importing this module doesn't require AWS."""
+    import boto3  # local import: tests can stub boto3 without loading it
+    return boto3.resource("dynamodb").Table(_NARRATIVE_HASH_TABLE_NAME)
+
+
+def evaluate_narrative_hash_unique(fields):
+    """
+    Cross-document duplicate-detection operator for the "narratives must be
+    individualized" rule.
+
+    Reads `narrative_hash`, `org_id`, and `source_record_id` from `fields`.
+    Queries `penguin-health-narrative-hashes` for a prior write under
+    (ORG#<org_id>, HASH#<narrative_hash>):
+      - if no prior, writes the hash with a 7-day TTL and returns PASS
+      - if a prior exists with a different source_record_id, returns FAIL
+        with the prior note's id and capture time in the message
+      - if a prior exists with the SAME source_record_id, returns PASS
+        (re-evaluation of the same note is not a self-collision)
+
+    Returns:
+        tuple: (passed: bool, message: str, skip: bool)
+    """
+    narrative_hash_value = fields.get("narrative_hash")
+    org_id = fields.get("org_id")
+    source_record_id = fields.get("source_record_id")
+
+    if not narrative_hash_value:
+        return False, "Required field 'narrative_hash' not found", True
+    if not org_id:
+        return False, "Required field 'org_id' not found", True
+    if not source_record_id:
+        return False, "Required field 'source_record_id' not found", True
+
+    table = _narrative_hash_table()
+    pk = f"ORG#{org_id}"
+    sk = f"HASH#{narrative_hash_value}"
+
+    prior = table.get_item(Key={"pk": pk, "sk": sk}).get("Item")
+    if prior:
+        if prior.get("source_record_id") == source_record_id:
+            return True, "Same note re-evaluated; not a duplicate", False
+        return False, (
+            f"Narrative is a duplicate of note "
+            f"{prior.get('source_record_id')} from "
+            f"{prior.get('captured_at')} within the last 7 days"
+        ), False
+
+    now = datetime.now(timezone.utc)
+    table.put_item(Item={
+        "pk": pk,
+        "sk": sk,
+        "source_record_id": source_record_id,
+        "captured_at": now.isoformat().replace("+00:00", "Z"),
+        "ttl": int((now + timedelta(days=_NARRATIVE_HASH_TTL_DAYS)).timestamp()),
+    })
+    return True, "Narrative is unique within 7-day window", False
 
 
 # Date formats to try when parsing date strings
@@ -304,6 +370,23 @@ def op_duration_between(field_dt, compare_dt, value):
     return min_val <= duration_minutes <= max_val
 
 
+def op_datetime_not_before_minus_minutes(field_dt, compare_dt, value):
+    """
+    Field datetime is at or after `compare_dt - value minutes`.
+
+    Used by the "signed no earlier than N minutes before billed end" rule:
+      field=signed_at, compare_to=billed_end, value=5
+    Passes when the field is within `value` minutes before compare_dt, OR
+    at/after compare_dt. Fails when the field is more than `value` minutes
+    before compare_dt.
+    """
+    if value is None or compare_dt is None:
+        return False
+    from datetime import timedelta
+    threshold = compare_dt - timedelta(minutes=value)
+    return field_dt >= threshold
+
+
 # String operators
 def op_equals(field_value, compare_value, value):
     """Exact string match (case-sensitive)."""
@@ -435,6 +518,7 @@ DATETIME_OPERATORS = {
     'datetime_after': op_datetime_after,
     'datetime_not_before': op_datetime_not_before,
     'datetime_not_after': op_datetime_not_after,
+    'datetime_not_before_minus_minutes': op_datetime_not_before_minus_minutes,
     'duration_lte': op_duration_lte,
     'duration_gte': op_duration_gte,
     'duration_between': op_duration_between,
@@ -504,6 +588,11 @@ def evaluate_condition(condition, fields):
     compare_to = condition.get('compare_to')
     value = condition.get('value')
     description = condition.get('description')
+
+    # Cross-document operator: reads org_id + source_record_id from fields,
+    # talks to DynamoDB. Doesn't fit the standard (field, compare, value) shape.
+    if operator == 'narrative_hash_unique':
+        return evaluate_narrative_hash_unique(fields)
 
     # Get field value (supports fallback list)
     field_value, field_name = get_field_value(fields, field_spec)
@@ -810,12 +899,26 @@ def evaluate_row_match_condition(condition, all_rows):
 
 def evaluate_deterministic_rule(rule_config, fields, data=None):
     """
-    Evaluate a deterministic rule against CSV column values.
+    Evaluate a deterministic rule against extracted field values.
+
+    Two input shapes are supported:
+
+    1. CSV mode (legacy SFTP path): when `data['text']` looks like CSV, the
+       evaluator parses it on the fly and uses CSV columns as the lookup
+       dict. `fields` is ignored. `row_match` conditions are supported by
+       searching all parsed rows.
+
+    2. Pre-extracted fields mode (RPA JSON path, PDFs, anything else): when
+       `data['text']` is not CSV — or when `data` is missing — the evaluator
+       uses the `fields` dict directly. `row_match` is not available here
+       because there is no multi-row source. `fields` for an RPA record is
+       built by `field_extractor.extract_fields_from_json_record`.
 
     Args:
         rule_config: Rule configuration dict with conditions and logic
-        fields: Dict of pre-extracted field values (unused, kept for API compatibility)
-        data: Dict with 'text' key containing raw CSV content
+        fields: Dict of pre-extracted field values (used in JSON/text mode)
+        data: Document data — either a CSV-bearing `{'text': ...}` or a
+              parsed JSON record
 
     Returns:
         tuple: (status: str, message: str)
@@ -827,20 +930,20 @@ def evaluate_deterministic_rule(rule_config, fields, data=None):
     if not conditions and logic != 'conditional':
         return 'SKIP', 'No conditions defined for rule'
 
-    # Extract columns directly from CSV
-    if not data or not data.get('text'):
-        return 'SKIP', 'No CSV data available for evaluation'
-
-    csv_content = data.get('text', '')
+    csv_content = (data or {}).get('text', '')
     first_line = csv_content.split('\n')[0] if csv_content else ''
-    if ',' not in first_line:
-        return 'SKIP', 'Data does not appear to be CSV format'
+    looks_like_csv = bool(csv_content) and ',' in first_line
 
-    csv_columns = extract_csv_columns(csv_content)
-    all_rows = extract_all_csv_rows(csv_content)
-
-    if not csv_columns:
-        return 'SKIP', 'No columns extracted from CSV'
+    if looks_like_csv:
+        csv_columns = extract_csv_columns(csv_content)
+        all_rows = extract_all_csv_rows(csv_content)
+        if not csv_columns:
+            return 'SKIP', 'No columns extracted from CSV'
+    else:
+        if not fields:
+            return 'SKIP', 'No extracted fields available for evaluation'
+        csv_columns = fields
+        all_rows = []
 
     # Handle conditional logic: "if X then Y" rules
     # Format: { "logic": "conditional", "conditionals": [ { "if": [...], "then": [...] or "pass" }, ... ] }

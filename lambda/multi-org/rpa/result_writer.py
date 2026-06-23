@@ -28,7 +28,7 @@ import boto3
 from audit import emit as audit_emit
 from audit.schema import patient_hash as compute_patient_hash
 
-from .record import RpaEncounter, RpaNoteRecord, RpaPatient
+from .record import RpaEncounter, RpaNoteRecord, RpaPatient, narrative_hash
 
 
 _s3_client = boto3.client("s3")
@@ -87,6 +87,8 @@ def build_record(
         provider_display=extraction["provider_display"],
         note_type=extraction["note_type"],
     )
+    extracted_fields = dict(extraction.get("extracted_fields") or {})
+    extracted_fields.setdefault("narrative_hash", narrative_hash(extraction["text"]))
     return RpaNoteRecord(
         schema_version=1,
         source=f"rpa.{vendor}",
@@ -99,7 +101,7 @@ def build_record(
         encounter=encounter,
         text=extraction["text"],
         body_html=extraction["body_html"],
-        extracted_fields=extraction.get("extracted_fields") or {},
+        extracted_fields=extracted_fields,
     )
 
 
