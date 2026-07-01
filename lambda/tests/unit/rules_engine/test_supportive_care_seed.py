@@ -102,7 +102,7 @@ def test_rule_4_uses_minus_minutes_operator():
     cond = rule['conditions'][0]
     assert cond['operator'] == 'datetime_not_before_minus_minutes'
     assert cond['field'] == 'signed_at'
-    assert cond['compare_to'] == 'billed_end'
+    assert cond['compare_to'] == 'billing_list_date_time_to'
     assert cond['value'] == 5
 
 

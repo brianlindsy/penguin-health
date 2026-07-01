@@ -9,6 +9,7 @@ These rules apply to all work in this repository. Follow them by default; deviat
 - Update relevant docs (READMEs, `docs/`, inline module docstrings) when behavior, interfaces, or operational steps change. Do not leave docs describing the old behavior.
 - Trivial changes (typos, formatting, comment edits) do not require tests.
 - **Logic touching secrets or PHI/PII gets extra tests and extra scrutiny.** Cover the unhappy paths explicitly: missing/invalid auth, redaction, audit-log emission, encryption boundaries, and accidental leakage into logs or error messages. Call out the sensitive path in the PR description so a reviewer knows where to look.
+- **Design and reference docs describe only what's in scope.** Don't include rejected alternatives, deferred work, "v2 ideas," "future options," "earlier drafts said," or defensive statements about things we are explicitly not doing ("we do NOT add X"). If a decision was made to drop something, the doc reflects the decision — it does not document the rejected option to refute it. Same rule for inline code comments. Pollution from out-of-scope content hides the real decisions a reader needs.
 
 ## Infrastructure
 

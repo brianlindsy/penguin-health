@@ -72,11 +72,12 @@ class AdminUi(Construct):
                  analytics_reports_table: dynamodb.ITable,
                  deep_jobs_table: dynamodb.ITable,
                  stedi_table: dynamodb.ITable,
-                 rpa_state_machine=None) -> None:
-        # rpa_state_machine is optional so the admin UI can be deployed
-        # standalone (e.g., a dev stack without RPA). When provided, the
-        # admin Lambda gets the ARN as an env var + IAM grants to call
-        # StartExecution / ListExecutions / DescribeExecution on it.
+                 centralreach_state_machine=None) -> None:
+        # centralreach_state_machine is optional so the admin UI can be
+        # deployed standalone (e.g., a dev stack without the CentralReach
+        # ingest path). When provided, the admin Lambda gets the ARN as
+        # an env var + IAM grants to call StartExecution /
+        # ListExecutions / DescribeExecution on it.
         super().__init__(scope, id)
 
         # ----- Cognito -----
@@ -127,7 +128,7 @@ class AdminUi(Construct):
         rules_engine_dir = os.path.join(lambda_multi_org_dir, "rules-engine")
         stedi_pkg_dir = os.path.join(lambda_multi_org_dir, "stedi")
         notifications_pkg_dir = os.path.join(lambda_multi_org_dir, "notifications")
-        rpa_pkg_dir = os.path.join(lambda_multi_org_dir, "rpa")
+        centralreach_pkg_dir = os.path.join(lambda_multi_org_dir, "centralreach")
 
         # Three modules live in rules-engine/ but are bundled flat into the
         # admin_api asset so `from bedrock_client import ...` resolves at
@@ -147,12 +148,12 @@ class AdminUi(Construct):
             os.path.join(lambda_api_dir, "nl_agent_tools.py"),
             os.path.join(lambda_api_dir, "eligibility_api.py"),
             os.path.join(lambda_api_dir, "eligibility_worklist_api.py"),
-            os.path.join(lambda_api_dir, "rpa_api.py"),
+            os.path.join(lambda_api_dir, "centralreach_api.py"),
             os.path.join(lambda_api_dir, "sqlparse"),
             stedi_pkg_dir,
             notifications_pkg_dir,
             audit_pkg_dir,
-            rpa_pkg_dir,
+            centralreach_pkg_dir,
         ] + [os.path.join(rules_engine_dir, m) for m in shared_llm_modules]
 
         self.api_function = _lambda.Function(self, "AdminApiFunction",
@@ -170,7 +171,7 @@ class AdminUi(Construct):
                     "!nl_agent_tools.py",
                     "!eligibility_api.py",
                     "!eligibility_worklist_api.py",
-                    "!rpa_api.py",
+                    "!centralreach_api.py",
                     "!sqlparse/**",
                 ],
                 asset_hash_type=AssetHashType.CUSTOM,
@@ -185,12 +186,12 @@ class AdminUi(Construct):
                         (os.path.join(lambda_api_dir, "nl_agent_tools.py"), None),
                         (os.path.join(lambda_api_dir, "eligibility_api.py"), None),
                         (os.path.join(lambda_api_dir, "eligibility_worklist_api.py"), None),
-                        (os.path.join(lambda_api_dir, "rpa_api.py"), None),
+                        (os.path.join(lambda_api_dir, "centralreach_api.py"), None),
                         (os.path.join(lambda_api_dir, "sqlparse"), None),
                         (stedi_pkg_dir, "stedi"),
                         (notifications_pkg_dir, "notifications"),
                         (audit_pkg_dir, "audit"),
-                        (rpa_pkg_dir, "rpa"),
+                        (centralreach_pkg_dir, "centralreach"),
                     ] + [
                         (os.path.join(rules_engine_dir, m), None)
                         for m in shared_llm_modules
@@ -587,38 +588,39 @@ class AdminUi(Construct):
                 fn.add_environment(k, v)
 
         # ----- RPA: state-machine ARN + StartExecution / read grants -----
-        # Wires `lambda/api/rpa_api.py` to the Step Functions state machine
-        # built by `components/rpa.py`. Optional: when no Rpa construct is
-        # passed, the API still imports rpa_api fine (its handlers raise
-        # at call-time if the env var is missing) and the four RPA routes
-        # just return 500 — useful for dev stacks that don't deploy the
-        # browser-automation runtime.
-        if rpa_state_machine is not None:
+        # Wires `lambda/api/centralreach_api.py` to the Step Functions
+        # state machine built by `components/centralreach.py`. Optional:
+        # when no CentralReach construct is passed, the API still imports
+        # centralreach_api fine (its handlers raise at call-time if the
+        # env var is missing) and the four CentralReach routes just
+        # return 500 — useful for dev stacks that don't deploy the
+        # CentralReach ingest runtime.
+        if centralreach_state_machine is not None:
             from aws_cdk import ArnFormat, Stack
             self.api_function.add_environment(
-                "RPA_STATE_MACHINE_ARN",
-                rpa_state_machine.state_machine_arn,
+                "CENTRALREACH_STATE_MACHINE_ARN",
+                centralreach_state_machine.state_machine_arn,
             )
             # Execution ARN format is `arn:aws:states:REGION:ACCT:execution:NAME:EXEC`
-            # (colon between resource type and name, NOT slash). CDK's default
-            # arn_format is slash-separated; we explicitly pass
-            # COLON_RESOURCE_NAME so the resulting Resource is what IAM will
-            # actually evaluate at runtime. Python string ops on the L2
-            # state_machine_arn token can't be used here — the value is
-            # unresolved at synth time, so any string munging silently produces
-            # broken ARNs.
+            # (colon between resource type and name, NOT slash). CDK's
+            # default arn_format is slash-separated; we explicitly pass
+            # COLON_RESOURCE_NAME so the resulting Resource is what IAM
+            # will actually evaluate at runtime. Python string ops on
+            # the L2 state_machine_arn token can't be used here — the
+            # value is unresolved at synth time, so any string munging
+            # silently produces broken ARNs.
             stack = Stack.of(self)
             execution_arn_pattern = stack.format_arn(
                 service="states",
                 resource="execution",
-                resource_name=f"{rpa_state_machine.state_machine_name}:*",
+                resource_name=f"{centralreach_state_machine.state_machine_name}:*",
                 arn_format=ArnFormat.COLON_RESOURCE_NAME,
             )
             self.api_function.add_to_role_policy(iam.PolicyStatement(
                 actions=[
                     "states:StartExecution",
                 ],
-                resources=[rpa_state_machine.state_machine_arn],
+                resources=[centralreach_state_machine.state_machine_arn],
             ))
             self.api_function.add_to_role_policy(iam.PolicyStatement(
                 actions=[
@@ -626,7 +628,7 @@ class AdminUi(Construct):
                     "states:DescribeExecution",
                 ],
                 resources=[
-                    rpa_state_machine.state_machine_arn,
+                    centralreach_state_machine.state_machine_arn,
                     execution_arn_pattern,
                 ],
             ))

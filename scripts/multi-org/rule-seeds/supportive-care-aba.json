@@ -63,9 +63,9 @@
         {
           "field": "signed_at",
           "operator": "datetime_not_before_minus_minutes",
-          "compare_to": "billed_end",
+          "compare_to": "billing_list_date_time_to",
           "value": 5,
-          "description": "signed_at is within 5 minutes of (or after) billed_end"
+          "description": "signed_at is within 5 minutes of (or after) billing_list_date_time_to"
         }
       ],
       "logic": "all"
@@ -78,10 +78,14 @@
       "enabled": true,
       "conditions": [
         {
-          "field": "billed_duration_minutes",
+          "field": "billing_list_time_worked_in_mins",
           "operator": "eq",
-          "compare_to": "session_duration_minutes",
-          "description": "billed_duration_minutes == session_duration_minutes"
+          "compare_expr": {
+            "op": "duration_minutes",
+            "from": "billing_list_date_time_from",
+            "to": "billing_list_date_time_to"
+          },
+          "description": "billing_list_time_worked_in_mins == duration_minutes(billing_list_date_time_from, billing_list_date_time_to)"
         }
       ],
       "logic": "all"
@@ -111,8 +115,8 @@
       "rule_text": "Compare provider_display_value, provider_billed_value, and provider_signature_value with human-level reasoning. Pass when all three refer to the same person - minor formatting differences such as titles (Dr., Mr., Mrs.), credentials (MA, MD, BCBA, LCSW), middle initials, hyphenation, abbreviations ('A. Smith' vs. 'Alice Smith'), or name ordering should be considered matches. Fail when any of the three clearly refers to a different person. When in doubt, lean toward pass - false mismatches create noise for reviewers. If any of the three fields is empty, fail with a message indicating which field is missing.",
       "fields_to_extract": [
         {"name": "provider_display_value", "type": "string", "description": "Passthrough of provider_display."},
-        {"name": "provider_billed_value", "type": "string", "description": "Passthrough of provider_billed."},
-        {"name": "provider_signature_value", "type": "string", "description": "Passthrough of provider_signature."},
+        {"name": "provider_billed_value", "type": "string", "description": "Passthrough of note_provider_billed."},
+        {"name": "provider_signature_value", "type": "string", "description": "Passthrough of note_provider_signature_name."},
         {"name": "all_three_refer_to_same_person", "type": "boolean", "description": "True if all three values plausibly refer to the same provider."},
         {"name": "discrepancy_notes", "type": "string", "description": "Brief explanation of any difference, or which field appears to refer to a different person. Empty if all three match."}
       ]

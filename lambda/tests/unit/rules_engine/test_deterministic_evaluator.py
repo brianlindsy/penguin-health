@@ -17,6 +17,51 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', 'multi-org', 'rules-engine'))
 
 
+class TestCoerceDecimals:
+    """Pin the DynamoDB-Decimal coercion helper. Rule configs pulled
+    from DynamoDB carry `Decimal` values for every number; operators
+    downstream expect plain int/float."""
+
+    def test_integer_decimal_becomes_int(self):
+        from decimal import Decimal
+        from deterministic_evaluator import _coerce_decimals
+        result = _coerce_decimals(Decimal('5'))
+        assert result == 5
+        assert isinstance(result, int)
+
+    def test_fractional_decimal_becomes_float(self):
+        from decimal import Decimal
+        from deterministic_evaluator import _coerce_decimals
+        result = _coerce_decimals(Decimal('5.5'))
+        assert result == 5.5
+        assert isinstance(result, float)
+
+    def test_recurses_into_dict(self):
+        """`between` operator uses `value: {min, max}`. Both need
+        coercion, not just the outer dict."""
+        from decimal import Decimal
+        from deterministic_evaluator import _coerce_decimals
+        result = _coerce_decimals({'min': Decimal('1'), 'max': Decimal('10')})
+        assert result == {'min': 1, 'max': 10}
+        assert all(isinstance(v, int) for v in result.values())
+
+    def test_recurses_into_list(self):
+        """The `in` and `starts_with_any` operators use list values."""
+        from decimal import Decimal
+        from deterministic_evaluator import _coerce_decimals
+        result = _coerce_decimals([Decimal('1'), Decimal('2.5')])
+        assert result == [1, 2.5]
+        assert isinstance(result[0], int)
+        assert isinstance(result[1], float)
+
+    def test_leaves_non_decimals_alone(self):
+        from deterministic_evaluator import _coerce_decimals
+        assert _coerce_decimals(5) == 5
+        assert _coerce_decimals('hello') == 'hello'
+        assert _coerce_decimals(None) is None
+        assert _coerce_decimals(True) is True
+
+
 class TestDateParsing:
     """Test date parsing utilities."""
 
@@ -69,6 +114,20 @@ class TestDateParsing:
 
         assert result == dt
 
+    def test_parse_date_accepts_iso8601_with_time(self):
+        """Regression: CR's list-endpoint timestamps use `T` separator
+        and 7-digit fractional seconds
+        (e.g. `2026-07-01T03:00:07.1100000`). `parse_date` must handle
+        these — otherwise date operators on `billing_list_creation_date`
+        etc. SKIP with 'Could not parse date'."""
+        from deterministic_evaluator import parse_date
+
+        result = parse_date('2026-07-01T03:00:07.1100000')
+        assert result is not None
+        assert result.year == 2026
+        assert result.month == 7
+        assert result.day == 1
+
 
 class TestDatetimeParsing:
     """Test datetime parsing utilities."""
@@ -101,6 +160,74 @@ class TestDatetimeParsing:
 
         assert result is not None
         assert result.year == 2024
+
+    def test_parse_datetime_accepts_iso8601_with_fractional_seconds(self):
+        """Regression: CR emits full ISO-8601 timestamps with `T` and
+        7-digit fractional seconds. `parse_datetime` must handle them
+        so `datetime_before` / `duration_lte` / etc. on
+        `billing_list_creation_date`, `billing_list_date_time_from`, ...
+        don't SKIP with 'Could not parse datetime'."""
+        from deterministic_evaluator import parse_datetime
+
+        result = parse_datetime('2026-07-01T03:00:07.1100000')
+        assert result is not None
+        assert result.year == 2026
+        assert result.month == 7
+        assert result.day == 1
+        assert result.hour == 3
+        assert result.minute == 0
+        assert result.second == 7
+
+    def test_parse_datetime_accepts_iso8601_with_z_suffix(self):
+        """The preview endpoint's `signed_at` timestamps carry a
+        trailing `Z` (e.g. `2026-06-28T22:59:32.0000000Z`). Python 3.11+
+        `fromisoformat` accepts these."""
+        from deterministic_evaluator import parse_datetime
+
+        result = parse_datetime('2026-06-28T22:59:32.0000000Z')
+        assert result is not None
+        assert result.year == 2026
+        assert result.hour == 22
+        assert result.minute == 59
+
+    def test_parse_datetime_strips_tzinfo(self):
+        """Regression: rule 4 compares `signed_at` (has trailing `Z`,
+        so `fromisoformat` returns tz-aware) against
+        `billing_list_date_time_to` (no suffix, tz-naive). The
+        operators raise "can't compare offset-naive and offset-aware
+        datetimes". Both parsers must return tz-naive so every
+        operator's compare is uniform."""
+        from deterministic_evaluator import parse_datetime
+
+        aware = parse_datetime('2026-06-28T22:59:32.0000000Z')
+        naive = parse_datetime('2026-06-28T22:59:32.0000000')
+        assert aware.tzinfo is None
+        assert naive.tzinfo is None
+        # And they compare without raising.
+        assert aware == naive
+
+    def test_datetime_not_before_minus_minutes_mixed_tz_inputs_do_not_crash(self):
+        """End-to-end regression: rule 4 evaluated against a record
+        where `signed_at` is aware-ISO and
+        `billing_list_date_time_to` is naive-ISO must PASS/FAIL,
+        NOT raise 'can't compare offset-naive and offset-aware'."""
+        from deterministic_evaluator import evaluate_condition
+
+        condition = {
+            'field': 'signed_at',
+            'operator': 'datetime_not_before_minus_minutes',
+            'compare_to': 'billing_list_date_time_to',
+            'value': 5,
+        }
+        # signed_at ships with `Z` from the preview endpoint;
+        # billing_list_date_time_to does not, from the list endpoint.
+        fields = {
+            'signed_at':                    '2026-06-28T22:59:32.0000000Z',
+            'billing_list_date_time_to':    '2026-06-28T23:00:00.0000000',
+        }
+        passed, message, skip = evaluate_condition(condition, fields)
+        assert skip is False, message  # no ERROR/SKIP due to tz mismatch
+        assert passed is True, message
 
 
 class TestTimeParsing:
@@ -525,6 +652,163 @@ class TestEvaluateCondition:
         assert passed is True
 
 
+class TestCompareExpr:
+    """`compare_expr` lets a rule config compute the comparison value
+    from other fields inline, so an org can point at its own vendor
+    field names (e.g. `session_start` vs the CR list-endpoint's
+    `billing_list_date_time_from`) without a code change to the
+    evaluator.
+
+    The seed rule for "billed minutes matches session length" uses
+    the `duration_minutes` op with `from=billing_list_date_time_from`,
+    `to=billing_list_date_time_to`. These tests pin both the op
+    itself and its integration with `evaluate_condition`."""
+
+    _RULE_5 = {
+        'description': ('billing_list_time_worked_in_mins == '
+                        'duration_minutes(billing_list_date_time_from, '
+                        'billing_list_date_time_to)'),
+        'field': 'billing_list_time_worked_in_mins',
+        'operator': 'eq',
+        'compare_expr': {
+            'op': 'duration_minutes',
+            'from': 'billing_list_date_time_from',
+            'to': 'billing_list_date_time_to',
+        },
+    }
+
+    def _fields(self, **overrides):
+        fields = {
+            'billing_list_time_worked_in_mins': 75,
+            'billing_list_date_time_from': '2026-06-28T17:00:00.0000000',
+            'billing_list_date_time_to':   '2026-06-28T18:15:00.0000000',
+        }
+        fields.update(overrides)
+        return fields
+
+    def test_rule5_passes_when_billed_minutes_matches(self):
+        from deterministic_evaluator import evaluate_condition
+        passed, msg, skip = evaluate_condition(self._RULE_5, self._fields())
+        assert passed is True
+        assert skip is False
+
+    def test_rule5_fails_when_billed_minutes_over_reports(self):
+        from deterministic_evaluator import evaluate_condition
+        passed, msg, skip = evaluate_condition(
+            self._RULE_5, self._fields(billing_list_time_worked_in_mins=90),
+        )
+        assert passed is False
+        assert skip is False
+
+    def test_rule5_fails_when_billed_minutes_under_reports(self):
+        from deterministic_evaluator import evaluate_condition
+        passed, msg, skip = evaluate_condition(
+            self._RULE_5, self._fields(billing_list_time_worked_in_mins=60),
+        )
+        assert passed is False
+        assert skip is False
+
+    def test_rule5_skips_when_billed_start_missing(self):
+        from deterministic_evaluator import evaluate_condition
+        fields = self._fields()
+        del fields['billing_list_date_time_from']
+        passed, msg, skip = evaluate_condition(self._RULE_5, fields)
+        assert skip is True
+        assert 'billing_list_date_time_from' in msg
+
+    def test_rule5_skips_when_billed_end_missing(self):
+        from deterministic_evaluator import evaluate_condition
+        fields = self._fields()
+        del fields['billing_list_date_time_to']
+        passed, msg, skip = evaluate_condition(self._RULE_5, fields)
+        assert skip is True
+        assert 'billing_list_date_time_to' in msg
+
+    def test_rule5_skips_when_billed_minutes_missing(self):
+        from deterministic_evaluator import evaluate_condition
+        fields = self._fields()
+        del fields['billing_list_time_worked_in_mins']
+        passed, msg, skip = evaluate_condition(self._RULE_5, fields)
+        assert skip is True
+        assert 'billing_list_time_worked_in_mins' in msg
+
+    def test_rule5_skips_on_malformed_timestamp(self):
+        """Unparseable input SKIPs (data-quality gap) rather than
+        silently passing with a zero duration."""
+        from deterministic_evaluator import evaluate_condition
+        passed, msg, skip = evaluate_condition(
+            self._RULE_5,
+            self._fields(billing_list_date_time_from='not-a-timestamp'),
+        )
+        assert skip is True
+        assert 'billing_list_date_time_from' in msg
+
+    def test_different_orgs_can_point_at_different_source_fields(self):
+        """The whole point of moving the derivation into the rule
+        config: an org with vendor-specific field names configures
+        `from` / `to` in the rule, no code change."""
+        from deterministic_evaluator import evaluate_condition
+        vendor_rule = {
+            **self._RULE_5,
+            'field': 'billed_minutes',
+            'compare_expr': {
+                'op': 'duration_minutes',
+                'from': 'session_start_ts',
+                'to':   'session_end_ts',
+            },
+        }
+        fields = {
+            'billed_minutes': 45,
+            'session_start_ts': '2026-06-28T09:00:00',
+            'session_end_ts':   '2026-06-28T09:45:00',
+        }
+        passed, msg, skip = evaluate_condition(vendor_rule, fields)
+        assert passed is True
+
+    def test_falls_back_when_from_is_list(self):
+        """`from` accepts a fallback list, same as `field` / `compare_to`."""
+        from deterministic_evaluator import evaluate_condition
+        rule = {
+            **self._RULE_5,
+            'compare_expr': {
+                'op': 'duration_minutes',
+                'from': ['legacy_start', 'billing_list_date_time_from'],
+                'to':   'billing_list_date_time_to',
+            },
+        }
+        # legacy_start absent -> falls back to billed_start
+        passed, msg, skip = evaluate_condition(rule, self._fields())
+        assert passed is True
+
+    def test_unknown_op_skips_loudly(self):
+        """A typo like `op: duration_days` should surface as a
+        SKIP-with-message rather than silently produce a passing rule."""
+        from deterministic_evaluator import evaluate_condition
+        rule = {
+            **self._RULE_5,
+            'compare_expr': {
+                'op': 'duration_days',  # not registered
+                'from': 'billed_start',
+                'to':   'billed_end',
+            },
+        }
+        passed, msg, skip = evaluate_condition(rule, self._fields())
+        assert skip is True
+        assert 'duration_days' in msg
+
+    def test_both_compare_to_and_compare_expr_is_rejected(self):
+        """A rule config that sets both is ambiguous; SKIP with a clear
+        message so the operator can fix the DynamoDB row."""
+        from deterministic_evaluator import evaluate_condition
+        rule = {
+            **self._RULE_5,
+            'compare_to': 'billed_end',  # illegal alongside compare_expr
+        }
+        passed, msg, skip = evaluate_condition(rule, self._fields())
+        assert skip is True
+        assert 'compare_to' in msg and 'compare_expr' in msg
+
+
 class TestTimeOperators:
     """Test time-of-day operators."""
 
@@ -866,6 +1150,30 @@ class TestDatetimeNotBeforeMinusMinutesOperator:
         signed_at = datetime(2026, 6, 22, 9, 55)
         assert op_datetime_not_before_minus_minutes(signed_at, billed_end, None) is False
 
+    def test_decimal_value_from_dynamodb_is_coerced_end_to_end(self):
+        """Regression: rule configs come out of DynamoDB with `Decimal`
+        values (boto3 deserialization). `evaluate_condition` must
+        coerce them to `int`/`float` before dispatch, otherwise
+        `op_datetime_not_before_minus_minutes` explodes on
+        `timedelta(minutes=Decimal(5))` with
+        'unsupported type for timedelta minutes component: decimal.Decimal'."""
+        from decimal import Decimal
+        from deterministic_evaluator import evaluate_condition
+
+        condition = {
+            'field': 'signed_at',
+            'operator': 'datetime_not_before_minus_minutes',
+            'compare_to': 'billing_list_date_time_to',
+            'value': Decimal('5'),  # DynamoDB shape
+        }
+        fields = {
+            'signed_at':                    '2026-06-22T09:56:00',
+            'billing_list_date_time_to':    '2026-06-22T10:00:00',
+        }
+        passed, message, skip = evaluate_condition(condition, fields)
+        assert skip is False, message
+        assert passed is True, message
+
 
 class TestJsonRecordModeEvaluation:
     """The deterministic evaluator must fall through to `fields` when
@@ -920,6 +1228,30 @@ class TestJsonRecordModeEvaluation:
         }
         data = {'text': 'foo,baz\nbar,qux\n'}
         status, message = evaluate_deterministic_rule(rule, {}, data)
+        assert status == 'PASS', message
+
+    def test_json_record_narrative_with_commas_does_not_trigger_csv_path(self):
+        """Regression: a centralreach / RPA record has `extracted_fields`
+        plus a `text` narrative that may contain commas. The evaluator
+        must route to the JSON-record path (using `fields`), NOT the
+        CSV path — otherwise every rule SKIPs with
+        'No columns extracted from CSV' because prose isn't a CSV."""
+        from deterministic_evaluator import evaluate_deterministic_rule
+        rule = {
+            'conditions': [{
+                'field': 'billing_list_time_worked_in_mins',
+                'operator': 'eq',
+                'value': 30,
+            }],
+            'logic': 'all',
+        }
+        fields = {'billing_list_time_worked_in_mins': 30}
+        data = {
+            # Narrative contains commas (as prose typically does).
+            'text': 'Session focused on tact training, learner responded independently.',
+            'extracted_fields': {'billing_list_time_worked_in_mins': 30},
+        }
+        status, message = evaluate_deterministic_rule(rule, fields, data)
         assert status == 'PASS', message
 
 

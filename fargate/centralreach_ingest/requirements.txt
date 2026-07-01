@@ -1,0 +1,5 @@
+# Pin specific versions so the image builds reproducibly. Bump
+# deliberately. The centralreach client uses only stdlib for HTTP
+# (urllib.request + http.cookiejar) so the dependency surface is
+# minimal — boto3 for S3 + Secrets Manager + DynamoDB + EventBridge.
+boto3==1.35.0

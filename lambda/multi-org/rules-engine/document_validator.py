@@ -4,14 +4,28 @@ Document Validator for per-rule LLM validation with multi-threading.
 Validates documents against configurable rules using per-rule LLM calls:
 - 1 call to extract fields (if fields_to_extract is defined)
 - 1 call to validate the rule
+
+Records produced by the centralreach ingest path (source =
+"centralreach.api") populate `text` with the Bedrock-extracted
+clinical narrative at ingest time AND carry the original PDF's
+`pdf_s3_key` in `extracted_fields`. By default these records use the
+text path (cheaper, ~1K tokens). Rules with `requires_pdf: true` in
+their rule_config (e.g. rule 11, which asks about
+charts/percentages/graphs not present in the narrative prose) opt
+into the PDF document-block path and pay the document-extraction
+cost on every eval. See `docs/centralreach-api-integration.md`
+"Bedrock rule evaluation" section.
 """
 
+import base64
 import json
 import os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import os
+
+import boto3
 
 from audit import SystemPrincipal, emit as audit_emit
 from bedrock_client import invoke_claude_model, MODEL_ID
@@ -21,6 +35,114 @@ _AUDIT_PRINCIPAL = SystemPrincipal(
 )
 from field_extractor import extract_fields
 from deterministic_evaluator import evaluate_deterministic_rule
+
+
+_s3_client = None
+
+
+def _get_s3_client():
+    """Lazily resolve a Bedrock-region S3 client.
+
+    Module-load-time client creation breaks tests that wrap calls in
+    moto contexts after the module is already imported. This pattern
+    matches `audit.emitter._resolve_table` for the same reason.
+    """
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client('s3')
+    return _s3_client
+
+
+def _load_chart_input(data, rule_config=None):
+    """Return `(kind, payload)` for the Bedrock content block.
+
+    Dispatch order:
+      * Rule opts in via `rule_config['requires_pdf']: true` AND the
+        record carries `extracted_fields.pdf_s3_key` → `("pdf", bytes)`.
+        This is the path for rule 11 — the prose narrative doesn't
+        contain the charts/percentages/graphs it asks about, so we
+        pay the document-block cost on every eval of that rule.
+      * Record has populated `text` → `("text", str)`. centralreach
+        records hit this path by default — the narrative was
+        extracted at ingest time and stored in `text`, so rules 1,
+        2, 3 read it directly.
+      * Empty fallback → `("text", "")`. Callers substitute the
+        fields dict serialized as JSON to preserve legacy behavior.
+    """
+    if not data:
+        return 'text', ''
+
+    requires_pdf = bool((rule_config or {}).get('requires_pdf'))
+    pdf_s3_key = (data.get('extracted_fields') or {}).get('pdf_s3_key')
+    if requires_pdf and pdf_s3_key:
+        return 'pdf', _fetch_pdf_bytes(pdf_s3_key, data)
+
+    text = data.get('text')
+    if text:
+        return 'text', text
+
+    return 'text', ''
+
+
+def _fetch_pdf_bytes(pdf_s3_key, data):
+    """Download PDF bytes from the per-org bucket.
+
+    `data` carries `org_id`, which the per-org bucket name derives
+    from. Bucket convention matches `lambda/api/nl_agent_tools.py::
+    org_data_bucket` and `centralreach.pdf_storage._bucket_for_org`.
+    """
+    org_id = data.get('org_id')
+    if not org_id:
+        raise ValueError(
+            "centralreach record missing org_id; cannot resolve "
+            "per-org bucket for pdf_s3_key fetch"
+        )
+    bucket = f"penguin-health-{org_id}"
+    response = _get_s3_client().get_object(Bucket=bucket, Key=pdf_s3_key)
+    return response['Body'].read()
+
+
+def _pdf_document_content_block(pdf_bytes):
+    """Build the Bedrock `{type: document}` block for PDF input.
+
+    Anthropic's Claude on Bedrock accepts PDFs as base64-encoded
+    document blocks; the model reads visible content (text and
+    rendered tables) directly.
+    """
+    return {
+        "type": "document",
+        "source": {
+            "type": "base64",
+            "media_type": "application/pdf",
+            "data": base64.b64encode(pdf_bytes).decode("ascii"),
+        },
+    }
+
+
+def _emit_pdf_read_audit(data, rule_id, validation_run_id):
+    """Emit the standard ClinicalNote read audit for a PDF fetch.
+
+    Mirrors the audit pattern that runs at ingest time
+    (`centralreach.result_writer.persist_note`). The
+    `bedrock_invoke` audit that wraps every Bedrock call continues
+    to fire; this is the per-PDF-read event the design doc names.
+    """
+    org_id = data.get('org_id') or 'unknown'
+    record_id = data.get('source_record_id') or ''
+    audit_emit(
+        action='read',
+        resource={
+            'type': 'ClinicalNote',
+            'id': record_id,
+            'org': org_id,
+        },
+        actor=_AUDIT_PRINCIPAL.as_actor(),
+        org_id=org_id,
+        purpose_of_use='DOC_PROCESSING',
+        call_type='bedrock_rule_eval',
+        external_control_number=validation_run_id,
+        result={'rule_id': rule_id},
+    )
 
 
 def extract_document_id_from_filename(filename):
@@ -87,41 +209,59 @@ def evaluate_llm_rule(rule_config, fields, data=None, *,
     Two-step approach:
     1. Extract fields from chart text (if fields_to_extract is defined)
     2. Validate the rule using extracted fields
+
+    Chart input dispatch (via `_load_chart_input`):
+    * Rules with `requires_pdf: true` in their rule_config use the
+      PDF document-block path when the record has a `pdf_s3_key`
+      (centralreach rule 11). Pays the document-extraction cost on
+      every eval; reserved for rules whose content lives in chart
+      visuals not present in the prose narrative.
+    * All other records with populated `data.text` use the text path
+      — including centralreach records, whose narrative was
+      extracted at ingest time.
     """
     # Flat schema fields
     rule_text = rule_config.get('rule_text', '')
     fields_to_extract = rule_config.get('fields_to_extract', [])
     notes = rule_config.get('notes', [])
+    rule_id = rule_config.get('rule_id', '')
 
-    print(f"Evaluating rule {rule_config.get('rule_id')} - {rule_config.get('name')}")
-
-    # Get the full text from the document
-    chart_text = ''
-    if data:
-        chart_text = data.get('text', '')
-        print(f"Chart text length: {len(chart_text)} characters")
-
-    # If no text available, fall back to fields
-    if not chart_text:
-        chart_text = json.dumps(fields, indent=2)
-        print(f"No text found, using fields JSON: {len(chart_text)} characters")
+    print(f"Evaluating rule {rule_id} - {rule_config.get('name')}")
 
     try:
+        chart_kind, chart_input = _load_chart_input(data, rule_config)
+
+        # Text-path fallback: when no chart text exists and the record
+        # has no PDF, fall back to the fields dict as JSON so legacy
+        # behavior continues to work.
+        if chart_kind == 'text' and not chart_input:
+            chart_input = json.dumps(fields, indent=2)
+            print(f"No text found, using fields JSON: {len(chart_input)} characters")
+        elif chart_kind == 'text':
+            print(f"Chart text length: {len(chart_input)} characters")
+        elif chart_kind == 'pdf':
+            print(f"Chart PDF length: {len(chart_input)} bytes")
+            _emit_pdf_read_audit(data, rule_id, validation_run_id)
+
         extracted_fields = None
 
         # Step 1: Extract fields if fields_to_extract is defined
         if fields_to_extract:
             extracted_fields = _extract_rule_fields(
-                MODEL_ID, rule_text, notes, fields_to_extract, chart_text,
+                MODEL_ID, rule_text, notes, fields_to_extract,
+                chart_kind, chart_input, fields,
                 org_id=org_id, validation_run_id=validation_run_id,
+                rule_id=rule_id,
             )
             if extracted_fields is None:
                 return 'ERROR', 'No JSON found in Claude response (field extraction)', ''
 
         # Step 2: Validate the rule
         return _validate_rule(
-            MODEL_ID, rule_text, notes, chart_text, extracted_fields,
+            MODEL_ID, rule_text, notes,
+            chart_kind, chart_input, fields, extracted_fields,
             org_id=org_id, validation_run_id=validation_run_id,
+            rule_id=rule_id,
         )
 
     except Exception as e:
@@ -132,12 +272,27 @@ def evaluate_llm_rule(rule_config, fields, data=None, *,
         return 'ERROR', error_msg, error_msg
 
 
-def _extract_rule_fields(model_id, rule_text, notes, fields_to_extract, chart_text,
-                         *, org_id=None, validation_run_id=None):
+def _extract_rule_fields(model_id, rule_text, notes, fields_to_extract,
+                         chart_kind, chart_input, chart_fields,
+                         *, org_id=None, validation_run_id=None,
+                         rule_id=''):
     """
-    Step 1: Extract fields from chart text to help validate the rule.
+    Step 1: Extract fields from chart text/PDF to help validate the rule.
+
+    `chart_kind` is `"text"` or `"pdf"` from `_load_chart_input`. The
+    content block list adapts: text records send `{type: "text"}` as
+    before; PDF records send a `{type: "document"}` block in addition
+    to the existing rule/notes/schema text blocks.
+
+    `chart_fields` is the flat pre-extracted field dict from
+    `field_extractor.extract_fields_from_json_record` (or CSV columns
+    in the legacy path). It ships as a JSON content block alongside
+    the chart text/PDF so the model can pull values directly from
+    structured record fields (e.g. `billing_list_location`,
+    `note_provider_signature_name`) that don't appear in the
+    narrative prose.
     """
-    system_prompt = """You are a Healthcare Compliance Auditor. You will be given a Rule to validate, the patient Chart Text, and a list of fields to extract from the Chart Text. Your only purpose is to extract the fields, and return them in a JSON object.
+    system_prompt = """You are a Healthcare Compliance Auditor. You will be given a Rule to validate, the patient Chart Narrative, a JSON object of Chart Fields already extracted from the record, and a list of fields to extract. Your only purpose is to extract the fields, using the Chart Fields when the value is present there and the Chart Narrative otherwise, and return them in a JSON object.
 Please respond with JSON, with the key: 'fields'. The value should be an object with the field names as keys."""
 
     # Build JSON schema for field extraction
@@ -164,21 +319,26 @@ Please respond with JSON, with the key: 'fields'. The value should be an object 
     # Format notes as string
     notes_text = '\n'.join(f"- {note}" for note in notes) if notes else 'None'
 
+    content = [
+        {"type": "text", "text": f"Rule:\n{rule_text}\n\nNotes:\n{notes_text}"},
+    ]
+    if chart_kind == 'pdf':
+        content.append(_pdf_document_content_block(chart_input))
+    else:
+        content.append({"type": "text", "text": f"Chart narrative:\n\n{chart_input}"})
+    if chart_fields:
+        content.append({
+            "type": "text",
+            "text": f"Chart fields:\n\n{json.dumps(chart_fields, default=str)}",
+        })
+    content.append({"type": "text", "text": f"JSON schema:\n\n{json.dumps(json_schema)}"})
+
     body = {
         "system": system_prompt,
         'anthropic_version': 'bedrock-2023-05-31',
         'max_tokens': 1024,
         'temperature': 0.01,
-        'messages': [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": f"Rule:\n{rule_text}\n\nNotes:\n{notes_text}"},
-                    {"type": "text", "text": f"Chart text:\n\n{chart_text}"},
-                    {"type": "text", "text": f"JSON schema:\n\n{json.dumps(json_schema)}"},
-                ]
-            }
-        ]
+        'messages': [{"role": "user", "content": content}]
     }
 
     # Audit the Bedrock call BEFORE invocation so a Lambda crash during
@@ -195,6 +355,11 @@ Please respond with JSON, with the key: 'fields'. The value should be an object 
         external_control_number=validation_run_id,
     )
 
+    call_type = (
+        f'centralreach_field_extract:{rule_id}'
+        if chart_kind == 'pdf'
+        else 'chart_field_extract'
+    )
     response_json = invoke_claude_model(
         inference_profile_id=model_id,
         body=body,
@@ -202,7 +367,7 @@ Please respond with JSON, with the key: 'fields'. The value should be an object 
         raise_on_error=True,
         retries=1,
         org_id=org_id,
-        call_type='chart_field_extract',
+        call_type=call_type,
         parent_request_id=validation_run_id,
     )
 
@@ -214,13 +379,28 @@ Please respond with JSON, with the key: 'fields'. The value should be an object 
     return extracted
 
 
-def _validate_rule(model_id, rule_text, notes, chart_text, extracted_fields=None,
-                   *, org_id=None, validation_run_id=None):
+def _validate_rule(model_id, rule_text, notes,
+                   chart_kind, chart_input, chart_fields=None,
+                   extracted_fields=None,
+                   *, org_id=None, validation_run_id=None,
+                   rule_id=''):
     """
     Step 2: Validate the rule using extracted fields (if any).
     Returns (status, message, reasoning) tuple.
+
+    `chart_kind` is `"text"` or `"pdf"`. PDF input ships as a
+    `{type: "document"}` content block; text input ships as a
+    `{type: "text"}` block.
+
+    `chart_fields` is the same flat pre-extracted field dict passed
+    to `_extract_rule_fields`, shipped alongside the chart so the
+    model can consult values that only exist in structured record
+    fields (e.g. `billing_list_location`,
+    `note_provider_signature_name`) — data the narrative prose does
+    not carry. `extracted_fields` is the step-1 output, which may
+    itself have been populated from those chart fields.
     """
-    system_prompt = """You are a Healthcare Compliance Auditor. You will be given a Rule to validate, the patient Chart Text, and optionally some pre-extracted fields. Validate whether the rule passes or fails.
+    system_prompt = """You are a Healthcare Compliance Auditor. You will be given a Rule to validate, the patient Chart Narrative, a JSON object of Chart Fields already extracted from the record, and optionally some pre-extracted fields. Validate whether the rule passes or fails, using the Chart Fields and Chart Narrative together as needed.
 Please respond with JSON, with the keys: 'status' and 'reasoning'. The status should be one of: 'PASS', 'FAIL', 'SKIP'. The reasoning should be a short explanation of the reason for the status."""
 
     json_schema = {
@@ -245,11 +425,20 @@ Please respond with JSON, with the keys: 'status' and 'reasoning'. The status sh
     # Build message content
     content = [
         {"type": "text", "text": f"Rule:\n{rule_text}\n\nNotes:\n{notes_text}"},
-        {"type": "text", "text": f"Chart text:\n\n{chart_text}"},
     ]
+    if chart_kind == 'pdf':
+        content.append(_pdf_document_content_block(chart_input))
+    else:
+        content.append({"type": "text", "text": f"Chart narrative:\n\n{chart_input}"})
+
+    if chart_fields:
+        content.append({
+            "type": "text",
+            "text": f"Chart fields:\n\n{json.dumps(chart_fields, default=str)}",
+        })
 
     if extracted_fields:
-        content.append({"type": "text", "text": f"Extracted fields:\n\n{json.dumps(extracted_fields)}"})
+        content.append({"type": "text", "text": f"Extracted fields:\n\n{json.dumps(extracted_fields, default=str)}"})
 
     content.append({"type": "text", "text": f"JSON schema:\n\n{json.dumps(json_schema)}"})
 
@@ -271,6 +460,11 @@ Please respond with JSON, with the keys: 'status' and 'reasoning'. The status sh
         external_control_number=validation_run_id,
     )
 
+    call_type = (
+        f'centralreach_rule_validate:{rule_id}'
+        if chart_kind == 'pdf'
+        else 'chart_rule_validate'
+    )
     response_json = invoke_claude_model(
         inference_profile_id=model_id,
         body=body,
@@ -278,7 +472,7 @@ Please respond with JSON, with the keys: 'status' and 'reasoning'. The status sh
         raise_on_error=True,
         retries=1,
         org_id=org_id,
-        call_type='chart_rule_validate',
+        call_type=call_type,
         parent_request_id=validation_run_id,
     )
 
@@ -346,9 +540,23 @@ def validate_document(data, filename, config, org_id, validation_run_id):
     failed = sum(1 for r in rule_results if r['status'] == 'FAIL')
     skipped = sum(1 for r in rule_results if r['status'] == 'SKIP')
 
-    # For CSV files, extract document_id from filename (format: {timestamp}__{visitID}.csv)
-    # Otherwise use the field value from the document
-    document_id = extract_document_id_from_filename(filename)
+    # Document id resolution:
+    #   1. JSON records (RPA + centralreach) carry `source_record_id` at
+    #      the top level; `field_extractor.extract_fields_from_json_record`
+    #      flattens it into `fields`. That's the vendor's canonical id
+    #      for the note — use it so the UI can link the validation
+    #      result back to the underlying document.
+    #   2. Legacy CSV path: parse the id from the filename shape
+    #      `{timestamp}__{visitID}.csv`.
+    #   3. Fallback: a `document_id` field explicitly set by an org's
+    #      field_mappings.
+    #   4. Last resort: `"UNKNOWN"`. Any record hitting this branch
+    #      lands under `DOC#UNKNOWN` in DynamoDB and disappears from
+    #      the UI's per-document view, so it's a loud signal that
+    #      ingest-side id plumbing regressed.
+    document_id = fields.get('source_record_id')
+    if not document_id:
+        document_id = extract_document_id_from_filename(filename)
     if not document_id:
         document_id = fields.get('document_id', 'UNKNOWN')
 

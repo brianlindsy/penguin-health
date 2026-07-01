@@ -11,6 +11,7 @@ import csv
 import os
 import re
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from io import StringIO
 
 
@@ -112,6 +113,56 @@ TIME_FORMATS = [
 ]
 
 
+def _coerce_decimals(value):
+    """Convert `Decimal` values to `int` or `float`, recursing into
+    dicts and lists.
+
+    Rule configs come out of DynamoDB, and boto3 deserializes every
+    number as `decimal.Decimal`. Operators like
+    `op_datetime_not_before_minus_minutes` then hit
+    `timedelta(minutes=Decimal(5))`, which raises. Coercing once at
+    the condition boundary means every operator gets a normal Python
+    number, no per-operator guard needed.
+
+    Integers come back as `int`; anything with a fractional part
+    comes back as `float`.
+    """
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {k: _coerce_decimals(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_coerce_decimals(v) for v in value]
+    return value
+
+
+def _try_fromisoformat(value):
+    """Try `datetime.fromisoformat` and return None on failure.
+
+    Kept as a helper so both `parse_datetime` and `parse_date` can
+    try the ISO path first without duplicating the try/except. Python
+    3.11+ handles the shapes centralreach's list endpoint returns:
+    `T` separator, arbitrary fractional-second digits, and an
+    optional trailing `Z`.
+
+    Result is always tz-naive. `strptime` on the fallback path also
+    produces naive datetimes, and mixing aware + naive within one
+    operator (e.g. `signed_at` from the preview endpoint carries a
+    `Z`, `billing_list_date_time_to` from the list endpoint does
+    not) raises "can't compare offset-naive and offset-aware
+    datetimes" at compare time. Since CR's timestamps are already
+    in a consistent reference frame per session, stripping tzinfo
+    here is safe and keeps every operator's compare uniform.
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=None)
+    return parsed
+
+
 def parse_time(value):
     """
     Parse a time string into a datetime.time object.
@@ -141,7 +192,8 @@ def parse_time(value):
 def parse_datetime(value):
     """
     Parse a datetime string into a datetime object.
-    Tries datetime formats first, then falls back to date-only formats.
+    Tries ISO-8601 first (handles CR's `T`-separated form with arbitrary
+    fractional-second precision), then the strptime format list.
 
     Args:
         value: DateTime string to parse
@@ -159,7 +211,15 @@ def parse_datetime(value):
     if not value:
         return None
 
-    # Try datetime formats first
+    # ISO-8601 first — Python 3.11+ `fromisoformat` accepts the shapes
+    # centralreach produces (e.g. `2026-07-01T03:00:07.1100000`, with
+    # up to 7-digit fractional seconds and optional Z suffix). Covers
+    # the JSON-record path without a per-vendor format entry.
+    iso_dt = _try_fromisoformat(value)
+    if iso_dt is not None:
+        return iso_dt
+
+    # Try datetime formats
     for fmt in DATETIME_FORMATS:
         try:
             return datetime.strptime(value, fmt)
@@ -179,6 +239,8 @@ def parse_datetime(value):
 def parse_date(value):
     """
     Parse a date string into a datetime object.
+    Tries ISO-8601 first (which handles `T`-separated datetimes by
+    dropping the time component), then the strptime date-format list.
 
     Args:
         value: Date string to parse
@@ -195,6 +257,14 @@ def parse_date(value):
     value = str(value).strip()
     if not value:
         return None
+
+    # ISO-8601 first. For a datetime like `2026-07-01T03:00:07`, the
+    # date operators only compare the .date() part downstream, so
+    # returning the full datetime here is fine — matches the existing
+    # behavior for `2024-01-15 14:30:00` on the strptime path below.
+    iso_dt = _try_fromisoformat(value)
+    if iso_dt is not None:
+        return iso_dt
 
     for fmt in DATE_FORMATS:
         try:
@@ -569,14 +639,107 @@ def get_field_value(fields, field_spec):
         return fields.get(field_spec), field_spec
 
 
+# ----- compare_expr: config-driven derived comparison values ---------------
+
+
+def _parse_iso8601(value):
+    """Parse a value as an ISO-8601 datetime.
+
+    Accepts the arbitrary-fractional-second shape CR sends (e.g.
+    `"2026-06-28T17:00:00.0000000"`). `datetime.fromisoformat`
+    supports this on Python 3.11+ — the floor for the rules-engine
+    Lambda and every ingest runner.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _expr_duration_minutes(expr, fields):
+    """`compare_expr` op: whole-minute floor of `to - from`.
+
+    Config shape:
+        {"op": "duration_minutes", "from": "<field>", "to": "<field>"}
+
+    Both `from` and `to` are field names looked up in `fields`
+    (fallback lists supported, same as `field` / `compare_to`).
+
+    Returns `(value, label, error)`:
+      * `value` is an int (or None on failure)
+      * `label` is a human-readable synthetic name for the error /
+        result message, e.g. `"duration_minutes(billed_start, billed_end)"`
+      * `error` is None on success, else a message the caller wraps
+        into a SKIP outcome
+    """
+    from_spec = expr.get("from")
+    to_spec = expr.get("to")
+    if not from_spec or not to_spec:
+        return None, "duration_minutes(?, ?)", (
+            "compare_expr 'duration_minutes' requires 'from' and 'to'"
+        )
+
+    from_value, from_name = get_field_value(fields, from_spec)
+    to_value, to_name = get_field_value(fields, to_spec)
+    label = f"duration_minutes({from_name}, {to_name})"
+
+    if from_value is None:
+        return None, label, f"Comparison field '{from_name}' not found"
+    if to_value is None:
+        return None, label, f"Comparison field '{to_name}' not found"
+
+    from_dt = _parse_iso8601(from_value)
+    to_dt = _parse_iso8601(to_value)
+    if from_dt is None:
+        return None, label, (
+            f"Could not parse datetime from field '{from_name}': '{from_value}'"
+        )
+    if to_dt is None:
+        return None, label, (
+            f"Could not parse datetime from field '{to_name}': '{to_value}'"
+        )
+
+    minutes = int((to_dt - from_dt).total_seconds() // 60)
+    return minutes, label, None
+
+
+COMPARE_EXPR_OPS = {
+    "duration_minutes": _expr_duration_minutes,
+}
+
+
+def _resolve_compare_expr(expr, fields):
+    """Dispatch a `compare_expr` dict against `COMPARE_EXPR_OPS`.
+
+    Returns the same `(value, label, error)` triple the individual
+    op functions do. Unknown `op` values fall through to an error so
+    a typo in DynamoDB doesn't silently produce a passing rule.
+    """
+    op = expr.get("op") if isinstance(expr, dict) else None
+    if not op:
+        return None, "compare_expr(?)", "compare_expr missing 'op'"
+    handler = COMPARE_EXPR_OPS.get(op)
+    if handler is None:
+        return None, f"compare_expr({op})", f"Unknown compare_expr op: '{op}'"
+    return handler(expr, fields)
+
+
 def evaluate_condition(condition, fields):
     """
     Evaluate a single condition against the extracted fields.
 
     Args:
-        condition: Condition dict with field, operator, compare_to, value, description
+        condition: Condition dict with field, operator, compare_to,
+            compare_expr, value, description
             - field: Field name or list of field names (fallback order)
             - compare_to: Field name or list of field names (fallback order)
+            - compare_expr: Inline expression producing the comparison
+              value from other fields — see `COMPARE_EXPR_OPS`. Mutually
+              exclusive with `compare_to`. The source field names for
+              the expression are part of the condition config so an org
+              can point at its own vendor fields without a code change.
             - description: Human-readable description of what this condition checks
         fields: Dict of extracted field values
 
@@ -586,7 +749,11 @@ def evaluate_condition(condition, fields):
     field_spec = condition.get('field')
     operator = condition.get('operator')
     compare_to = condition.get('compare_to')
-    value = condition.get('value')
+    compare_expr = condition.get('compare_expr')
+    # DynamoDB returns numbers as `Decimal`; operators like
+    # `timedelta(minutes=value)` reject that type. Coerce once here so
+    # every operator downstream sees plain ints/floats.
+    value = _coerce_decimals(condition.get('value'))
     description = condition.get('description')
 
     # Cross-document operator: reads org_id + source_record_id from fields,
@@ -599,14 +766,29 @@ def evaluate_condition(condition, fields):
     if field_value is None:
         return False, f"Required field '{field_name}' not found", True
 
-    # Get comparison value from another field if specified
+    # Resolve the comparison value. Three shapes, in priority order:
+    #   1. compare_expr — inline expression over other fields
+    #   2. compare_to   — one field (or fallback list) looked up in fields
+    #   3. neither      — the operator uses `value` directly
     compare_value = None
-    if compare_to:
+    compare_field_name = None
+    if compare_expr is not None:
+        if compare_to is not None:
+            return False, (
+                "Condition may set 'compare_to' OR 'compare_expr', not both"
+            ), True
+        compare_value, compare_field_name, expr_err = _resolve_compare_expr(
+            compare_expr, fields,
+        )
+        if expr_err is not None:
+            return False, expr_err, True
+        # Downstream operator blocks branch on `compare_to` truthiness; keep
+        # them going the "compared against a field" path.
+        compare_to = compare_field_name
+    elif compare_to:
         compare_value, compare_field_name = get_field_value(fields, compare_to)
         if compare_value is None:
             return False, f"Comparison field '{compare_field_name}' not found", True
-    else:
-        compare_field_name = None
 
     # Determine operator type and evaluate
     if operator in DATE_OPERATORS:
@@ -930,9 +1112,16 @@ def evaluate_deterministic_rule(rule_config, fields, data=None):
     if not conditions and logic != 'conditional':
         return 'SKIP', 'No conditions defined for rule'
 
+    # JSON records (RPA / centralreach) always carry `extracted_fields`.
+    # Never treat their `text` as CSV — the narrative is prose that
+    # frequently contains commas, and the comma-in-first-line heuristic
+    # would misfire and SKIP every rule with "No columns extracted".
+    is_json_record = isinstance((data or {}).get('extracted_fields'), dict)
     csv_content = (data or {}).get('text', '')
     first_line = csv_content.split('\n')[0] if csv_content else ''
-    looks_like_csv = bool(csv_content) and ',' in first_line
+    looks_like_csv = (
+        not is_json_record and bool(csv_content) and ',' in first_line
+    )
 
     if looks_like_csv:
         csv_columns = extract_csv_columns(csv_content)

@@ -66,7 +66,14 @@ function sortRulesByStatus(rules) {
 // per service type — so this file doesn't need to know which service
 // types are special. Until then, this list will drift.
 const BEDDAY_SERVICE_TYPES = new Set(['BedDay-Psych', 'BedDay-Detox'])
-function hasRequiredFields(doc) {
+// Orgs whose docs bypass the diagnosis_code/employee_name gate entirely.
+// supportive-care's centralreach-ingested docs don't carry those fields
+// (they're Credible-BH-shaped columns) so the gate would hide every one.
+// See the TODO above — this is another string in a growing list until the
+// gate is replaced with a server-side renderability signal.
+const UNGATED_ORGS = new Set(['supportive-care'])
+export function hasRequiredFields(doc, orgId) {
+  if (UNGATED_ORGS.has(orgId)) return true
   const fv = doc?.field_values
   if (!fv) return false
   if (BEDDAY_SERVICE_TYPES.has(fv.service_type)) return true
@@ -176,13 +183,13 @@ export function ValidationRunDetailPage() {
 
     // Priority 2: Auto-select first document with failures (only if no doc is selected yet)
     if (!selectedDoc) {
-      const firstFailed = data.documents.find(d => d.summary?.failed > 0 && hasRequiredFields(d))
+      const firstFailed = data.documents.find(d => d.summary?.failed > 0 && hasRequiredFields(d, orgId))
       if (firstFailed) {
         setSelectedDoc(firstFailed)
         const firstFailedRule = firstFailed.rules?.find(r => r.status === 'FAIL')
         if (firstFailedRule) setSelectedRule(firstFailedRule)
       } else {
-        const firstValidDoc = data.documents.find(d => hasRequiredFields(d))
+        const firstValidDoc = data.documents.find(d => hasRequiredFields(d, orgId))
         if (firstValidDoc) {
           setSelectedDoc(firstValidDoc)
           if (firstValidDoc.rules?.length > 0) {
@@ -241,7 +248,7 @@ export function ValidationRunDetailPage() {
 
     data.documents.forEach(doc => {
       // BedDay service types are exempt from the diagnosis_code/employee_name gate
-      if (!hasRequiredFields(doc)) {
+      if (!hasRequiredFields(doc, orgId)) {
         return
       }
 
@@ -423,7 +430,7 @@ export function ValidationRunDetailPage() {
 
     return dedupedDocs.filter(doc => {
       // BedDay service types are exempt from the diagnosis_code/employee_name gate
-      if (!hasRequiredFields(doc)) {
+      if (!hasRequiredFields(doc, orgId)) {
         return false
       }
 

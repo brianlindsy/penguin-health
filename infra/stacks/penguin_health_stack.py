@@ -21,7 +21,7 @@ from components.audit_engine import AuditEngine
 from components.audit_layer import AuditLayer
 from components.analytics import Analytics
 from components.jwks_hosting import JwksHosting
-from components.rpa import Rpa
+from components.centralreach import CentralReach
 
 
 class PenguinHealthStack(Stack):
@@ -36,11 +36,11 @@ class PenguinHealthStack(Stack):
         # ----- Database + SNS -----
         db = Database(self, "Database")
 
-        # ----- RPA (Fargate + Step Functions + per-org schedules) -----
+        # ----- CentralReach (Fargate + Step Functions + per-org schedules) -----
         # Stand up before AdminUi so the admin Lambda can be wired with
         # the state-machine ARN + StartExecution / DescribeExecution
-        # grants needed by lambda/api/rpa_api.py.
-        rpa = Rpa(self, "Rpa",
+        # grants needed by lambda/api/centralreach_api.py.
+        centralreach = CentralReach(self, "CentralReach",
             org_config_table=db.org_config_table,
         )
 
@@ -51,7 +51,7 @@ class PenguinHealthStack(Stack):
             analytics_reports_table=db.analytics_reports_table,
             deep_jobs_table=db.deep_jobs_table,
             stedi_table=db.stedi_table,
-            rpa_state_machine=rpa.state_machine,
+            centralreach_state_machine=centralreach.state_machine,
         )
 
         # ----- Audit Engine -----
@@ -78,6 +78,14 @@ class PenguinHealthStack(Stack):
                 audit_engine.fhir_materializer_fn,
             ],
         )
+
+        # The CentralReach Fargate task emits audit events directly via
+        # boto3, not through AuditLayer.emitting_fns (which is
+        # Lambda-only). The audit DDB table and Firehose stream are both
+        # CMK-encrypted, so the task role needs encrypt/decrypt on the
+        # audit CMK — same grant the emitting Lambdas get via
+        # `emitting_fns`.
+        audit.key.grant_encrypt_decrypt(centralreach.task_role)
 
         # ----- Analytics (Athena + Glue) -----
         analytics = Analytics(self, "Analytics")
@@ -170,22 +178,22 @@ class PenguinHealthStack(Stack):
                 description=f"Athena workgroup for {org_id}",
             )
 
-        # ----- Outputs: RPA -----
-        CfnOutput(self, "RpaStateMachineArn",
-            value=rpa.state_machine.state_machine_arn,
-            description="Step Functions state machine that wraps the RPA Fargate task",
+        # ----- Outputs: CentralReach -----
+        CfnOutput(self, "CentralReachStateMachineArn",
+            value=centralreach.state_machine.state_machine_arn,
+            description="Step Functions state machine that wraps the CentralReach Fargate task",
         )
-        CfnOutput(self, "RpaClusterName",
-            value=rpa.cluster.cluster_name,
-            description="ECS Fargate cluster hosting the RPA runner",
+        CfnOutput(self, "CentralReachClusterName",
+            value=centralreach.cluster.cluster_name,
+            description="ECS Fargate cluster hosting the CentralReach ingest runner",
         )
-        CfnOutput(self, "RpaRunnerImageUri",
-            value=rpa.image_asset.image_uri,
-            description="ECR image URI for the RPA runner container",
+        CfnOutput(self, "CentralReachRunnerImageUri",
+            value=centralreach.image_asset.image_uri,
+            description="ECR image URI for the CentralReach ingest container",
         )
-        CfnOutput(self, "RpaLogGroupName",
-            value=rpa.log_group.log_group_name,
-            description="CloudWatch log group for RPA runner stdout/stderr",
+        CfnOutput(self, "CentralReachLogGroupName",
+            value=centralreach.log_group.log_group_name,
+            description="CloudWatch log group for CentralReach ingest stdout/stderr",
         )
 
         # ----- Outputs: JWKS -----
