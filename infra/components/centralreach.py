@@ -369,7 +369,7 @@ class CentralReach(Construct):
             self, "CentralReachStateMachine",
             state_machine_name=f"{config.PROJECT_NAME}-centralreach-ingest",
             definition_body=sfn.DefinitionBody.from_chainable(choose_run_id),
-            timeout=Duration.minutes(60),
+            timeout=Duration.minutes(180),
             tracing_enabled=True,
         )
 
