@@ -3,7 +3,13 @@ import { useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
 
-// Field display labels for different organizations
+// Field display labels for different organizations. The keys here are the
+// canonical UI field set: only fields whose key is in this map render in
+// dynamic-iteration sites (card body grid, evidence panel, filter chips).
+// Non-canonical keys still exist on `field_values` — deterministic rules
+// and LLM prompts read them — they just don't get shown in the UI, so orgs
+// with an unmapped source field see a clean per-org display instead of raw
+// vendor plumbing keys leaking through.
 const FIELD_LABELS = {
   service_id: 'Service ID',
   date: 'Service Date',
@@ -15,7 +21,11 @@ const FIELD_LABELS = {
   rate: 'Rate',
   employee_name: 'Employee',
   document_id: 'Document ID',
+  payer_description: 'Payer',
 }
+
+const CANONICAL_FIELD_KEYS = new Set(Object.keys(FIELD_LABELS))
+const isCanonicalField = (key) => CANONICAL_FIELD_KEYS.has(key)
 
 // Fields rendered in the card header (name + link) and therefore skipped
 // when iterating over the rest of field_values for the body grid.
@@ -36,9 +46,24 @@ function fieldLabel(key) {
     .replace(/\b\w/g, c => c.toUpperCase())
 }
 
-// Generate link to Credible BH for a document ID
+// Orgs whose docs come from CentralReach — document_id is the CR
+// resource id (source_record_id), not a Credible BH visit id. Grows as
+// more orgs are onboarded to the CR pipeline.
+const CENTRALREACH_ORGS = new Set(['supportive-care'])
+
 const getCredibleLink = (documentId) =>
   `https://www.cbh3.crediblebh.com/visit/clientvisit_view.asp?clientvisit_id=${documentId}&provportal=0`
+
+const getCentralReachLink = (documentId) =>
+  `https://members.centralreach.com/#resources/details?id=${documentId}`
+
+export function getDocumentLink(orgId, doc) {
+  if (CENTRALREACH_ORGS.has(orgId)) {
+    return getCentralReachLink(doc.document_id)
+  }
+  const fv = doc.field_values || doc
+  return getCredibleLink(fv.service_id || doc.document_id)
+}
 
 // Rule-status priority for display ordering: FAIL first (most urgent), then
 // PASS (confirmed), then SKIP/unknown. Returns a stable sorted copy of the
@@ -338,6 +363,9 @@ export function ValidationRunDetailPage() {
       const fv = doc.field_values
       if (!fv) return
       Object.entries(fv).forEach(([name, value]) => {
+        // Canonical UI fields only. Non-canonical keys never get a filter
+        // chip — matches the card body / evidence panel policy.
+        if (!isCanonicalField(name)) return
         if (FIELD_FILTER_EXCLUDE.has(name)) return
         if (value == null || value === '') return
         const str = String(value)
@@ -729,6 +757,7 @@ export function ValidationRunDetailPage() {
               <DocumentListItem
                 key={doc.document_id}
                 doc={doc}
+                orgId={orgId}
                 selected={selectedDoc?.document_id === doc.document_id}
                 onClick={() => {
                   setSelectedDoc(doc)
@@ -759,6 +788,7 @@ export function ValidationRunDetailPage() {
           {selectedDoc ? (
             <DocumentDetailPanel
               doc={selectedDoc}
+              orgId={orgId}
               selectedRule={selectedRule}
               onSelectRule={setSelectedRule}
               confirmingRuleId={confirmingRuleId}
@@ -1154,7 +1184,7 @@ function SummaryCard({ label, value, subtext, color, active, onClick }) {
 }
 
 
-function DocumentListItem({ doc, selected, onClick }) {
+function DocumentListItem({ doc, orgId, selected, onClick }) {
   const failedRules = doc.rules?.filter(r => r.status === 'FAIL') || []
   const failCount = failedRules.length
   const hasFailures = failCount > 0
@@ -1179,7 +1209,7 @@ function DocumentListItem({ doc, selected, onClick }) {
           </span>
         ) : (
           <a
-            href={getCredibleLink(fv.service_id || doc.document_id)}
+            href={getDocumentLink(orgId, doc)}
             target="_blank"
             rel="noopener noreferrer"
             className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
@@ -1207,12 +1237,18 @@ function DocumentListItem({ doc, selected, onClick }) {
         </div>
       </div>
 
-      {/* Field values — render every key present on the doc. employee_name,
-          service_id, document_id are rendered in the header above and skipped
-          here to avoid duplication. */}
+      {/* Field values — render canonical UI fields only (per FIELD_LABELS).
+          employee_name, service_id, document_id are rendered in the header
+          above and skipped here to avoid duplication. Non-canonical keys
+          exist on `fv` for rule input but are intentionally hidden so the
+          card stays consistent across orgs. */}
       <div className="text-xs text-gray-500 space-y-1">
         {Object.entries(fv)
-          .filter(([k, v]) => v != null && v !== '' && !CARD_HEADER_FIELDS.has(k))
+          .filter(([k, v]) =>
+            v != null && v !== ''
+            && !CARD_HEADER_FIELDS.has(k)
+            && isCanonicalField(k)
+          )
           .map(([k, v]) => (
             <div key={k} className="flex items-center gap-1">
               <span className="text-gray-400">{fieldLabel(k)}:</span>
@@ -1243,7 +1279,7 @@ function DocumentListItem({ doc, selected, onClick }) {
 }
 
 
-function DocumentDetailPanel({ doc, selectedRule, onSelectRule, confirmingRuleId, onConfirmFinding, resolvingRuleId, onMarkResolved, markingIncorrectRuleId, setMarkingIncorrectRuleId, incorrectFeedbackText, setIncorrectFeedbackText, submittingIncorrect, onMarkIncorrect }) {
+function DocumentDetailPanel({ doc, orgId, selectedRule, onSelectRule, confirmingRuleId, onConfirmFinding, resolvingRuleId, onMarkResolved, markingIncorrectRuleId, setMarkingIncorrectRuleId, incorrectFeedbackText, setIncorrectFeedbackText, submittingIncorrect, onMarkIncorrect }) {
   const failedRules = doc.rules?.filter(r => r.status === 'FAIL') || []
   const passedRules = doc.rules?.filter(r => r.status === 'PASS') || []
   const skippedRules = doc.rules?.filter(r => r.status === 'SKIP') || []
@@ -1264,7 +1300,7 @@ function DocumentDetailPanel({ doc, selectedRule, onSelectRule, confirmingRuleId
             <p className="text-sm text-gray-500">
               ID:{' '}
               <a
-                href={getCredibleLink(doc.field_values?.service_id || doc.document_id)}
+                href={getDocumentLink(orgId, doc)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-blue-600 hover:text-blue-800 hover:underline"
@@ -1586,24 +1622,30 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
         </div>
       )}
 
-      {/* Evidence / Field Values */}
-      {fieldValues && Object.keys(fieldValues).length > 0 && (
-        <div className="p-4 rounded-lg border border-gray-200 bg-gray-50">
-          <h5 className="text-sm font-medium text-gray-700 mb-3">Evidence (Field Values)</h5>
-          <div className="grid grid-cols-2 gap-3">
-            {Object.entries(fieldValues).map(([key, value]) => (
-              value && (
+      {/* Evidence / Field Values — canonical UI fields only. Non-canonical
+          keys are consumed by the rule engine but hidden from the reviewer
+          view so evidence stays consistent across orgs. */}
+      {fieldValues && (() => {
+        const shown = Object.entries(fieldValues).filter(
+          ([key, value]) => value && isCanonicalField(key)
+        )
+        if (shown.length === 0) return null
+        return (
+          <div className="p-4 rounded-lg border border-gray-200 bg-gray-50">
+            <h5 className="text-sm font-medium text-gray-700 mb-3">Evidence (Field Values)</h5>
+            <div className="grid grid-cols-2 gap-3">
+              {shown.map(([key, value]) => (
                 <div key={key}>
                   <dt className="text-xs text-gray-500 uppercase tracking-wide">
-                    {FIELD_LABELS[key] || key}
+                    {FIELD_LABELS[key]}
                   </dt>
                   <dd className="text-sm text-gray-900 font-medium">{value}</dd>
                 </div>
-              )
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
     </div>
   )
 }

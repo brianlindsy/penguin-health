@@ -485,6 +485,30 @@ Please respond with JSON, with the keys: 'status' and 'reasoning'. The status sh
     return status, f"{status} - {reasoning}", reasoning
 
 
+def project_ui_display_fields(fields, mapping):
+    """
+    Build the canonical display dict from `fields` per the org's UI mapping.
+
+    `mapping` is `{canonical_name: source_key}` — e.g.
+    ``{"employee_name": "provider_display"}`` copies
+    `fields["provider_display"]` into the result as `employee_name`.
+    Source keys missing from `fields` (or present with a None/empty value)
+    are skipped so the UI's `??` fallback keeps working.
+
+    An empty `mapping` yields `{}` — callers omit the field from the DDB
+    item entirely, and the UI reads `field_values` unchanged.
+    """
+    if not mapping or not fields:
+        return {}
+    out = {}
+    for canonical_name, source_key in mapping.items():
+        value = fields.get(source_key)
+        if value in (None, ''):
+            continue
+        out[canonical_name] = value
+    return out
+
+
 def validate_document(data, filename, config, org_id, validation_run_id):
     """
     Run all validation rules against a document using multi-threaded per-rule evaluation.
@@ -502,6 +526,9 @@ def validate_document(data, filename, config, org_id, validation_run_id):
     field_mappings = config.get('field_mappings', {})
     csv_column_mappings = config.get('csv_column_mappings', {})
     fields = extract_fields(data, field_mappings, csv_column_mappings)
+    ui_display_fields = project_ui_display_fields(
+        fields, config.get('ui_display_fields') or {}
+    )
 
     enabled_rules = [rule for rule in config.get('rules', []) if rule.get('enabled', True)]
 
@@ -560,7 +587,7 @@ def validate_document(data, filename, config, org_id, validation_run_id):
     if not document_id:
         document_id = fields.get('document_id', 'UNKNOWN')
 
-    return {
+    result = {
         'validation_run_id': validation_run_id,
         'organization_id': org_id,
         'document_id': document_id,
@@ -576,3 +603,6 @@ def validate_document(data, filename, config, org_id, validation_run_id):
         'rules': rule_results,
         'field_values': fields
     }
+    if ui_display_fields:
+        result['ui_display_fields'] = ui_display_fields
+    return result

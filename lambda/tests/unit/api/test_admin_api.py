@@ -361,3 +361,138 @@ class TestLambdaHandler:
         assert response['statusCode'] == 404
         body = json.loads(response['body'])
         assert 'Route not found' in body['error']
+
+
+class TestMergeDisplayFieldValues:
+    """The API overlays `ui_display_fields` onto `field_values` server-side
+    so the UI has one dict to read and legacy rows without the mapping fall
+    through untouched."""
+
+    def test_overlay_replaces_matching_keys(self):
+        from api.admin_api import merge_display_field_values
+
+        item = {
+            'field_values': {'provider_display': 'Dr. Smith', 'visit_date': '2026-06-22'},
+            'ui_display_fields': {'employee_name': 'Dr. Smith', 'date': '2026-06-22'},
+        }
+        merged = merge_display_field_values(item)
+        # Canonical keys are present alongside the raw source keys.
+        assert merged['employee_name'] == 'Dr. Smith'
+        assert merged['date'] == '2026-06-22'
+        assert merged['provider_display'] == 'Dr. Smith'
+
+    def test_no_ui_display_fields_returns_field_values_unchanged(self):
+        """Legacy row / un-configured org: UI reads raw field_values."""
+        from api.admin_api import merge_display_field_values
+
+        item = {'field_values': {'employee_name': 'Alice', 'date': '2026-06-22'}}
+        assert merge_display_field_values(item) == {
+            'employee_name': 'Alice', 'date': '2026-06-22',
+        }
+
+    def test_missing_both_returns_empty(self):
+        from api.admin_api import merge_display_field_values
+
+        assert merge_display_field_values({}) == {}
+
+    def test_ui_display_fields_wins_when_key_conflicts(self):
+        """If the raw field_values happens to already have the canonical
+        key, the mapped value takes precedence — the config is the source
+        of truth for what the UI shows."""
+        from api.admin_api import merge_display_field_values
+
+        item = {
+            'field_values': {'employee_name': 'stale'},
+            'ui_display_fields': {'employee_name': 'fresh'},
+        }
+        assert merge_display_field_values(item)['employee_name'] == 'fresh'
+
+
+class TestUIDisplayFieldsEndpoint:
+    """Test GET/PUT /api/organizations/{orgId}/ui-display-fields."""
+
+    def test_get_returns_empty_when_unset(self, mock_dynamodb, sample_org_config, super_admin_event):
+        """Missing item → empty mappings dict, which the UI treats as
+        the fallback signal."""
+        from api.admin_api import get_ui_display_fields
+
+        response = get_ui_display_fields(
+            event=super_admin_event,
+            path_params={'orgId': 'test-org'},
+        )
+        assert response['statusCode'] == 200
+        body = json.loads(response['body'])
+        assert body['organization_id'] == 'test-org'
+        assert body['mappings'] == {}
+
+    def test_put_then_get_round_trip(self, mock_dynamodb, sample_org_config, super_admin_event):
+        from api.admin_api import get_ui_display_fields, update_ui_display_fields
+
+        put_body = {'mappings': {'employee_name': 'provider_display', 'date': 'visit_date'}}
+        put_resp = update_ui_display_fields(
+            event=super_admin_event,
+            path_params={'orgId': 'test-org'},
+            body=put_body,
+        )
+        assert put_resp['statusCode'] == 200
+
+        get_resp = get_ui_display_fields(
+            event=super_admin_event,
+            path_params={'orgId': 'test-org'},
+        )
+        assert get_resp['statusCode'] == 200
+        got = json.loads(get_resp['body'])
+        assert got['mappings'] == put_body['mappings']
+        assert 'updated_at' in got
+
+    def test_put_empty_mappings_is_allowed(self, mock_dynamodb, sample_org_config, super_admin_event):
+        """Writing an empty dict is the on-record way to turn projection
+        off without deleting the item."""
+        from api.admin_api import update_ui_display_fields
+
+        resp = update_ui_display_fields(
+            event=super_admin_event,
+            path_params={'orgId': 'test-org'},
+            body={'mappings': {}},
+        )
+        assert resp['statusCode'] == 200
+
+    def test_put_rejects_missing_mappings(self, mock_dynamodb, sample_org_config, super_admin_event):
+        from api.admin_api import update_ui_display_fields
+
+        resp = update_ui_display_fields(
+            event=super_admin_event,
+            path_params={'orgId': 'test-org'},
+            body={},
+        )
+        assert resp['statusCode'] == 400
+
+    def test_put_rejects_non_dict_mappings(self, mock_dynamodb, sample_org_config, super_admin_event):
+        from api.admin_api import update_ui_display_fields
+
+        resp = update_ui_display_fields(
+            event=super_admin_event,
+            path_params={'orgId': 'test-org'},
+            body={'mappings': ['employee_name', 'provider_display']},
+        )
+        assert resp['statusCode'] == 400
+
+    def test_put_rejects_empty_key_or_value(self, mock_dynamodb, sample_org_config, super_admin_event):
+        from api.admin_api import update_ui_display_fields
+
+        resp = update_ui_display_fields(
+            event=super_admin_event,
+            path_params={'orgId': 'test-org'},
+            body={'mappings': {'employee_name': ''}},
+        )
+        assert resp['statusCode'] == 400
+
+    def test_org_user_cannot_edit_other_org(self, mock_dynamodb, sample_org_config, org_user_event):
+        from api.admin_api import update_ui_display_fields
+
+        resp = update_ui_display_fields(
+            event=org_user_event,
+            path_params={'orgId': 'other-org'},
+            body={'mappings': {'employee_name': 'provider_display'}},
+        )
+        assert resp['statusCode'] == 403

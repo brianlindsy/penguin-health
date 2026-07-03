@@ -92,6 +92,17 @@ export const api = {
       body: JSON.stringify(config),
     }),
 
+  // Per-org canonical-UI-name mapping. Empty mappings dict = no
+  // projection; the UI falls back to raw field_values.
+  getUiDisplayFields: (orgId) =>
+    request(`/api/organizations/${orgId}/ui-display-fields`),
+
+  updateUiDisplayFields: (orgId, mappings) =>
+    request(`/api/organizations/${orgId}/ui-display-fields`, {
+      method: 'PUT',
+      body: JSON.stringify({ mappings }),
+    }),
+
   enhanceRuleFields: (orgId, ruleText) =>
     request(`/api/organizations/${orgId}/rules/enhance-fields`, {
       method: 'POST',

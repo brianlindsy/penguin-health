@@ -32,6 +32,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
+from zoneinfo import ZoneInfo
 
 from .client import CentralReachClient
 from .exceptions import CentralReachError
@@ -86,7 +87,11 @@ def _compact(dt: datetime) -> str:
 
 
 def _ingest_date(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%d")
+    # Partition folder tracks the org's clinical day, not wall-clock UTC:
+    # a cron firing just after 00:00 UTC still belongs to the prior US day.
+    # Eastern matches `parameters._yesterday_eastern` — revisit when a
+    # non-Eastern org lands.
+    return dt.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
 
 def _process_one(

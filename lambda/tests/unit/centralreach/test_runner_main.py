@@ -257,3 +257,12 @@ def test_main_generates_run_id_if_not_set(stubbed_runner, monkeypatch):
 
     rc = runner.main()
     assert rc == 0
+
+
+def test_ingest_date_uses_eastern_wall_clock_for_partition():
+    # 02:30 UTC on 2026-07-01 is 22:30 EDT on 2026-06-30 — the run
+    # belongs to the prior US clinical day, so the partition folder
+    # must be 2026-06-30, not 2026-07-01.
+    runner = _load_runner()
+    late_night_utc = datetime(2026, 7, 1, 2, 30, tzinfo=timezone.utc)
+    assert runner._ingest_date(late_night_utc) == "2026-06-30"

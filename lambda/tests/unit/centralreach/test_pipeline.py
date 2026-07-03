@@ -796,3 +796,11 @@ def _build_raw_preview_from(preview: PreviewResponse) -> dict:
         "result": "OK",
         "failed": False,
     }
+
+
+def test_ingest_date_uses_eastern_wall_clock_for_partition():
+    # 02:30 UTC on 2026-07-01 is 22:30 EDT on 2026-06-30 — the run
+    # belongs to the prior US clinical day, so the partition folder
+    # must be 2026-06-30, not 2026-07-01.
+    late_night_utc = datetime(2026, 7, 1, 2, 30, tzinfo=timezone.utc)
+    assert pipeline_mod._ingest_date(late_night_utc) == "2026-06-30"

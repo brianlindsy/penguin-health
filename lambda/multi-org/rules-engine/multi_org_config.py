@@ -113,11 +113,14 @@ def load_org_rules(org_id):
         if csv_column_mappings:
             print(f"Loaded csv_column_mappings with {len(csv_column_mappings)} fields: {list(csv_column_mappings.keys())}")
 
+        ui_display_fields = load_ui_display_fields(org_id)
+
         return {
             'rules': enabled_rules,
             'organization_id': org_id,
             'field_mappings': field_mappings,
             'csv_column_mappings': csv_column_mappings,
+            'ui_display_fields': ui_display_fields,
         }
 
     except Exception as e:
@@ -149,6 +152,36 @@ def load_rules_config(org_id):
     except Exception as e:
         print(f"Error loading rules config for '{org_id}': {str(e)}")
         return None
+
+
+def load_ui_display_fields(org_id):
+    """
+    Load the org's UI display-field mapping, if configured.
+
+    Returns a dict mapping canonical UI field names to the source key in
+    `field_values` that should populate them for this org, e.g.
+    ``{"employee_name": "provider_display", "date": "visit_date"}``.
+
+    An empty dict (missing item, or item present with no mappings) tells the
+    validator to skip projection; the UI then falls back to reading
+    `field_values` directly.
+    """
+    try:
+        response = table.get_item(
+            Key={'pk': f'ORG#{org_id}', 'sk': 'UI_DISPLAY_FIELDS'}
+        )
+    except Exception as e:
+        print(f"Error loading UI_DISPLAY_FIELDS for '{org_id}': {str(e)}")
+        return {}
+
+    item = response.get('Item')
+    if not item:
+        return {}
+
+    mappings = item.get('mappings') or {}
+    if mappings:
+        print(f"Loaded UI_DISPLAY_FIELDS with {len(mappings)} entries: {list(mappings.keys())}")
+    return mappings
 
 
 def load_irp_config(org_id):

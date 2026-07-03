@@ -728,3 +728,84 @@ def test_validate_document_falls_back_to_unknown_only_when_no_id_anywhere():
         org_id='demo', validation_run_id='run-abc',
     )
     assert result['document_id'] == 'UNKNOWN'
+
+
+# ----- ui_display_fields projection ----------------------------------------
+
+
+def test_project_ui_display_fields_copies_by_source_key():
+    """Mapping `{canonical: source}` copies `fields[source]` under `canonical`."""
+    fields = {'provider_display': 'Dr. Smith', 'visit_date': '2026-06-22'}
+    mapping = {'employee_name': 'provider_display', 'date': 'visit_date'}
+    assert dv.project_ui_display_fields(fields, mapping) == {
+        'employee_name': 'Dr. Smith',
+        'date': '2026-06-22',
+    }
+
+
+def test_project_ui_display_fields_skips_missing_and_empty_sources():
+    """Missing/None/empty values are omitted so the UI's fallback to raw
+    `field_values` continues to work per-key."""
+    fields = {'provider_display': 'Dr. Smith', 'visit_date': None, 'note': ''}
+    mapping = {
+        'employee_name': 'provider_display',
+        'date': 'visit_date',
+        'notes': 'note',
+        'program': 'not_present',
+    }
+    assert dv.project_ui_display_fields(fields, mapping) == {
+        'employee_name': 'Dr. Smith',
+    }
+
+
+def test_project_ui_display_fields_empty_mapping_returns_empty():
+    """No mapping configured → empty dict → caller omits the field from
+    the DDB item; API/UI fall back to raw `field_values`."""
+    fields = {'provider_display': 'Dr. Smith'}
+    assert dv.project_ui_display_fields(fields, {}) == {}
+    assert dv.project_ui_display_fields(fields, None) == {}
+
+
+def test_validate_document_emits_ui_display_fields_when_mapping_set():
+    """End-to-end: an org config with `ui_display_fields` produces a
+    top-level `ui_display_fields` dict on the result the DDB row
+    inherits."""
+    config = {
+        'rules': [],
+        'field_mappings': {},
+        'ui_display_fields': {
+            'employee_name': 'provider_display',
+            'date': 'visit_date',
+        },
+    }
+    data = {
+        'extracted_fields': {
+            'source_record_id': 'note-1',
+            'provider_display': 'Dr. Alice',
+            'visit_date': '2026-06-22',
+        },
+    }
+    result = dv.validate_document(
+        data, 'data/2026-06-22/note-1.json', config,
+        org_id='demo', validation_run_id='run-1',
+    )
+    assert result['ui_display_fields'] == {
+        'employee_name': 'Dr. Alice',
+        'date': '2026-06-22',
+    }
+    # Raw field_values is untouched — LLM/deterministic paths still work.
+    assert result['field_values']['provider_display'] == 'Dr. Alice'
+    assert result['field_values']['visit_date'] == '2026-06-22'
+
+
+def test_validate_document_omits_ui_display_fields_when_no_mapping():
+    """Legacy orgs without the mapping produce no `ui_display_fields` key,
+    so old rows and new rows for un-configured orgs stay identical."""
+    config = {'rules': [], 'field_mappings': {}}
+    data = {'extracted_fields': {'source_record_id': 'note-1',
+                                 'provider_display': 'Dr. Alice'}}
+    result = dv.validate_document(
+        data, 'data/2026-06-22/note-1.json', config,
+        org_id='demo', validation_run_id='run-1',
+    )
+    assert 'ui_display_fields' not in result

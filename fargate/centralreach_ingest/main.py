@@ -44,6 +44,7 @@ import sys
 import traceback
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import boto3
 
@@ -78,7 +79,11 @@ def _iso(dt: datetime) -> str:
 
 
 def _ingest_date(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%d")
+    # Partition folder tracks the org's clinical day, not wall-clock UTC:
+    # a cron firing just after 00:00 UTC still belongs to the prior US day.
+    # Eastern matches `parameters._yesterday_eastern` — revisit when a
+    # non-Eastern org lands.
+    return dt.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
 
 def _actor(org_id: str) -> dict:

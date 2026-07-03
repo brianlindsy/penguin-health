@@ -745,6 +745,12 @@ The CR-supplied filename from the `resources.getresourceurl` response
 identity) is NOT preserved — the filename in S3 derives only from
 `source_record_id`, which is CR's internal billing entry id.
 
+`ingest_date` is the run's wall-clock date in `America/New_York`, not
+UTC. A cron firing just after 00:00 UTC still belongs to the prior US
+clinical day, matching the `parameters.resolve_date_range` default
+("yesterday-Eastern"). Non-Eastern orgs will need a per-org tz here
+when they land — do not generalize preemptively.
+
 ### Object metadata
 
 Set on every PUT:

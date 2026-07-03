@@ -157,6 +157,8 @@ def lambda_handler(event, context):
         'POST /api/organizations/{orgId}/rules': create_rule,
         'GET /api/organizations/{orgId}/rules-config': get_rules_config,
         'PUT /api/organizations/{orgId}/rules-config': update_rules_config,
+        'GET /api/organizations/{orgId}/ui-display-fields': get_ui_display_fields,
+        'PUT /api/organizations/{orgId}/ui-display-fields': update_ui_display_fields,
         'POST /api/organizations/{orgId}/rules/enhance-fields': enhance_fields,
         'POST /api/organizations/{orgId}/rules/enhance-note': enhance_note,
         'POST /api/organizations/{orgId}/analytics/nl-query': nl_query,
@@ -580,6 +582,83 @@ def update_rules_config(event, path_params, body, **kwargs):
     })
 
 
+# ---- UI Display Fields ----
+
+def get_ui_display_fields(event, path_params, **kwargs):
+    """Get the org's UI_DISPLAY_FIELDS mapping (canonical → source key).
+
+    Returns an empty `mappings` dict when unset — that's the fallback
+    signal the rules-engine and UI both read as "no projection". The UI
+    editor treats it as "start from scratch."
+    """
+    org_id = path_params.get('orgId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    result = table.get_item(
+        Key={'pk': f'ORG#{org_id}', 'sk': 'UI_DISPLAY_FIELDS'}
+    )
+
+    if 'Item' not in result:
+        return response(200, {
+            'organization_id': org_id,
+            'mappings': {},
+        })
+
+    item = result['Item']
+    return response(200, {
+        'organization_id': item.get('organization_id'),
+        'mappings': item.get('mappings', {}),
+        'updated_at': item.get('updated_at'),
+    })
+
+
+def update_ui_display_fields(event, path_params, body, **kwargs):
+    """Overwrite the org's UI_DISPLAY_FIELDS mapping.
+
+    Body: `{"mappings": {"employee_name": "provider_display", ...}}`.
+    An empty `mappings` dict is a valid write — it turns projection off
+    without deleting the item, so a future re-enable is one PUT away.
+    """
+    org_id = path_params.get('orgId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    if not body or 'mappings' not in body:
+        return response(400, {'error': 'Request body must include mappings'})
+
+    mappings = body['mappings']
+    if not isinstance(mappings, dict):
+        return response(400, {'error': 'mappings must be an object'})
+
+    for k, v in mappings.items():
+        if not isinstance(k, str) or not k or not isinstance(v, str) or not v:
+            return response(
+                400,
+                {'error': 'mappings must map non-empty strings to non-empty strings'},
+            )
+
+    item = {
+        'pk': f'ORG#{org_id}',
+        'sk': 'UI_DISPLAY_FIELDS',
+        'organization_id': org_id,
+        'mappings': mappings,
+        'updated_at': datetime.utcnow().isoformat() + 'Z',
+    }
+    table.put_item(Item=item)
+    print(f"Updated UI_DISPLAY_FIELDS for {org_id} ({len(mappings)} entries)")
+
+    return response(200, {
+        'organization_id': org_id,
+        'mappings': mappings,
+        'updated_at': item['updated_at'],
+    })
+
+
 # ---- Validation Results ----
 
 DETAILS_DEFAULT_LIMIT = 50
@@ -592,6 +671,19 @@ DETAILS_FETCH_WORKERS = 10
 # endpoint still returns the full payload for the drill-down detail page.
 SLIM_RULE_FIELDS = ('rule_id', 'rule_name', 'category', 'status')
 SLIM_FIELD_VALUE_KEYS = ('date', 'employee_name', 'program')
+
+
+def merge_display_field_values(item):
+    """Overlay `ui_display_fields` onto raw `field_values`.
+
+    The rules-engine writes `ui_display_fields` (canonical-name projection)
+    only when the org has a `UI_DISPLAY_FIELDS` config item. Rows without
+    it — legacy runs and un-configured orgs — fall through untouched, which
+    is the fallback path the UI relies on.
+    """
+    fv = item.get('field_values') or {}
+    udf = item.get('ui_display_fields') or {}
+    return {**fv, **udf} if udf else fv
 
 
 def _fetch_run_documents(run_id, org_id, claims, allowed, slim=False):
@@ -612,10 +704,10 @@ def _fetch_run_documents(run_id, org_id, claims, allowed, slim=False):
         rules = [r for r in (item.get('rules') or []) if r.get('category') in allowed]
         if not rules:
             continue
+        merged_fv = merge_display_field_values(item)
         if slim:
             slim_rules = [{k: r.get(k) for k in SLIM_RULE_FIELDS} for r in rules]
-            fv = item.get('field_values') or {}
-            slim_fv = {k: fv.get(k) for k in SLIM_FIELD_VALUE_KEYS if k in fv}
+            slim_fv = {k: merged_fv.get(k) for k in SLIM_FIELD_VALUE_KEYS if k in merged_fv}
             documents.append({
                 'document_id': item.get('document_id'),
                 'validation_timestamp': item.get('validation_timestamp'),
@@ -630,7 +722,7 @@ def _fetch_run_documents(run_id, org_id, claims, allowed, slim=False):
                 'filename': item.get('filename'),
                 'summary': convert_decimals(item.get('summary', {})),
                 'rules': convert_decimals(rules),
-                'field_values': convert_decimals(item.get('field_values', {})),
+                'field_values': convert_decimals(merged_fv),
             })
     return documents
 
@@ -761,7 +853,7 @@ def get_validation_run(event, path_params, **kwargs):
             'filename': item.get('filename'),
             'summary': convert_decimals(item.get('summary', {})),
             'rules': convert_decimals(rules),
-            'field_values': convert_decimals(item.get('field_values', {})),
+            'field_values': convert_decimals(merge_display_field_values(item)),
         })
 
     return response(200, {
@@ -815,7 +907,7 @@ def get_validation_result(event, path_params, **kwargs):
         'filename': item.get('filename'),
         'summary': convert_decimals(item.get('summary', {})),
         'rules': convert_decimals(rules),
-        'field_values': convert_decimals(item.get('field_values', {})),
+        'field_values': convert_decimals(merge_display_field_values(item)),
     })
 
 

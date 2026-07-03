@@ -9,11 +9,12 @@ import { RunDates } from '../components/RunDates.jsx'
 import { RunTimestamp } from '../components/RunTimestamp.jsx'
 import { usePermissions } from '../auth/usePermissions.js'
 
-const TABS = ['Rules', 'Field Mappings', 'Validation Results']
+const TABS = ['Rules', 'Field Mappings', 'UI Display Fields', 'Validation Results']
 const TAB_PARAM_MAP = {
   'validation': 'Validation Results',
   'rules': 'Rules',
   'field-mappings': 'Field Mappings',
+  'ui-display-fields': 'UI Display Fields',
 }
 
 export function OrganizationDetail() {
@@ -201,6 +202,10 @@ export function OrganizationDetail() {
         />
       )}
 
+      {activeTab === 'UI Display Fields' && (
+        <UIDisplayFieldsTab orgId={orgId} />
+      )}
+
       {activeTab === 'Validation Results' && (
         <ValidationResultsTab orgId={orgId} />
       )}
@@ -334,6 +339,108 @@ function FieldMappingsTab({ config, onSave, saving, saveMsg }) {
           className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50"
         >
           {saving ? 'Saving...' : 'Save All Mappings'}
+        </button>
+        {saveMsg && (
+          <span className={`text-sm ${saveMsg.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
+            {saveMsg}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+// Canonical UI field names the ValidationRunDetailPage knows how to render.
+// Kept in sync with FIELD_LABELS + MULTI_FILTER_FIELDS in that page and with
+// KNOWN_UI_FIELDS in scripts/multi-org/seed_ui_display_fields.py. Anything
+// not in this list still saves (the editor is free-form), but the UI won't
+// have a nice label for it.
+const KNOWN_UI_FIELDS = [
+  'service_id', 'date', 'program', 'service_type', 'diagnosis_code',
+  'bed_day_diagnosis_code', 'cpt_code', 'rate', 'employee_name',
+  'document_id', 'payer_description',
+]
+
+function UIDisplayFieldsTab({ orgId }) {
+  const [mappings, setMappings] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saveMsg, setSaveMsg] = useState('')
+
+  useEffect(() => {
+    setLoading(true)
+    api.getUiDisplayFields(orgId)
+      .then(data => setMappings(data?.mappings || {}))
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false))
+  }, [orgId])
+
+  const handleSave = async () => {
+    setSaving(true)
+    setSaveMsg('')
+    try {
+      await api.updateUiDisplayFields(orgId, mappings)
+      setSaveMsg('Saved')
+      setTimeout(() => setSaveMsg(''), 3000)
+    } catch (err) {
+      setSaveMsg(`Error: ${err.message}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) return <p className="text-gray-500">Loading UI display fields...</p>
+  if (error) return <p className="text-red-600">Error: {error}</p>
+
+  const unknownKeys = Object.keys(mappings || {}).filter(
+    k => !KNOWN_UI_FIELDS.includes(k)
+  )
+
+  return (
+    <div className="max-w-2xl space-y-6">
+      <div>
+        <h2 className="text-lg font-medium text-gray-900 mb-2">UI Display Fields</h2>
+        <p className="text-sm text-gray-500 mb-2">
+          Maps canonical UI field names to the source field this org's
+          validation results carry, so charts render with consistent labels
+          across orgs even when the underlying data uses different names.
+        </p>
+        <p className="text-sm text-gray-500 mb-4">
+          For example, <code className="bg-gray-100 px-1 rounded">"employee_name": "provider_display"</code>
+          {' '}tells the UI to show <code className="bg-gray-100 px-1 rounded">provider_display</code>{' '}
+          from each document's <code className="bg-gray-100 px-1 rounded">field_values</code>{' '}
+          wherever a "Employee" column is displayed. An empty object turns
+          projection off — the UI falls back to reading raw{' '}
+          <code className="bg-gray-100 px-1 rounded">field_values</code> keys directly.
+        </p>
+        <p className="text-xs text-gray-400 mb-3">
+          Known canonical fields: {KNOWN_UI_FIELDS.join(', ')}
+        </p>
+
+        <JsonEditor
+          value={mappings || {}}
+          onChange={setMappings}
+          label="mappings (canonical → source)"
+        />
+
+        {unknownKeys.length > 0 && (
+          <p className="text-xs text-yellow-700 mt-2">
+            Warning: canonical name(s) not recognized by the UI:{' '}
+            <code>{unknownKeys.join(', ')}</code>. They'll save fine but the
+            UI has no built-in label for them.
+          </p>
+        )}
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50"
+        >
+          {saving ? 'Saving...' : 'Save Display Fields'}
         </button>
         {saveMsg && (
           <span className={`text-sm ${saveMsg.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
