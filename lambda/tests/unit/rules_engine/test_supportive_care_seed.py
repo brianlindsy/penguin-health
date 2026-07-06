@@ -57,11 +57,14 @@ def test_seed_rule_id_8_is_absent():
 
 
 def test_seed_rule_types_match_plan():
-    """6 deterministic, 6 LLM (rules 1,4,5,6,10,12 vs 2,3,7,9,11,13)."""
+    """7 deterministic, 5 LLM. Rule 2 (sentence count) moved from LLM to
+    deterministic — the LLM extracts sentence_count as a scalar, Python
+    owns the 2-per-hour math so the model can't flip its verdict mid-response.
+    """
     seed = _load_seed()
     by_id = {str(r['id']): r for r in seed['rules']}
-    deterministic_ids = {'1', '4', '5', '6', '10', '12'}
-    llm_ids = {'2', '3', '7', '9', '11', '13'}
+    deterministic_ids = {'1', '2', '4', '5', '6', '10', '12'}
+    llm_ids = {'3', '7', '9', '11', '13'}
     for rule_id in deterministic_ids:
         assert by_id[rule_id]['type'] == 'deterministic', f"rule {rule_id} should be deterministic"
     for rule_id in llm_ids:
@@ -94,6 +97,20 @@ def test_rule_1_uses_narrative_hash_unique_operator():
     rule = next(r for r in seed['rules'] if str(r['id']) == '1')
     assert rule['conditions'][0]['operator'] == 'narrative_hash_unique'
     assert rule['conditions'][0]['field'] == 'narrative_hash'
+
+
+def test_rule_2_uses_sentence_count_operator():
+    """Rule 2 pairs an LLM extraction (sentence_count) with a deterministic
+    2-per-hour compare against billing_list_time_worked_in_mins."""
+    seed = _load_seed()
+    rule = next(r for r in seed['rules'] if str(r['id']) == '2')
+    assert rule['type'] == 'deterministic'
+    extract_names = [f['name'] for f in rule['fields_to_extract']]
+    assert extract_names == ['sentence_count']
+    cond = rule['conditions'][0]
+    assert cond['operator'] == 'sentence_count_meets_hourly_minimum'
+    assert cond['field'] == 'sentence_count'
+    assert cond['compare_to'] == 'billing_list_time_worked_in_mins'
 
 
 def test_rule_4_uses_minus_minutes_operator():

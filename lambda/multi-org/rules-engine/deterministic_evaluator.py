@@ -8,6 +8,7 @@ The 'field' in conditions refers directly to CSV column headers.
 """
 
 import csv
+import math
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -78,6 +79,55 @@ def evaluate_narrative_hash_unique(fields):
         "ttl": int((now + timedelta(days=_NARRATIVE_HASH_TTL_DAYS)).timestamp()),
     })
     return True, "Narrative is unique within 7-day window", False
+
+
+def evaluate_sentence_count_meets_hourly_minimum(condition, fields):
+    """
+    Two-sentences-per-hour check for session narratives.
+
+    The LLM extracts `sentence_count` upstream (a single scalar is a
+    stable extraction task at temp 0.01); this operator does the
+    deterministic math the LLM was previously flipping mid-response:
+    required = 2 * ceil(minutes / 60); PASS when count >= required.
+
+    `condition` uses the standard `field` / `compare_to` shape:
+      - field: name of the count field (e.g. "sentence_count")
+      - compare_to: name of the minutes field
+        (e.g. "billing_list_time_worked_in_mins")
+
+    Returns (passed, message, skip).
+    """
+    count_field, count_name = get_field_value(fields, condition.get('field'))
+    minutes_field, minutes_name = get_field_value(
+        fields, condition.get('compare_to'),
+    )
+
+    if count_field is None:
+        return False, f"Required field '{count_name}' not found", True
+    if minutes_field is None:
+        return False, f"Required field '{minutes_name}' not found", True
+
+    count = parse_number(count_field)
+    minutes = parse_number(minutes_field)
+    if count is None:
+        return False, (
+            f"Could not parse number from '{count_name}': '{count_field}'"
+        ), True
+    if minutes is None or minutes <= 0:
+        return False, (
+            f"Could not parse positive minutes from '{minutes_name}': "
+            f"'{minutes_field}'"
+        ), True
+
+    hours_required = math.ceil(minutes / 60)
+    required_minimum = 2 * hours_required
+    passed = count >= required_minimum
+    verdict = "PASS" if passed else "FAIL"
+    msg = (
+        f"{verdict} - {int(count)} sentences for {int(minutes)} min "
+        f"(required {required_minimum} = 2 x ceil({int(minutes)}/60))"
+    )
+    return passed, msg, False
 
 
 # Date formats to try when parsing date strings
@@ -760,6 +810,13 @@ def evaluate_condition(condition, fields):
     # talks to DynamoDB. Doesn't fit the standard (field, compare, value) shape.
     if operator == 'narrative_hash_unique':
         return evaluate_narrative_hash_unique(fields)
+
+    # LLM-extracted sentence_count + minutes field; the operator does the
+    # ceil()-based hourly-minimum math. Split out because a single upstream
+    # LLM call reliably returns the scalar count, then Python owns the
+    # verdict — the LLM used to flip its own PASS/FAIL mid-reasoning here.
+    if operator == 'sentence_count_meets_hourly_minimum':
+        return evaluate_sentence_count_meets_hourly_minimum(condition, fields)
 
     # Get field value (supports fallback list)
     field_value, field_name = get_field_value(fields, field_spec)

@@ -221,6 +221,102 @@ def test_has_pdf_available_false_when_only_inaccessible_files():
     assert response.has_pdf_available is False
 
 
+# ----- first_accessible_file: two-file dispatch ----------------------------
+#
+# When CR attaches 2+ accessible files, the clinical note lands second and
+# carries a MM/DD/YYYY date in its filename (the "07/02/2026 <client> ...
+# Note by <provider>" shape). Prefer the second file when its name has a
+# date; fall back to the first for the single-file case and for two-file
+# cases where the second name has no date.
+
+
+def test_prefers_second_accessible_file_when_name_has_date():
+    payload = {**_SIGNED_PREVIEW_RESPONSE,
+               "files": [
+                   {"id": 1, "name": "cover sheet.pdf",
+                    "isArchived": False, "hasAccess": True},
+                   {"id": 2,
+                    "name": "07/02/2026 Client Name Re-ssessment Note by Provider",
+                    "isArchived": False, "hasAccess": True},
+               ]}
+    client = _StubClient(payload)
+    response = get_preview(client, billing_entry_id=1234)
+    assert response.first_accessible_file is not None
+    assert response.first_accessible_file.id == 2
+
+
+def test_falls_back_to_first_when_second_name_has_no_date():
+    payload = {**_SIGNED_PREVIEW_RESPONSE,
+               "files": [
+                   {"id": 1, "name": "Note by Provider",
+                    "isArchived": False, "hasAccess": True},
+                   {"id": 2, "name": "Attachment",
+                    "isArchived": False, "hasAccess": True},
+               ]}
+    client = _StubClient(payload)
+    response = get_preview(client, billing_entry_id=1234)
+    assert response.first_accessible_file is not None
+    assert response.first_accessible_file.id == 1
+
+
+def test_single_accessible_file_unchanged():
+    """Regression: the single-file path (today's common case) is untouched."""
+    client = _StubClient(_SIGNED_PREVIEW_RESPONSE)
+    response = get_preview(client, billing_entry_id=1234)
+    assert response.first_accessible_file is not None
+    assert response.first_accessible_file.id == 8901
+
+
+def test_second_position_measured_against_accessible_list_not_raw():
+    """Archived/inaccessible files don't count. If raw[0] is archived and
+    raw[1] is the only accessible file, that file is "first accessible"
+    and there's no "second" to prefer."""
+    payload = {**_SIGNED_PREVIEW_RESPONSE,
+               "files": [
+                   {"id": 1, "name": "07/02/2026 something",
+                    "isArchived": True, "hasAccess": True},
+                   {"id": 2, "name": "cover sheet",
+                    "isArchived": False, "hasAccess": True},
+               ]}
+    client = _StubClient(payload)
+    response = get_preview(client, billing_entry_id=1234)
+    assert response.first_accessible_file is not None
+    assert response.first_accessible_file.id == 2
+
+
+def test_three_accessible_files_still_picks_second_when_dated():
+    """Confirm 'second' means index 1, not 'last with a date'."""
+    payload = {**_SIGNED_PREVIEW_RESPONSE,
+               "files": [
+                   {"id": 1, "name": "cover",
+                    "isArchived": False, "hasAccess": True},
+                   {"id": 2, "name": "07/02/2026 note",
+                    "isArchived": False, "hasAccess": True},
+                   {"id": 3, "name": "07/03/2026 addendum",
+                    "isArchived": False, "hasAccess": True},
+               ]}
+    client = _StubClient(payload)
+    response = get_preview(client, billing_entry_id=1234)
+    assert response.first_accessible_file is not None
+    assert response.first_accessible_file.id == 2
+
+
+def test_date_pattern_requires_mm_dd_yyyy_not_bare_year():
+    """A filename that just contains "2026" doesn't qualify — we need the
+    full MM/DD/YYYY shape so unrelated attachments don't accidentally win."""
+    payload = {**_SIGNED_PREVIEW_RESPONSE,
+               "files": [
+                   {"id": 1, "name": "cover",
+                    "isArchived": False, "hasAccess": True},
+                   {"id": 2, "name": "notes 2026 draft",
+                    "isArchived": False, "hasAccess": True},
+               ]}
+    client = _StubClient(payload)
+    response = get_preview(client, billing_entry_id=1234)
+    assert response.first_accessible_file is not None
+    assert response.first_accessible_file.id == 1
+
+
 # ----- raw payload retention -----------------------------------------------
 
 

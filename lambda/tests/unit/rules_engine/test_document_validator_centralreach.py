@@ -809,3 +809,92 @@ def test_validate_document_omits_ui_display_fields_when_no_mapping():
         org_id='demo', validation_run_id='run-1',
     )
     assert 'ui_display_fields' not in result
+
+
+# ----- deterministic rules with LLM-extracted fields -----------------------
+
+
+def test_deterministic_rule_with_fields_to_extract_runs_extraction_then_math():
+    """Rule 2 pattern: LLM extracts sentence_count as a scalar, Python
+    owns the PASS/FAIL math. Pins the wiring — one Bedrock call (extract
+    only), and the extracted value feeds the operator so 7 sentences at
+    135 min PASSes."""
+    invoke_calls = []
+
+    def _stub(*, body, **kw):
+        invoke_calls.append({"body": body, "kwargs": kw})
+        return {"fields": {"sentence_count": 7}}
+
+    rule_config = {
+        "rule_id": "r2_sentences",
+        "name": "Session narrative has >= 2 sentences per hour",
+        "type": "deterministic",
+        "rule_text": "Count complete sentences in the narrative.",
+        "notes": [],
+        "fields_to_extract": [
+            {"name": "sentence_count", "type": "integer",
+             "description": "Complete sentences in the narrative."},
+        ],
+        "conditions": [{
+            "field": "sentence_count",
+            "operator": "sentence_count_meets_hourly_minimum",
+            "compare_to": "billing_list_time_worked_in_mins",
+        }],
+        "logic": "all",
+    }
+    data = _centralreach_record()
+    fields = {"billing_list_time_worked_in_mins": 135}
+
+    with patch.object(dv, "invoke_claude_model", side_effect=_stub), \
+         patch.object(dv, "audit_emit", side_effect=lambda **kw: None):
+        result = dv.evaluate_rule(
+            rule_config, fields, data=data,
+            org_id="demo", validation_run_id="run-abc",
+        )
+
+    # Exactly one Bedrock call — the extract step. No validate step, no
+    # second LLM call whose reasoning could flip.
+    assert len(invoke_calls) == 1
+    body = invoke_calls[0]["body"]
+    assert body["messages"][0]["content"][0]["text"].startswith("Rule:")
+    # The extraction call carries the extraction system prompt, not
+    # the PASS/FAIL validate one.
+    assert "extract" in body["system"].lower()
+
+    assert result['status'] == 'PASS'
+    assert result['rule_type'] == 'deterministic'
+    assert '7 sentences' in result['message']
+    assert 'required 6' in result['message']
+
+
+def test_deterministic_rule_extract_failure_surfaces_as_error():
+    """If the extraction call returns no JSON, the rule reports ERROR
+    rather than silently SKIPping to a wrong verdict."""
+    def _stub(*, body, **kw):
+        return None
+
+    rule_config = {
+        "rule_id": "r2_sentences",
+        "type": "deterministic",
+        "rule_text": "Count sentences.",
+        "notes": [],
+        "fields_to_extract": [
+            {"name": "sentence_count", "type": "integer",
+             "description": "count"},
+        ],
+        "conditions": [{
+            "field": "sentence_count",
+            "operator": "sentence_count_meets_hourly_minimum",
+            "compare_to": "billing_list_time_worked_in_mins",
+        }],
+    }
+
+    with patch.object(dv, "invoke_claude_model", side_effect=_stub), \
+         patch.object(dv, "audit_emit", side_effect=lambda **kw: None):
+        result = dv.evaluate_rule(
+            rule_config,
+            fields={"billing_list_time_worked_in_mins": 60},
+            data=_centralreach_record(),
+            org_id="demo", validation_run_id="run-abc",
+        )
+    assert result['status'] == 'ERROR'

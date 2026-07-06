@@ -42,7 +42,7 @@ class CatholicCharitiesSplitter(BaseCsvSplitter):
     NON_BILLABLE_ALLOWED_CPT_CODES = {'NOTE', 'Outreach'}
 
     # Visit type names to exclude (21b_Visit_Type_Name)
-    EXCLUDED_VISIT_TYPE_NAMES = {'ACT Team Mtg Billabl'}
+    EXCLUDED_VISIT_TYPE_NAMES = {'ACT Team Mtg Billabl', 'BHSD Update'}
 
     def split(self, csv_content: str, filename: str) -> List[Tuple[str, str]]:
         """

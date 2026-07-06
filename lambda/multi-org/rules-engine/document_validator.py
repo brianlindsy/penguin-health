@@ -185,7 +185,27 @@ def evaluate_rule(rule_config, fields, data=None, *,
                 org_id=org_id, validation_run_id=validation_run_id,
             )
         elif rule_type == 'deterministic':
-            status, message = evaluate_deterministic_rule(rule_config, fields, data)
+            # If the rule declares fields_to_extract, run the same
+            # single-scalar LLM extraction step LLM rules use, merge the
+            # result into fields, then hand to the deterministic evaluator.
+            # This lets a rule outsource "read a number off the prose" to
+            # the LLM while keeping the PASS/FAIL decision in Python.
+            eval_fields = fields
+            if rule_config.get('fields_to_extract'):
+                extracted = _extract_fields_for_deterministic(
+                    rule_config, fields, data,
+                    org_id=org_id, validation_run_id=validation_run_id,
+                )
+                if extracted is None:
+                    status = 'ERROR'
+                    message = 'No JSON found in Claude response (field extraction)'
+                    result['status'] = status
+                    result['message'] = message
+                    return result
+                eval_fields = {**fields, **extracted}
+            status, message = evaluate_deterministic_rule(
+                rule_config, eval_fields, data,
+            )
         else:
             status = 'SKIP'
             message = f'Unsupported rule type: {rule_type}. Only "llm" and "deterministic" are supported.'
@@ -377,6 +397,35 @@ Please respond with JSON, with the key: 'fields'. The value should be an object 
     extracted = response_json.get('fields', {})
     print(f"Fields extracted: {len(extracted)} fields, names={list(extracted.keys())}")
     return extracted
+
+
+def _extract_fields_for_deterministic(rule_config, fields, data, *,
+                                      org_id=None, validation_run_id=None):
+    """Run the LLM field-extraction step so a deterministic rule can
+    read a scalar (e.g. `sentence_count`) off the prose.
+
+    The extraction call is the reliable half of the two-step LLM
+    pattern — single-scalar JSON output, temp 0.01, no verdict text
+    to flip mid-response. Returns the extracted dict or None if the
+    call produced no JSON.
+    """
+    rule_id = rule_config.get('rule_id', '')
+    rule_text = rule_config.get('rule_text', '')
+    notes = rule_config.get('notes', [])
+    fields_to_extract = rule_config.get('fields_to_extract', [])
+
+    chart_kind, chart_input = _load_chart_input(data, rule_config)
+    if chart_kind == 'text' and not chart_input:
+        chart_input = json.dumps(fields, indent=2)
+    if chart_kind == 'pdf':
+        _emit_pdf_read_audit(data, rule_id, validation_run_id)
+
+    return _extract_rule_fields(
+        MODEL_ID, rule_text, notes, fields_to_extract,
+        chart_kind, chart_input, fields,
+        org_id=org_id, validation_run_id=validation_run_id,
+        rule_id=rule_id,
+    )
 
 
 def _validate_rule(model_id, rule_text, notes,

@@ -17,6 +17,7 @@ Two pipeline-level conditions are diagnosed from this response:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +26,13 @@ from .client import CentralReachClient
 
 def _preview_path(billing_entry_id: int) -> str:
     return f"/crxapi/billing/billing-entries/{billing_entry_id}/preview"
+
+
+# Names of the "second file" the pipeline should prefer look like
+# `07/02/2026 <client> ... Note by <provider>` — a leading MM/DD/YYYY
+# date. Anchoring on the date is enough to distinguish the clinical
+# note from the other attachment that comes back first.
+_MMDDYYYY = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
 
 
 @dataclass(frozen=True)
@@ -109,10 +117,23 @@ class PreviewResponse:
 
     @property
     def first_accessible_file(self) -> PreviewFile | None:
-        for f in self.files:
-            if f.has_access and not f.is_archived:
-                return f
-        return None
+        """The file the pipeline should ingest.
+
+        With 2+ accessible files, CR returns an unrelated attachment
+        first and the clinical note second. When the second accessible
+        file's name carries a MM/DD/YYYY date (matching the
+        `07/02/2026 <client> Note by <provider>` shape), prefer it.
+        Otherwise fall back to the first accessible file so the
+        single-file case is unchanged.
+        """
+        accessible = [
+            f for f in self.files if f.has_access and not f.is_archived
+        ]
+        if not accessible:
+            return None
+        if len(accessible) >= 2 and _MMDDYYYY.search(accessible[1].name):
+            return accessible[1]
+        return accessible[0]
 
     @property
     def template_id(self) -> int | None:

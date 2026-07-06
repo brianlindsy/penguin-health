@@ -1343,3 +1343,85 @@ class TestNarrativeHashUniqueOperator:
             {'text': 'n'},
         )
         assert status == 'SKIP'
+
+
+class TestSentenceCountMeetsHourlyMinimum:
+    """Rule 2: 2 sentences per billed hour. LLM extracts sentence_count
+    upstream; the operator does the ceil math so the model can't flip
+    its verdict mid-response."""
+
+    _RULE = {
+        'conditions': [{
+            'field': 'sentence_count',
+            'operator': 'sentence_count_meets_hourly_minimum',
+            'compare_to': 'billing_list_time_worked_in_mins',
+        }],
+        'logic': 'all',
+    }
+
+    def test_pass_when_count_meets_minimum(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+        # Regression: the LLM previously flipped FAIL -> PASS mid-reasoning
+        # on this exact shape (135 min -> required 6, actual 7).
+        fields = {'sentence_count': 7, 'billing_list_time_worked_in_mins': 135}
+        status, message = evaluate_deterministic_rule(self._RULE, fields, None)
+        assert status == 'PASS', message
+        assert '7 sentences' in message
+        assert 'required 6' in message
+
+    def test_pass_at_exact_boundary(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+        # 120 min -> ceil(2) -> required 4
+        fields = {'sentence_count': 4, 'billing_list_time_worked_in_mins': 120}
+        status, _ = evaluate_deterministic_rule(self._RULE, fields, None)
+        assert status == 'PASS'
+
+    def test_fail_one_short(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+        fields = {'sentence_count': 5, 'billing_list_time_worked_in_mins': 135}
+        status, message = evaluate_deterministic_rule(self._RULE, fields, None)
+        assert status == 'FAIL', message
+        assert 'FAIL' in message
+
+    def test_partial_hour_rounds_up(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+        # 30 min -> ceil(0.5) -> 1 hour -> required 2
+        fields = {'sentence_count': 2, 'billing_list_time_worked_in_mins': 30}
+        status, _ = evaluate_deterministic_rule(self._RULE, fields, None)
+        assert status == 'PASS'
+
+        fields = {'sentence_count': 1, 'billing_list_time_worked_in_mins': 30}
+        status, _ = evaluate_deterministic_rule(self._RULE, fields, None)
+        assert status == 'FAIL'
+
+    def test_skip_when_count_missing(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+        fields = {'billing_list_time_worked_in_mins': 60}
+        status, _ = evaluate_deterministic_rule(self._RULE, fields, None)
+        assert status == 'SKIP'
+
+    def test_skip_when_minutes_missing(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+        fields = {'sentence_count': 5}
+        status, _ = evaluate_deterministic_rule(self._RULE, fields, None)
+        assert status == 'SKIP'
+
+    def test_skip_when_minutes_not_positive(self):
+        from deterministic_evaluator import evaluate_deterministic_rule
+        # Zero minutes shouldn't crash the ceil() or force a division-safe
+        # branch downstream; a bad billing value is a skip, not a fail.
+        fields = {'sentence_count': 3, 'billing_list_time_worked_in_mins': 0}
+        status, _ = evaluate_deterministic_rule(self._RULE, fields, None)
+        assert status == 'SKIP'
+
+    def test_decimal_minutes_from_dynamodb(self):
+        from decimal import Decimal
+        from deterministic_evaluator import evaluate_deterministic_rule
+        # DynamoDB round-trips numbers as Decimal; the operator must
+        # handle them the same as ints.
+        fields = {
+            'sentence_count': Decimal('7'),
+            'billing_list_time_worked_in_mins': Decimal('135'),
+        }
+        status, _ = evaluate_deterministic_rule(self._RULE, fields, None)
+        assert status == 'PASS'

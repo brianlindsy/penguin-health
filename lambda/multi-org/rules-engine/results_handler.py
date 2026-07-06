@@ -137,15 +137,23 @@ def aggregate_run_summary(validation_run_id, env_config):
     """
     table = dynamodb.Table(env_config['DYNAMODB_TABLE'])
 
-    response = table.query(
-        IndexName='gsi2',
-        KeyConditionExpression='gsi2pk = :run_key',
-        ExpressionAttributeValues={
-            ':run_key': f"RUN#{validation_run_id}"
+    items = []
+    last_evaluated = None
+    while True:
+        kwargs = {
+            'IndexName': 'gsi2',
+            'KeyConditionExpression': 'gsi2pk = :run_key',
+            'ExpressionAttributeValues': {
+                ':run_key': f"RUN#{validation_run_id}"
+            },
         }
-    )
-
-    items = response.get('Items', [])
+        if last_evaluated:
+            kwargs['ExclusiveStartKey'] = last_evaluated
+        response = table.query(**kwargs)
+        items.extend(response.get('Items', []))
+        last_evaluated = response.get('LastEvaluatedKey')
+        if not last_evaluated:
+            break
 
     total_docs = len(items)
     docs_passed = 0

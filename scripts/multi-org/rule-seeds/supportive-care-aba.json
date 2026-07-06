@@ -21,22 +21,26 @@
     {
       "id": "2",
       "name": "Session narrative has >= 2 sentences per hour",
-      "description": "Sentence count must meet 2 x ceil(session_duration_minutes / 60).",
-      "type": "llm",
+      "description": "Sentence count must meet 2 x ceil(billing_list_time_worked_in_mins / 60).",
+      "type": "deterministic",
       "enabled": true,
-      "rule_text": "Count the number of complete sentences in the session narrative. Compute hours_required = ceil(session_duration_minutes / 60), so a 30-minute session is 1 hour, a 75-minute session is 2 hours, and so on. Compute required_minimum = 2 x hours_required. Pass if sentence_count >= required_minimum, otherwise fail. Treat sentence fragments separated only by bullets or list markers as separate sentences only if each conveys a complete thought.",
+      "rule_text": "Count the complete sentences in the session narrative so the rules engine can check that the note has at least two sentences per billed hour.",
       "fields_to_extract": [
         {
           "name": "sentence_count",
           "type": "integer",
-          "description": "Number of complete sentences in the session narrative."
-        },
-        {
-          "name": "session_duration_minutes",
-          "type": "integer",
-          "description": "Billed session length in minutes."
+          "description": "Total number of complete sentences in the session narrative. Count sentence-terminating punctuation (. ! ?) that ends a complete thought, ignoring abbreviations like Mr., Dr., a.m., p.m., and decimal numbers. Bullet-list items count as one sentence each only when each item expresses a complete thought."
         }
-      ]
+      ],
+      "conditions": [
+        {
+          "field": "sentence_count",
+          "operator": "sentence_count_meets_hourly_minimum",
+          "compare_to": "billing_list_time_worked_in_mins",
+          "description": "sentence_count >= 2 x ceil(billing_list_time_worked_in_mins / 60)"
+        }
+      ],
+      "logic": "all"
     },
     {
       "id": "3",
