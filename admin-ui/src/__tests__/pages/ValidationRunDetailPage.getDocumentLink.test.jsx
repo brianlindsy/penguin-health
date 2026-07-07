@@ -3,16 +3,29 @@ import { getDocumentLink } from '../../pages/ValidationRunDetailPage.jsx'
 
 describe('getDocumentLink', () => {
   describe('CentralReach orgs', () => {
-    it('links supportive-care docs to the CentralReach resource-details deep link by document_id', () => {
+    it('links supportive-care docs to the CentralReach resource-details deep link by preview_file_id', () => {
+      const doc = {
+        document_id: 'abc-123',
+        field_values: { service_id: 'svc-999', preview_file_id: 8901 },
+      }
+      expect(getDocumentLink('supportive-care', doc)).toBe(
+        'https://members.centralreach.com/#resources/details?id=8901'
+      )
+    })
+
+    it('ignores service_id for CentralReach orgs (preview_file_id drives the URL)', () => {
+      const doc = {
+        document_id: 'abc-123',
+        field_values: { service_id: 'svc-999', preview_file_id: 8901 },
+      }
+      expect(getDocumentLink('supportive-care', doc)).not.toContain('svc-999')
+    })
+
+    it('falls back to document_id when preview_file_id is missing (legacy records)', () => {
       const doc = { document_id: 'abc-123', field_values: { service_id: 'svc-999' } }
       expect(getDocumentLink('supportive-care', doc)).toBe(
         'https://members.centralreach.com/#resources/details?id=abc-123'
       )
-    })
-
-    it('ignores service_id for CentralReach orgs (document_id is the resource id)', () => {
-      const doc = { document_id: 'abc-123', field_values: { service_id: 'svc-999' } }
-      expect(getDocumentLink('supportive-care', doc)).not.toContain('svc-999')
     })
   })
 

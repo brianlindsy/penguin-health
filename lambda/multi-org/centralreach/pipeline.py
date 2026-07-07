@@ -192,6 +192,7 @@ def _process_one(
             entry=entry,
             preview=preview,
             pdf_s3_key=pdf_s3_key,
+            preview_file_id=file_resource.id,
             narrative_text=narrative_text,
             note_fields=note_fields,
             org_id=org_id,

@@ -421,6 +421,10 @@ class AuditEngine(Construct):
              "catholic-charities-validation", "CatholicCharities"),
             ("circles-of-care", "11", "15",
              "circles-of-care-validation", "CirclesOfCare"),
+            # 12:00 UTC = 07:00 EST / 08:00 EDT. Runs 5h after the 02:00 ET
+            # CentralReach ingest, so same-day data is available.
+            ("supportive-care", "12", "0",
+             "supportive-care-validation", "SupportiveCare"),
         ]:
             # Monday at HH:MM UTC — validates Sat, Sun, and today (Mon).
             events.Rule(self, f"{label}MondayValidationSchedule",

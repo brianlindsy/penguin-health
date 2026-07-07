@@ -496,3 +496,88 @@ class TestUIDisplayFieldsEndpoint:
             body={'mappings': {'employee_name': 'provider_display'}},
         )
         assert resp['statusCode'] == 403
+
+
+class TestValidationResultsPagination:
+    """Regression tests: DynamoDB Query pages at 1 MB. The list/get/details
+    paths that fan a Query out over a whole run's documents must walk
+    LastEvaluatedKey — otherwise the tail is silently dropped and the UI
+    shows a partial run without any error surfaced to staff."""
+
+    def test_query_all_walks_last_evaluated_key(self):
+        """The pagination helper must keep querying until LastEvaluatedKey is absent."""
+        from api.admin_api import _query_all
+
+        page1 = [{'document_id': 'a'}, {'document_id': 'b'}]
+        page2 = [{'document_id': 'c'}]
+        responses = iter([
+            {'Items': page1, 'LastEvaluatedKey': {'pk': 'DOC#b', 'sk': 'V#1'}},
+            {'Items': page2},  # no LastEvaluatedKey — final page
+        ])
+        seen_start_keys = []
+
+        class FakeTable:
+            def query(self, **kwargs):
+                seen_start_keys.append(kwargs.get('ExclusiveStartKey'))
+                return next(responses)
+
+        items = _query_all(FakeTable(), IndexName='gsi2', KeyConditionExpression='x')
+
+        assert [i['document_id'] for i in items] == ['a', 'b', 'c']
+        # First call: no ExclusiveStartKey. Second call: carries prior LEK.
+        assert seen_start_keys == [None, {'pk': 'DOC#b', 'sk': 'V#1'}]
+
+    def test_get_validation_run_returns_all_pages(
+        self, mock_dynamodb, sample_org_config, super_admin_event, monkeypatch
+    ):
+        """get_validation_run must return documents from every DynamoDB page,
+        not just the first 1 MB worth."""
+        from api.admin_api import get_validation_run
+        import api.admin_api as admin_api
+
+        # Two pages of documents for the same run, each with rules the
+        # super-admin can see. RBAC filtering happens post-query so both
+        # pages must reach the loop for the response to include page 2.
+        page1_items = [{
+            'organization_id': 'test-org',
+            'document_id': f'DOC#{i}',
+            'validation_timestamp': '2024-01-15T10:00:00',
+            'rules': [{'rule_id': 'r1', 'category': 'Compliance Audit',
+                       'status': 'FAIL'}],
+            'summary': {'failed': 1},
+        } for i in range(3)]
+        page2_items = [{
+            'organization_id': 'test-org',
+            'document_id': f'DOC#{i}',
+            'validation_timestamp': '2024-01-15T10:00:00',
+            'rules': [{'rule_id': 'r1', 'category': 'Compliance Audit',
+                       'status': 'PASS'}],
+            'summary': {'passed': 1},
+        } for i in range(3, 5)]
+        responses = iter([
+            {'Items': page1_items, 'LastEvaluatedKey': {'pk': 'DOC#2', 'sk': 'V'}},
+            {'Items': page2_items},
+        ])
+
+        real_table = admin_api.validation_results_table
+
+        class PagedTable:
+            def query(self, **kwargs):
+                return next(responses)
+
+        monkeypatch.setattr(admin_api, 'validation_results_table', PagedTable())
+        try:
+            resp = get_validation_run(
+                event=super_admin_event,
+                path_params={'orgId': 'test-org', 'runId': 'run-xyz'},
+            )
+        finally:
+            monkeypatch.setattr(admin_api, 'validation_results_table', real_table)
+
+        assert resp['statusCode'] == 200
+        body = json.loads(resp['body'])
+        # Without pagination this would be 3 (page 1 only).
+        assert body['total_count'] == 5
+        assert {d['document_id'] for d in body['documents']} == {
+            'DOC#0', 'DOC#1', 'DOC#2', 'DOC#3', 'DOC#4'
+        }

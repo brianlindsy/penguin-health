@@ -46,20 +46,25 @@ function fieldLabel(key) {
     .replace(/\b\w/g, c => c.toUpperCase())
 }
 
-// Orgs whose docs come from CentralReach — document_id is the CR
-// resource id (source_record_id), not a Credible BH visit id. Grows as
-// more orgs are onboarded to the CR pipeline.
+// Orgs whose docs come from CentralReach. Grows as more orgs are
+// onboarded to the CR pipeline.
 const CENTRALREACH_ORGS = new Set(['supportive-care'])
 
 const getCredibleLink = (documentId) =>
   `https://www.cbh3.crediblebh.com/visit/clientvisit_view.asp?clientvisit_id=${documentId}&provportal=0`
 
-const getCentralReachLink = (documentId) =>
-  `https://members.centralreach.com/#resources/details?id=${documentId}`
+const getCentralReachLink = (fileId) =>
+  `https://members.centralreach.com/#resources/details?id=${fileId}`
 
 export function getDocumentLink(orgId, doc) {
   if (CENTRALREACH_ORGS.has(orgId)) {
-    return getCentralReachLink(doc.document_id)
+    // preview_file_id is the CR file/resource id from the preview
+    // endpoint — the correct input for the resources/details URL. Falls
+    // back to document_id for pre-existing records ingested before the
+    // field was added; those records will land on the wrong screen but
+    // will still open in CR.
+    const fv = doc.field_values || {}
+    return getCentralReachLink(fv.preview_file_id ?? doc.document_id)
   }
   const fv = doc.field_values || doc
   return getCredibleLink(fv.service_id || doc.document_id)

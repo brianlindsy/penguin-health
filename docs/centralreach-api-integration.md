@@ -239,6 +239,7 @@ Field-level changes from `RpaNoteRecord`:
 | `text` | Carries the Bedrock-extracted narrative prose from the PDF. Extracted once at ingest time by `centralreach.narrative_extractor.extract_narrative` between PDF fetch and record build. Rules 1/2/3 read it directly. |
 | `body_html` | Always `None`. |
 | `extracted_fields.pdf_s3_key` | New. Always set. Format `pdfs/{ingest_date}/{captured_at_compact}__{source_record_id}.pdf` on `penguin-health-{org_id}`. See [PDF storage](#pdf-storage). |
+| `extracted_fields.preview_file_id` | New. Always set. The CR file resource id (`preview.files[i].id`) the pipeline picked via `first_accessible_file`. The document validation UI uses this to deep-link to the file screen in CentralReach. |
 | `extracted_fields.text_source` | New. Always `"pdf_bedrock_extracted"` for centralreach records. |
 | `extracted_fields.narrative_hash` | New. SHA-256 of the lowercased, whitespace-collapsed narrative. Consumed by rule 1 (`op_narrative_hash_unique`); identical hash function as `rpa.record.narrative_hash` so per-org dedup keys stay consistent. |
 | `extracted_fields.template_id` | New. The CR templateId from preview, recorded for ops visibility. |

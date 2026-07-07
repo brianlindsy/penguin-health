@@ -19,6 +19,7 @@ Field mapping (per the design doc):
 | text                            | None (PDF path)                     |
 | body_html                       | None (PDF path)                     |
 | extracted_fields.pdf_s3_key     | written by pdf_storage              |
+| extracted_fields.preview_file_id | CR file id from preview.files       |
 | extracted_fields.template_id    | preview.template_id                 |
 | extracted_fields.service_code   | split ProcedureCodeString left      |
 | extracted_fields.signed_at      | preview.signed_at                   |
@@ -226,6 +227,7 @@ def build_record(
     entry: BillingEntry,
     preview: PreviewResponse,
     pdf_s3_key: str,
+    preview_file_id: int,
     narrative_text: str,
     note_fields: NoteFields,
     org_id: str,
@@ -238,6 +240,10 @@ def build_record(
       * `entry` from the list query
       * `preview` from the per-entry preview endpoint
       * `pdf_s3_key` from a prior call to `pdf_storage.write_pdf`
+      * `preview_file_id` — the CR file/resource id the pipeline chose
+        from `preview.files` (via `first_accessible_file`). Surfaces on
+        the record so the document validation list can deep-link to
+        the file screen in CentralReach.
       * `narrative_text` from a prior call to
         `narrative_extractor.extract_narrative` — the provider's prose
         Bedrock pulled out of the PDF. The record's `text` field gets
@@ -286,6 +292,7 @@ def build_record(
     # `billing_list_*` name directly.
     extracted_fields: dict[str, Any] = {
         "pdf_s3_key": pdf_s3_key,
+        "preview_file_id": preview_file_id,
         "text_source": "pdf_bedrock_extracted",
         "narrative_hash": narrative_hash(narrative_text),
         "template_id": preview.template_id,

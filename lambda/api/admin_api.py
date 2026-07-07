@@ -686,6 +686,27 @@ def merge_display_field_values(item):
     return {**fv, **udf} if udf else fv
 
 
+def _query_all(table, **kwargs):
+    """Query a DynamoDB table, walking LastEvaluatedKey until exhausted.
+
+    A single Query() caps at 1 MB per page; on real-sized runs (thousands of
+    document rows, tens of KB each) that silently drops the tail. Callers
+    that need the complete result set must use this helper instead of a raw
+    table.query().
+    """
+    items = []
+    last_evaluated = None
+    while True:
+        if last_evaluated:
+            kwargs['ExclusiveStartKey'] = last_evaluated
+        resp = table.query(**kwargs)
+        items.extend(resp.get('Items', []))
+        last_evaluated = resp.get('LastEvaluatedKey')
+        if not last_evaluated:
+            break
+    return items
+
+
 def _fetch_run_documents(run_id, org_id, claims, allowed, slim=False):
     """Fetch + RBAC-filter the documents for a single validation run.
 
@@ -693,12 +714,13 @@ def _fetch_run_documents(run_id, org_id, claims, allowed, slim=False):
     response stays consistent with the single-run endpoint. When slim=True,
     projects to the subset of fields used by analytics pages.
     """
-    result = validation_results_table.query(
+    items = _query_all(
+        validation_results_table,
         IndexName='gsi2',
         KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}'),
     )
     documents = []
-    for item in result.get('Items', []):
+    for item in items:
         if item.get('organization_id') != org_id and not is_super_admin(claims):
             continue
         rules = [r for r in (item.get('rules') or []) if r.get('category') in allowed]
@@ -761,14 +783,15 @@ def list_validation_runs(event, path_params, **kwargs):
     except (TypeError, ValueError):
         return response(400, {'error': 'limit must be an integer'})
 
-    result = validation_results_table.query(
+    items = _query_all(
+        validation_results_table,
         KeyConditionExpression=Key('pk').eq(f'ORG#{org_id}') & Key('sk').begins_with('RUN#'),
         ScanIndexForward=False,  # Descending order (newest first)
     )
 
     allowed = perms_module.viewable_categories(claims, org_id)
     runs = []
-    for item in result.get('Items', []):
+    for item in items:
         ts = item.get('timestamp')
         if since and (not ts or ts < since):
             continue
@@ -832,14 +855,15 @@ def get_validation_run(event, path_params, **kwargs):
     if error:
         return error
 
-    result = validation_results_table.query(
+    items = _query_all(
+        validation_results_table,
         IndexName='gsi2',
         KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}'),
     )
 
     allowed = perms_module.viewable_categories(claims, org_id)
     documents = []
-    for item in result.get('Items', []):
+    for item in items:
         # Filter by organization_id for RBAC (non-super-admins)
         if item.get('organization_id') != org_id and not is_super_admin(claims):
             continue

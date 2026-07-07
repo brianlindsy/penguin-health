@@ -234,6 +234,7 @@ def test_build_record_basic_shape():
         entry=_make_entry(),
         preview=_make_preview(),
         pdf_s3_key="pdfs/2026-06-28/20260628T220000Z__502614593.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -257,6 +258,7 @@ def test_build_record_patient_fields():
         entry=_make_entry(),
         preview=_make_preview(),
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -273,6 +275,7 @@ def test_build_record_encounter_fields():
         entry=_make_entry(),
         preview=_make_preview(),
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -296,6 +299,7 @@ def test_build_record_provider_falls_back_to_entry_when_preview_empty():
         entry=_make_entry(),
         preview=preview,
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -310,6 +314,7 @@ def test_build_record_extracted_fields():
         entry=_make_entry(),
         preview=_make_preview(),
         pdf_s3_key="pdfs/2026-06-28/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -318,6 +323,7 @@ def test_build_record_extracted_fields():
     )
     ef = rec.extracted_fields
     assert ef["pdf_s3_key"] == "pdfs/2026-06-28/x.pdf"
+    assert ef["preview_file_id"] == 8901
     assert ef["text_source"] == "pdf_bedrock_extracted"
     assert ef["narrative_hash"] == narrative_hash(_NARRATIVE)
     assert ef["template_id"] == 113875
@@ -356,6 +362,7 @@ def test_build_record_omits_note_fields_when_extractor_returned_none():
         entry=_make_entry(),
         preview=_make_preview(),
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=_EMPTY_NOTE_FIELDS,
         org_id="demo",
@@ -383,6 +390,7 @@ def test_build_record_note_supervisor_signature_false_is_kept():
         entry=_make_entry(),
         preview=_make_preview(),
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=note_fields,
         org_id="demo",
@@ -402,6 +410,7 @@ def test_build_record_note_fields_are_prefixed_and_do_not_shadow_api_fields():
         entry=_make_entry(location="10: Telehealth"),
         preview=_make_preview(),
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=note_fields,
         org_id="demo",
@@ -423,6 +432,7 @@ def test_build_record_surfaces_billing_list_fields_from_entry():
         entry=_make_entry(),
         preview=_make_preview(),
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -452,6 +462,7 @@ def test_build_record_no_short_name_list_endpoint_aliases():
         entry=_make_entry(),
         preview=_make_preview(),
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -489,6 +500,7 @@ def test_build_record_billing_list_fields_do_not_leak_patient_identity():
         entry=_make_entry(),
         preview=_make_preview(),
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -515,6 +527,7 @@ def test_build_record_billing_list_dump_covers_all_mapped_fields():
         entry=_make_entry(),
         preview=_make_preview(),
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -540,6 +553,7 @@ def test_build_record_emits_empty_string_verbatim_for_absent_cr_time_fields():
         entry=entry,
         preview=_make_preview(),
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -565,6 +579,7 @@ def test_build_record_extracted_fields_omits_signature_for_unsigned():
         entry=_make_entry(),
         preview=preview,
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -586,6 +601,7 @@ def test_build_record_does_not_leak_patient_identity_into_extracted_fields():
         entry=_make_entry(),
         preview=_make_preview(),
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -609,6 +625,7 @@ def test_build_record_populates_narrative_text_and_hash():
         entry=_make_entry(),
         preview=_make_preview(),
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=text,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -630,6 +647,7 @@ def test_build_record_narrative_hash_normalizes_whitespace_and_case():
         entry=_make_entry(),
         preview=_make_preview(),
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=a,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -640,6 +658,7 @@ def test_build_record_narrative_hash_normalizes_whitespace_and_case():
         entry=_make_entry(),
         preview=_make_preview(),
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=b,
         note_fields=_make_note_fields(),
         org_id="demo",
@@ -652,6 +671,28 @@ def test_build_record_narrative_hash_normalizes_whitespace_and_case():
     )
 
 
+def test_build_record_surfaces_preview_file_id():
+    """The CR file id (from preview.files, chosen by the pipeline via
+    `first_accessible_file`) is stored on the record so the document
+    validation UI can deep-link to the file screen in CentralReach.
+    The builder writes the caller's value verbatim — it does not
+    re-derive it from preview.files, since the pipeline already made
+    the pick (and may have preferred the second file per the
+    MM/DD/YYYY heuristic)."""
+    rec = build_record(
+        entry=_make_entry(),
+        preview=_make_preview(),
+        pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=424242,
+        narrative_text=_NARRATIVE,
+        note_fields=_make_note_fields(),
+        org_id="demo",
+        ingest_run_id="run-abc",
+        captured_at="2026-06-28T22:00:00Z",
+    )
+    assert rec.extracted_fields["preview_file_id"] == 424242
+
+
 def test_build_record_handles_missing_template_id():
     """If preview.template_id is None (no betterNotes), the field
     surfaces as None in extracted_fields — explicit rather than
@@ -661,6 +702,7 @@ def test_build_record_handles_missing_template_id():
         entry=_make_entry(),
         preview=preview,
         pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
         narrative_text=_NARRATIVE,
         note_fields=_make_note_fields(),
         org_id="demo",
