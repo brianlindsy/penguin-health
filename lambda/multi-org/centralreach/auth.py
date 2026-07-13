@@ -23,6 +23,7 @@ Implementations:
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -57,6 +58,13 @@ _DEFAULT_REFERER = "https://members.centralreach.com/"
 _REQUIRED_LEGACY_AUTH_COOKIES = frozenset({"crsd", "crud"})
 
 _HTTP_TIMEOUT_SECONDS = 30
+
+# Retry the full three-step flow on transient CR auth failures — most
+# commonly the legacy-auth step returning HTTP 200 with no `crsd`/`crud`
+# cookies, which we've observed as a brief server-side hiccup that
+# clears on retry. One minute between attempts gives CR time to recover
+# without meaningfully affecting a run that takes tens of minutes.
+_AUTH_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (60.0, 60.0)
 
 
 @dataclass(frozen=True)
@@ -318,6 +326,8 @@ class OAuthAuthenticator(Authenticator):
         http_post_form: HttpPostForm = _http_post_form,
         http_post_json: HttpPostJson = _http_post_json,
         http_get_set_cookies: HttpGetSetCookies = _http_get_set_cookies,
+        retry_backoff_seconds: tuple[float, ...] = _AUTH_RETRY_BACKOFF_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         """Construct an OAuthAuthenticator.
 
@@ -332,8 +342,13 @@ class OAuthAuthenticator(Authenticator):
         check it. The Fargate runner resolves this from the org's
         configured timezone at task startup.
 
-        The four `load_credentials` / `http_*` arguments are injection
-        points for tests; production callers omit them.
+        `retry_backoff_seconds` controls retries of the full three-step
+        flow on `CentralReachAuthError`. Its length is the number of
+        *retries after* the first attempt (so `(60.0, 60.0)` means up
+        to three attempts total, sleeping 60s between each).
+
+        The remaining `load_credentials` / `http_*` / `sleep` arguments
+        are injection points for tests; production callers omit them.
         """
         self._vendor_cfg = vendor_cfg or {}
         self._tz_offset_minutes = tz_offset_minutes
@@ -341,8 +356,26 @@ class OAuthAuthenticator(Authenticator):
         self._http_post_form = http_post_form
         self._http_post_json = http_post_json
         self._http_get_set_cookies = http_get_set_cookies
+        self._retry_backoff_seconds = retry_backoff_seconds
+        self._sleep = sleep
 
     def authenticate(self, org_id: str) -> Session:
+        """Mint a session, retrying the full three-step flow on
+        transient `CentralReachAuthError`.
+
+        Backoff is a fixed schedule (`_retry_backoff_seconds`) rather
+        than jittered — a single Fargate task retrying at deterministic
+        offsets is not a thundering-herd risk.
+        """
+        for attempt_idx in range(len(self._retry_backoff_seconds) + 1):
+            try:
+                return self._authenticate_once(org_id)
+            except CentralReachAuthError:
+                if attempt_idx >= len(self._retry_backoff_seconds):
+                    raise
+                self._sleep(self._retry_backoff_seconds[attempt_idx])
+
+    def _authenticate_once(self, org_id: str) -> Session:
         sso_token_url, legacy_auth_url, csrf_url, scope = _resolve_endpoints(
             self._vendor_cfg,
         )

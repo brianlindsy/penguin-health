@@ -103,10 +103,12 @@ def _build_authenticator(
     credentials: dict | None = None,
     sso_response: dict | None = None,
     legacy_response: dict | None = None,
+    legacy_responses: list[dict] | None = None,
     csrf_response: tuple[dict, dict[str, str]] | None = None,
     sso_raises: Exception | None = None,
     legacy_raises: Exception | None = None,
     csrf_raises: Exception | None = None,
+    retry_backoff_seconds: tuple[float, ...] = (),
 ):
     """Build an OAuthAuthenticator with stubbed HTTP + credentials.
 
@@ -136,6 +138,7 @@ def _build_authenticator(
         "sso": [],
         "legacy": [],
         "csrf": [],
+        "sleep": [],
     }
 
     def _load(org_id):
@@ -154,6 +157,11 @@ def _build_authenticator(
         })
         if legacy_raises:
             raise legacy_raises
+        if legacy_responses is not None:
+            # Return the response indexed by call count so a test can
+            # drive different behavior across retry attempts.
+            idx = len(calls["legacy"]) - 1
+            return legacy_responses[min(idx, len(legacy_responses) - 1)]
         return legacy_response
 
     def _get_csrf(url, headers):
@@ -169,6 +177,8 @@ def _build_authenticator(
         http_post_form=_post_form,
         http_post_json=_post_json,
         http_get_set_cookies=_get_csrf,
+        retry_backoff_seconds=retry_backoff_seconds,
+        sleep=lambda s: calls["sleep"].append(s),
     )
     return auth, calls
 
@@ -364,3 +374,44 @@ def test_default_scope_is_cr_api_when_no_override():
     auth, calls = _build_authenticator()
     auth.authenticate("demo")
     assert calls["sso"][0]["form"]["scope"] == "cr-api"
+
+
+# ----- OAuthAuthenticator: retry on transient auth failure ---------------
+
+
+def test_retry_recovers_from_transient_missing_cookies():
+    """Legacy-auth's first response has no cookies (the failure mode
+    from the production incident). The second attempt succeeds and the
+    caller sees a normal session."""
+    good_legacy = {
+        "body": {},
+        "cookies": {"crsd": "ORIG_CRSD", "crud": "CRUD_VALUE"},
+    }
+    auth, calls = _build_authenticator(
+        legacy_responses=[{"body": {}, "cookies": {}}, good_legacy],
+        retry_backoff_seconds=(0.5,),
+    )
+    session = auth.authenticate("demo")
+    assert session.access_token == "JWT.ABC.DEF"
+    assert len(calls["legacy"]) == 2
+    assert calls["sleep"] == [0.5]
+
+
+def test_retry_exhausted_raises_last_error():
+    """Every attempt fails the missing-cookie check; the final error
+    surfaces after all retries, and we slept once per retry."""
+    auth, calls = _build_authenticator(
+        legacy_response={"body": {}, "cookies": {}},
+        retry_backoff_seconds=(0.5, 1.0),
+    )
+    with pytest.raises(CentralReachAuthError, match="missing required cookie"):
+        auth.authenticate("demo")
+    assert len(calls["legacy"]) == 3
+    assert calls["sleep"] == [0.5, 1.0]
+
+
+def test_happy_path_does_not_sleep():
+    """A successful first attempt must not delay the caller."""
+    auth, calls = _build_authenticator(retry_backoff_seconds=(60.0, 60.0))
+    auth.authenticate("demo")
+    assert calls["sleep"] == []
