@@ -15,6 +15,7 @@ export function usePermissions() {
     const isOrgAdmin = isSuperAdmin || permissions?.role === 'org_admin'
     const reportPerms = permissions?.report_permissions || {}
     const analyticsPerms = permissions?.analytics_permissions || []
+    const programPerms = permissions?.program_permissions || []
 
     const canViewCategory = (category) => {
       if (isOrgAdmin) return true
@@ -51,6 +52,15 @@ export function usePermissions() {
       return analyticsPerms.includes(page)
     }
 
+    // Programs the caller can see document validations for. Returns null to
+    // mean "unrestricted — every program is visible." Admins are always
+    // unrestricted; members with an empty program_permissions list also are.
+    const viewablePrograms = () => {
+      if (isOrgAdmin) return null
+      if (!programPerms || programPerms.length === 0) return null
+      return new Set(programPerms)
+    }
+
     return {
       // Loading state — null means we haven't received permissions yet (or the
       // request failed). UI should treat this as "not yet known" and avoid
@@ -63,6 +73,7 @@ export function usePermissions() {
       viewableCategories,
       runnableCategories,
       canViewAnalytics,
+      viewablePrograms,
       // Number of recent eligibility encounters that need attention
       // (any non-verified status not yet resolved). Drives the nav badge
       // on the Eligibility Worklist link.

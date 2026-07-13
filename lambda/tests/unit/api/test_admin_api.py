@@ -498,6 +498,84 @@ class TestUIDisplayFieldsEndpoint:
         assert resp['statusCode'] == 403
 
 
+class TestOrgProgramsEndpoint:
+    """GET/PUT /api/organizations/{orgId}/programs."""
+
+    def test_get_returns_empty_when_unset(self, mock_dynamodb, sample_org_config, super_admin_event):
+        from api.admin_api import get_org_programs
+
+        resp = get_org_programs(
+            event=super_admin_event,
+            path_params={'orgId': 'test-org'},
+        )
+        assert resp['statusCode'] == 200
+        body = json.loads(resp['body'])
+        assert body['organization_id'] == 'test-org'
+        assert body['programs'] == []
+
+    def test_put_then_get_round_trip(self, mock_dynamodb, sample_org_config, super_admin_event):
+        from api.admin_api import get_org_programs, update_org_programs
+
+        put_resp = update_org_programs(
+            event=super_admin_event,
+            path_params={'orgId': 'test-org'},
+            body={'programs': ['Program B', 'Program A']},
+        )
+        assert put_resp['statusCode'] == 200
+        # Programs are stored sorted so DDB writes stay stable across roundtrips.
+        assert json.loads(put_resp['body'])['programs'] == ['Program A', 'Program B']
+
+        get_resp = get_org_programs(
+            event=super_admin_event,
+            path_params={'orgId': 'test-org'},
+        )
+        assert json.loads(get_resp['body'])['programs'] == ['Program A', 'Program B']
+
+    def test_put_dedupes_and_trims(self, mock_dynamodb, sample_org_config, super_admin_event):
+        from api.admin_api import update_org_programs
+
+        resp = update_org_programs(
+            event=super_admin_event,
+            path_params={'orgId': 'test-org'},
+            body={'programs': ['Program A', '  Program A  ', 'Program B']},
+        )
+        assert resp['statusCode'] == 200
+        assert json.loads(resp['body'])['programs'] == ['Program A', 'Program B']
+
+    def test_put_rejects_non_list(self, mock_dynamodb, sample_org_config, super_admin_event):
+        from api.admin_api import update_org_programs
+
+        resp = update_org_programs(
+            event=super_admin_event,
+            path_params={'orgId': 'test-org'},
+            body={'programs': 'not-a-list'},
+        )
+        assert resp['statusCode'] == 400
+
+    def test_put_rejects_empty_string(self, mock_dynamodb, sample_org_config, super_admin_event):
+        from api.admin_api import update_org_programs
+
+        resp = update_org_programs(
+            event=super_admin_event,
+            path_params={'orgId': 'test-org'},
+            body={'programs': ['']},
+        )
+        assert resp['statusCode'] == 400
+
+    def test_put_requires_super_admin(self, mock_dynamodb, sample_org_config,
+                                      member_event, seed_user_perms):
+        from api.admin_api import update_org_programs
+        seed_user_perms('member@example.com', 'test-org', role='org_admin')
+
+        resp = update_org_programs(
+            event=member_event,
+            path_params={'orgId': 'test-org'},
+            body={'programs': ['Program A']},
+        )
+        # org-admin is not super-admin
+        assert resp['statusCode'] == 403
+
+
 class TestValidationResultsPagination:
     """Regression tests: DynamoDB Query pages at 1 MB. The list/get/details
     paths that fan a Query out over a whole run's documents must walk

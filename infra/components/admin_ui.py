@@ -690,6 +690,8 @@ class AdminUi(Construct):
             ("GET",  "/api/organizations/{orgId}/users/{email}"),
             ("PUT",  "/api/organizations/{orgId}/users/{email}"),
             ("DELETE", "/api/organizations/{orgId}/users/{email}"),
+            ("GET",  "/api/organizations/{orgId}/programs"),
+            ("PUT",  "/api/organizations/{orgId}/programs"),
             ("POST", "/api/organizations/{orgId}/eligibility/verify"),
             ("GET",  "/api/organizations/{orgId}/eligibility/history"),
             ("GET",  "/api/organizations/{orgId}/eligibility/config"),

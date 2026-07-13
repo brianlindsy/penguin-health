@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
+import { usePermissions } from '../auth/usePermissions.js'
 
 // Field display labels for different organizations. The keys here are the
 // canonical UI field set: only fields whose key is in this map render in
@@ -124,6 +125,8 @@ function parseRunIdTimestamp(runId) {
 
 export function ValidationRunDetailPage() {
   const { orgId, runId } = useParams()
+  const { canViewAnalytics } = usePermissions()
+  const canViewRevenue = canViewAnalytics('revenue_analysis')
   const [searchParams, setSearchParams] = useSearchParams()
   const docIdFromUrl = searchParams.get('doc')
   const [data, setData] = useState(null)
@@ -580,7 +583,7 @@ export function ValidationRunDetailPage() {
     <OrgWorkspaceLayout>
     <div className="h-full flex flex-col">
       {/* Summary Cards */}
-      <div className="grid grid-cols-4 gap-4 mb-6">
+      <div className={`grid ${canViewRevenue ? 'grid-cols-4' : 'grid-cols-3'} gap-4 mb-6`}>
         <SummaryCard
           label="NEEDS ACTION"
           value={stats.needsAction}
@@ -602,13 +605,15 @@ export function ValidationRunDetailPage() {
           active={statusFilter === 'confirmed'}
           onClick={() => setStatusFilter(statusFilter === 'confirmed' ? 'all' : 'confirmed')}
         />
-        <SummaryCard
-          label="REVENUE AT RISK"
-          value={`$${stats.revenueAtRisk.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-          subtext={`${stats.needsAction + stats.awaitingStaff} blocked claim${(stats.needsAction + stats.awaitingStaff) !== 1 ? 's' : ''}`}
-          color="blue"
-          onClick={() => {}}
-        />
+        {canViewRevenue && (
+          <SummaryCard
+            label="REVENUE AT RISK"
+            value={`$${stats.revenueAtRisk.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            subtext={`${stats.needsAction + stats.awaitingStaff} blocked claim${(stats.needsAction + stats.awaitingStaff) !== 1 ? 's' : ''}`}
+            color="blue"
+            onClick={() => {}}
+          />
+        )}
       </div>
 
       {/* Search and Filters — compact pill style matching the other dashboard pages */}

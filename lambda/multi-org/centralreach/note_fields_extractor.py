@@ -5,11 +5,14 @@ narrative; this one pulls five structured fields that appear on the
 rendered note but need not match what CR's API returned on the list /
 preview endpoints:
 
-  * `note_provider_location`      — the location string on the note
-  * `note_provider_billed_time`   — the billed time string on the note
-  * `note_provider_signature_name`— the name at the provider signature line
-  * `note_supervisor_signature`   — whether a supervisor signature exists
-  * `note_supervisor_name`        — the supervisor name text on the note
+  * `note_provider_location`         — the location string on the note
+  * `note_provider_billed_time`      — the billed time string on the note
+  * `note_provider_signature_name`   — the name at the provider signature line
+  * `note_supervisor_name`           — the supervisor name from the note's
+                                       supervisor-attribution section (NOT
+                                       the signature line)
+  * `note_supervisor_signature_name` — the name text at the supervisor
+                                       signature line
 
 The `note_` prefix on every returned field is deliberate: downstream
 rules and dashboards can distinguish "what the vendor API asserted"
@@ -56,10 +59,9 @@ class NoteFields:
 
     Every field is optional (`None` when Bedrock could not find it on
     the note). A missing field is a data-quality signal to downstream
-    rules — Rule 7 (supervisor signature present) treats
-    `note_supervisor_signature=False` as a failing state, but
-    `None` on the same field means "extractor couldn't tell," which
-    should SKIP rather than fail.
+    rules — Rule 7 (supervisor sign-off) treats `None` on
+    `supervisor_signature_name` as "no signature present," while an
+    empty section entirely means the rule may not apply.
     """
 
     provider_location: str | None
@@ -73,8 +75,49 @@ class NoteFields:
     # provider but signed by another.
     provider_billed: str | None
     provider_signature_name: str | None
-    supervisor_signature: bool | None
+    # The name attributed to the supervising role in the note's
+    # header/attribution area, NOT the signature line. Extractor
+    # tries three sources in order and takes the first that yields a
+    # name:
+    #   1. A dedicated supervisor section (e.g. "Supervisor: Dr.
+    #      Jane Doe").
+    #   2. The provider-attribution section, when the name inside
+    #      it carries a supervising role label (e.g. "Provider:
+    #      Jane Doe, Supervising Analyst, BCBA-D"). Case-insensitive
+    #      contains of "supervis" captures "Supervising Analyst",
+    #      "Supervisor", "Supervised by".
+    #   3. A Participants-style checkbox block: a top-level
+    #      "Supervisor" checkbox that's checked, with credential
+    #      sub-options (BCBA / BCaBA / QBA) beneath and the
+    #      supervisor's name written below. The checkbox is the
+    #      signal — the name itself doesn't need any role label.
+    #      Unchecked top-level Supervisor box → skip this source.
+    #      Multiple credential sub-boxes checked → ambiguous, fall
+    #      back to `supervisor_signature_name`.
+    # Independent of `provider_billed`: both can carry the same name
+    # when the sole provider on the note is a supervisor. Distinct
+    # from `supervisor_signature_name` (bottom-of-note signature
+    # block). The seed rule comparing `supervisor_name` and
+    # `supervisor_signature_name` catches cases where a supervisor
+    # of record is named but a different (or no) supervisor signs.
     supervisor_name: str | None
+    # The name that signed the note as a supervisor. Populated when
+    # either (a) the note has a dedicated supervisor signature line
+    # with a name on it, or (b) any signature block on the note
+    # identifies the signer as a supervisor via a role label in the
+    # block itself (e.g. "Jane Doe, Supervising Analyst, BCBA-D"). The
+    # role text is the signal — case-insensitive contains of
+    # "supervis" (matches "Supervisor", "Supervising", "Supervised
+    # by") captures the common variants. Solo notes signed by a
+    # supervisor-credentialed provider land here even when the
+    # signature block is labeled "Provider Signature," which is the
+    # normal case on ABA notes signed by the supervising BCBA.
+    # Independent of `provider_signature_name`: the two can carry the
+    # same name (e.g. a solo note whose sole signer is the supervisor
+    # of record).
+    # `None` when no signature block on the note identifies its signer
+    # as a supervisor.
+    supervisor_signature_name: str | None
 
 
 # The extraction prompt. Kept here as a module constant rather than in
@@ -102,17 +145,69 @@ _SYSTEM_PROMPT = (
     "the note. Return the name exactly as it appears.\n"
     "  - provider_signature_name: the name that appears at the "
     "provider signature line, exactly as typed or printed.\n"
-    "  - supervisor_signature: true if a supervisor signature (image, "
-    "typed name, or 'e-signed by' block) is present at the supervisor "
-    "signature line; false if the note has a supervisor line but it is "
-    "blank; null if the note has no supervisor line at all.\n"
-    "  - supervisor_name: the supervisor's name as it appears at the "
-    "supervisor signature line, exactly as typed or printed. null if "
-    "the supervisor line is blank or absent.\n\n"
+    "  - supervisor_name: the name attributed to the supervising role "
+    "in the note's header/attribution area — NOT the signature line "
+    "at the bottom of the note. Return the name exactly as it "
+    "appears. Look in this order and take the first source that "
+    "yields a name:\n"
+    "    1. A dedicated supervisor section (e.g. after a "
+    "\"Supervisor:\" label, or in a header block that names the "
+    "supervising provider for the session).\n"
+    "    2. Inside the provider-attribution section, a name whose "
+    "accompanying role text contains \"supervis\" (case-insensitive) "
+    "— this matches \"Supervising Analyst\", \"Supervisor\", "
+    "\"Supervised by\", and similar variants. Example: a note with "
+    "only a \"Provider:\" section reading \"Jane Doe, Supervising "
+    "Analyst, BCBA-D\" populates supervisor_name with \"Jane Doe\", "
+    "because the role label identifies the person as the "
+    "supervising provider.\n"
+    "    3. A Participants-style checkbox block whose top-level "
+    "\"Supervisor\" option is checked. The block layout is: a "
+    "\"Supervisor\" checkbox at the top, then three credential sub-"
+    "options (\"BCBA\", \"BCaBA\", \"QBA\") each with their own "
+    "checkbox, then the supervisor's name written below. When the "
+    "top-level Supervisor checkbox is checked (a literal check mark "
+    "inside the box), take the name written in the block. Which "
+    "specific credential sub-box (BCBA / BCaBA / QBA) is checked "
+    "does not matter — it's an attribute of the supervisor, not the "
+    "signal for whether to extract. The name does NOT need to "
+    "contain \"supervisor\" or any role label — the checkbox is the "
+    "signal. If the top-level Supervisor checkbox is unchecked, "
+    "skip this source (do not read the name even if one is written "
+    "in the block). If multiple credential sub-boxes appear "
+    "checked, the block is ambiguous — fall back to the value that "
+    "was extracted for supervisor_signature_name (i.e. return the "
+    "name at the supervisor signature line). Only consider a "
+    "checkbox checked when the mark inside it is clear; do not "
+    "guess.\n"
+    "    4. null if no source above yields a name.\n"
+    "This field is INDEPENDENT of `provider_billed` — the same "
+    "person can populate both when the sole provider on the note is "
+    "a supervisor.\n"
+    "  - supervisor_signature_name: the name of any person who signed "
+    "the note as a supervisor. A signer counts as a supervisor when "
+    "the signature block contains a role label that includes the "
+    "text \"supervis\" (case-insensitive) — this matches "
+    "\"Supervisor\", \"Supervising Analyst\", \"Supervised by\", and "
+    "similar variants. Look at the role text inside each signature "
+    "block, NOT the label of the line above it: a note whose only "
+    "signature block reads \"Jane Doe, Supervising Analyst, BCBA-D\" "
+    "counts even if that block sits under a \"Provider Signature\" "
+    "line. When multiple signature blocks qualify, return the first "
+    "one that appears on the note. Return the signer's name exactly "
+    "as it appears (name text only, drop the role label and "
+    "credentials). This field is INDEPENDENT of "
+    "`provider_signature_name` — the same signer can populate both. "
+    "In the solo-note case above, `provider_signature_name` and "
+    "`supervisor_signature_name` should both be \"Jane Doe\": the "
+    "block is the provider signature (it sits under the provider "
+    "line) and its role label also identifies the signer as a "
+    "supervisor. null if no signature block on the note carries a "
+    "supervising-role label.\n\n"
     "Respond with JSON in the form:\n"
     "  {\"provider_location\": ..., \"provider_billed_time\": ..., "
     "\"provider_billed\": ..., \"provider_signature_name\": ..., "
-    "\"supervisor_signature\": ..., \"supervisor_name\": ...}"
+    "\"supervisor_name\": ..., \"supervisor_signature_name\": ...}"
 )
 
 
@@ -133,8 +228,8 @@ _ALLOWED_KEYS = frozenset({
     "provider_billed_time",
     "provider_billed",
     "provider_signature_name",
-    "supervisor_signature",
     "supervisor_name",
+    "supervisor_signature_name",
 })
 
 
@@ -236,11 +331,12 @@ def extract_note_fields(
             response.get("provider_signature_name"),
             "provider_signature_name",
         ),
-        supervisor_signature=_bool_field(
-            response.get("supervisor_signature"), "supervisor_signature",
-        ),
         supervisor_name=_string_field(
             response.get("supervisor_name"), "supervisor_name",
+        ),
+        supervisor_signature_name=_string_field(
+            response.get("supervisor_signature_name"),
+            "supervisor_signature_name",
         ),
     )
 
@@ -270,23 +366,6 @@ def _string_field(raw, name):
             "surrounding context by mistake",
         )
     return stripped
-
-
-def _bool_field(raw, name):
-    """Normalize a bool-typed response field.
-
-    Bedrock reliably returns JSON true/false/null for the schema we
-    described. Anything else here means the prompt drifted; raise so
-    the entry gets skipped with a clear reason rather than silently
-    coerced.
-    """
-    if raw is None:
-        return None
-    if isinstance(raw, bool):
-        return raw
-    raise NoteFieldsExtractionError(
-        f"Bedrock returned non-bool for '{name}': {type(raw).__name__}",
-    )
 
 
 def _load_rules_engine_bedrock_client():

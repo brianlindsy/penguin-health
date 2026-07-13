@@ -229,6 +229,24 @@ export const handlers = [
     // empty dicts), so the client's await res.json() succeeds.
     return HttpResponse.json({}, { status: 200 })
   }),
+
+  // ---- Org programs ----
+  http.get('*/api/organizations/:orgId/programs', ({ params }) => {
+    return HttpResponse.json({
+      organization_id: params.orgId,
+      programs: orgProgramsStore.get(params.orgId),
+    })
+  }),
+
+  http.put('*/api/organizations/:orgId/programs', async ({ params, request }) => {
+    const body = await request.json()
+    const programs = Array.isArray(body?.programs) ? body.programs : []
+    orgProgramsStore.set(params.orgId, programs)
+    return HttpResponse.json({
+      organization_id: params.orgId,
+      programs: orgProgramsStore.get(params.orgId),
+    })
+  }),
 ]
 
 // In-memory store so tests can round-trip create → list → edit → delete.
@@ -251,6 +269,7 @@ export const userPermStore = {
       role: body.role || 'member',
       report_permissions: body.report_permissions || {},
       analytics_permissions: body.analytics_permissions || [],
+      program_permissions: body.program_permissions || [],
       created_at: '2024-01-01T00:00:00Z',
       updated_at: new Date().toISOString(),
     }
@@ -262,6 +281,15 @@ export const userPermStore = {
   },
 }
 
+// Org PROGRAMS store — mirrors the DDB item at pk=ORG#<id>, sk=PROGRAMS.
+const _orgProgramsData = new Map() // key: orgId -> string[]
+export const orgProgramsStore = {
+  reset() { _orgProgramsData.clear() },
+  get(orgId) { return _orgProgramsData.get(orgId) || [] },
+  set(orgId, programs) { _orgProgramsData.set(orgId, [...programs].sort()) },
+}
+
 export function resetUserPermStore() {
   userPermStore.reset()
+  orgProgramsStore.reset()
 }

@@ -54,16 +54,20 @@ def aws_credentials():
 
 @pytest.fixture(autouse=True)
 def _reset_permission_cache():
-    """The permission loader caches per (email, org_id); flush between tests."""
+    """The permission loader caches per (email, org_id); flush between tests.
+    Same for the org PROGRAMS cache, which otherwise leaks the previous test's
+    seeded list into a suite that expects a fresh empty allowlist."""
     try:
         import permissions as _perms
         _perms.invalidate_cache()
+        _perms.invalidate_org_programs_cache()
     except ImportError:
         pass
     yield
     try:
         import permissions as _perms
         _perms.invalidate_cache()
+        _perms.invalidate_org_programs_cache()
     except ImportError:
         pass
 
@@ -459,10 +463,11 @@ def seed_user_perms(mock_dynamodb):
     table = mock_dynamodb.Table('penguin-health-org-config')
 
     def _seed(email, org_id, *, role='member', report_permissions=None,
-              analytics_permissions=None):
+              analytics_permissions=None, program_permissions=None):
         from datetime import datetime
         report_permissions = report_permissions or {}
         analytics_permissions = analytics_permissions or []
+        program_permissions = program_permissions or []
         now = datetime.utcnow().isoformat() + 'Z'
         item = {
             'pk': f'USER#{email}',
@@ -474,11 +479,36 @@ def seed_user_perms(mock_dynamodb):
             'role': role,
             'report_permissions': report_permissions,
             'analytics_permissions': analytics_permissions,
+            'program_permissions': program_permissions,
             'created_at': now,
             'updated_at': now,
         }
         table.put_item(Item=item)
         return item
+
+    return _seed
+
+
+@pytest.fixture
+def seed_org_programs(mock_dynamodb):
+    """Helper fixture: write the org's canonical PROGRAMS list."""
+    table = mock_dynamodb.Table('penguin-health-org-config')
+
+    def _seed(org_id, programs):
+        from datetime import datetime
+        table.put_item(Item={
+            'pk': f'ORG#{org_id}',
+            'sk': 'PROGRAMS',
+            'organization_id': org_id,
+            'programs': list(programs),
+            'updated_at': datetime.utcnow().isoformat() + 'Z',
+        })
+        # Clear the module-level cache so a subsequent load sees the write.
+        try:
+            import permissions as _perms
+            _perms.invalidate_org_programs_cache(org_id)
+        except ImportError:
+            pass
 
     return _seed
 

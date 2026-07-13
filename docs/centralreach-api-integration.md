@@ -247,8 +247,8 @@ Field-level changes from `RpaNoteRecord`:
 | `extracted_fields.note_provider_billed_time` | New. Bedrock-extracted, verbatim including units (e.g. `"75 minutes"`, `"1.25 hours"`). Not converted to minutes. Compared against `billing_list_time_worked_in_mins` by cross-check rules. |
 | `extracted_fields.note_provider_billed` | New. Bedrock-extracted — the provider's name as it appears in the billed-provider or header section of the note (e.g. after a "Provider:" label). Distinct from `note_provider_signature_name` (the name at the bottom signature line): the two can differ when a note is billed under one provider but signed by another. Rule 7's three-way match compares `provider_display` (from the CR API), `note_provider_billed`, and `note_provider_signature_name`. |
 | `extracted_fields.note_provider_signature_name` | New. Bedrock-extracted — the name at the provider signature line on the PDF. May differ from the preview's `providerSignatureName`. |
-| `extracted_fields.note_supervisor_signature` | New. Bedrock-extracted boolean: `true` if a supervisor signature exists on the note, `false` if the note has a supervisor line but it's blank, omitted (via `None`) if the note has no supervisor line at all. Distinct from `supervisor_signature` (bool from the CR preview's provider-signature-present field). |
-| `extracted_fields.note_supervisor_name` | New. Bedrock-extracted supervisor name text on the note. Compared against `supervisor_name` (from the CR preview) by cross-check rules. |
+| `extracted_fields.note_supervisor_name` | New. Bedrock-extracted supervisor name from the note's header/attribution area, NOT from the signature line. Extractor tries three sources in order: (a) a dedicated supervisor section (e.g. "Supervisor: Dr. Jane Doe"); (b) the provider section when the name inside carries a role label containing "supervis" case-insensitive (e.g. "Provider: Jane Doe, Supervising Analyst, BCBA-D" → "Jane Doe"); (c) a Participants-style checkbox block with a top-level Supervisor checkbox that's checked (credential sub-options BCBA/BCaBA/QBA — the checkbox is the signal, not the name text). If multiple credential sub-boxes are checked (ambiguous), falls back to `note_supervisor_signature_name`. Compared against `supervisor_name` (from the CR preview) and against `note_supervisor_signature_name` by cross-check rules. |
+| `extracted_fields.note_supervisor_signature_name` | New. Bedrock-extracted name of any signer whose signature block carries a supervising-role label (case-insensitive contains "supervis" — matches "Supervisor", "Supervising Analyst", "Supervised by"). Populated even when the block sits under a "Provider Signature" line — the role text inside the block is the signal, not the line label above it. Captures the common ABA case where the supervising BCBA is the sole signer on a solo note; in that case `note_provider_signature_name` and `note_supervisor_signature_name` both carry the same signer's name. Distinct from `note_supervisor_name` (attribution section, top of note). Rule 7's supervisor-signature check treats absence (`None` — omitted key) as "no signature" and a name-mismatch against `note_supervisor_name` as a failing state. |
 | `extracted_fields.billing_list_*` | New. Every non-identity column CR returned on the `/billing/query` list endpoint, mapped 1:1 from PascalCase to snake_case. `billing_list_` is the canonical form for list-endpoint values — rules reference e.g. `billing_list_time_worked_in_mins` and `billing_list_date_time_to` directly, no short-name aliases. Includes ~60 columns spanning session timing (`billing_list_date_time_from`, `billing_list_date_time_to`, `billing_list_creation_date`), session metadata (`billing_list_location`, `billing_list_time_worked_in_mins`, `billing_list_units_of_service`), financials (`billing_list_rate_client`, `billing_list_client_charges_total`), scheduling (`billing_list_authorization_id`, `billing_list_service_location_id`), and payor (`billing_list_payor_name`). Patient/provider identity columns are intentionally omitted; the record dataclass validator rejects records that smuggle them here. See `record_builder._BILLING_LIST_MAP` for the exhaustive list. |
 | Source attribution | `source = "centralreach.api"` instead of `"rpa.centralreach"`. |
 
@@ -355,16 +355,17 @@ per-org cost attribution:
 1. **`narrative_extractor.extract_narrative`** — the free-text
    clinical narrative. Populates `record.text` and
    `extracted_fields.narrative_hash`.
-2. **`note_fields_extractor.extract_note_fields`** — five structured
+2. **`note_fields_extractor.extract_note_fields`** — six structured
    fields that appear on the rendered note but may differ from the
    values CR's list/preview endpoints returned:
    `note_provider_location`, `note_provider_billed_time`,
    `note_provider_billed`, `note_provider_signature_name`,
-   `note_supervisor_signature`,
-   `note_supervisor_name`. Every field is optional — a `null` from
-   Bedrock means "not present on the note," and the builder omits
-   the corresponding key so a rule can distinguish absence from a
-   false match against empty string.
+   `note_supervisor_name` (from the supervisor-attribution section),
+   `note_supervisor_signature_name` (from the supervisor signature
+   line). Every field is optional — a `null` from Bedrock means "not
+   present on the note," and the builder omits the corresponding key
+   so a rule can distinguish absence from a false match against
+   empty string.
 
 The `note_` prefix on the structured-extraction fields is
 deliberate: rules 6 (location matches) and 7 (supervisor

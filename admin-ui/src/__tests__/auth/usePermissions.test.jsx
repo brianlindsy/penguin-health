@@ -115,4 +115,44 @@ describe('usePermissions', () => {
       expect(result.current.runnableCategories()).toEqual(new Set())
     })
   })
+
+  describe('viewablePrograms', () => {
+    it('returns null (unrestricted) for super admins', () => {
+      const { result } = setup({ isSuperAdmin: true, permissions: null })
+      expect(result.current.viewablePrograms()).toBeNull()
+    })
+
+    it('returns null for org admins', () => {
+      const { result } = setup({
+        isSuperAdmin: false,
+        permissions: {
+          role: 'org_admin', report_permissions: {}, analytics_permissions: [],
+          program_permissions: ['Ignored'],
+        },
+      })
+      expect(result.current.viewablePrograms()).toBeNull()
+    })
+
+    it('returns null when the list is empty (empty means all)', () => {
+      const { result } = setup({
+        isSuperAdmin: false,
+        permissions: {
+          role: 'member', report_permissions: {}, analytics_permissions: [],
+          program_permissions: [],
+        },
+      })
+      expect(result.current.viewablePrograms()).toBeNull()
+    })
+
+    it('returns a set of the listed programs when non-empty', () => {
+      const { result } = setup({
+        isSuperAdmin: false,
+        permissions: {
+          role: 'member', report_permissions: {}, analytics_permissions: [],
+          program_permissions: ['Program A', 'Program B'],
+        },
+      })
+      expect(result.current.viewablePrograms()).toEqual(new Set(['Program A', 'Program B']))
+    })
+  })
 })

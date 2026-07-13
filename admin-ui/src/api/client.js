@@ -103,6 +103,18 @@ export const api = {
       body: JSON.stringify({ mappings }),
     }),
 
+  // Per-org canonical program list. Powers the per-user program_permissions
+  // checkboxes on the Users & Permissions page and gates document-validation
+  // reads by field_values.program on the backend.
+  getOrgPrograms: (orgId) =>
+    request(`/api/organizations/${orgId}/programs`),
+
+  updateOrgPrograms: (orgId, programs) =>
+    request(`/api/organizations/${orgId}/programs`, {
+      method: 'PUT',
+      body: JSON.stringify({ programs }),
+    }),
+
   enhanceRuleFields: (orgId, ruleText) =>
     request(`/api/organizations/${orgId}/rules/enhance-fields`, {
       method: 'POST',

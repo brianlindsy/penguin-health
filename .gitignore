@@ -60,3 +60,8 @@ cdk.out/
 .env
 .env.local
 .env.*.local
+
+# Scratch scripts for local PHI-touching testing — must never be
+# committed. Anything that reads a real note PDF or its extracted text
+# lives here.
+scripts/scratch/

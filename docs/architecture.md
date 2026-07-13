@@ -470,9 +470,10 @@ Three external tables per org (`{thing}_{org_underscored}`) all reading the org'
 
 - **JWT-issued claims** flow from Cognito through the HttpJwtAuthorizer into `event.requestContext.authorizer.jwt.claims` — admin API reads `email`, `cognito:groups`, `custom:organization_id` via `get_user_claims`.
 - **Super admin** = `cognito:groups` contains `Admins`. Bypasses org checks.
-- **Per-(user, org) record** stored in `penguin-health-org-config` at `pk=USER#{email}, sk=ORG#{org_id}` — `role` (`org_admin` / `member`), `report_permissions: {Intake, Billing, Compliance Audit, Quality Assurance, Eligibility} → {view, run}[]`, `analytics_permissions: [staff_performance, revenue_analysis]`.
+- **Per-(user, org) record** stored in `penguin-health-org-config` at `pk=USER#{email}, sk=ORG#{org_id}` — `role` (`org_admin` / `member`), `report_permissions: {Intake, Billing, Compliance Audit, Quality Assurance, Eligibility} → {view, run}[]`, `analytics_permissions: [staff_performance, revenue_analysis]`, `program_permissions: string[]`.
 - `lambda/api/permissions.py` caches per-`(email, org)` records for 60 s. `invalidate_cache(...)` is called from `/users/{email}` mutating endpoints.
 - **Categories** map to validation rule categories so a user with only `Eligibility:view` cannot see Compliance Audit findings.
+- **Program-scope filter** — each org has a canonical program list at `pk=ORG#{org_id}, sk=PROGRAMS`, edited under Users & Permissions → Programs. A member's `program_permissions` list, when non-empty, narrows the visible document validations to rows whose `field_values.program` (falling back to the raw value when `UI_DISPLAY_FIELDS` doesn't project it) is in the list. Empty list = unrestricted; org/super admins are always unrestricted. Enforced in `_fetch_run_documents`, `get_validation_run`, `get_validation_result`, and the three finding-write handlers (`confirm_finding` / `mark_resolved` / `mark_incorrect`); the run-summary list intentionally isn't program-filtered — the enforcement lives at the document layer.
 - Frontend `RoleGuard` mirrors these checks for UX (`requireSuperAdmin`, `requireOrgAdmin`) but **does not authorize** — every backend handler re-checks via `authorize_fn` + `perms_module.can_view_category`.
 
 ---

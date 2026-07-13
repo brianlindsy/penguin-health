@@ -9,7 +9,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { UsersPage } from '../../pages/UsersPage.jsx'
-import { userPermStore } from '../mocks/handlers.js'
+import { userPermStore, orgProgramsStore } from '../mocks/handlers.js'
 
 // OrgWorkspaceLayout fetches /validation-runs and reads usePermissions; its
 // network calls are handled by MSW. Stub window.confirm to bypass the
@@ -111,5 +111,60 @@ describe('UsersPage', () => {
       expect(screen.queryByText('gone@clinic.com')).not.toBeInTheDocument()
     })
     expect(userPermStore.get('test-org', 'gone@clinic.com')).toBeNull()
+  })
+
+  describe('program permissions', () => {
+    it('renders program checkboxes from the org list and saves the selection', async () => {
+      orgProgramsStore.set('test-org', ['Program A', 'Program B'])
+      const user = userEvent.setup()
+      renderAt()
+      await screen.findByText(/No users have been granted permissions/i)
+
+      await user.click(screen.getByRole('button', { name: 'Add User' }))
+      await user.type(screen.getByPlaceholderText('user@example.com'), 'prog@clinic.com')
+      await user.click(screen.getByLabelText('Program Program A'))
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+
+      await screen.findByText('prog@clinic.com')
+      expect(userPermStore.get('test-org', 'prog@clinic.com').program_permissions)
+        .toEqual(['Program A'])
+    })
+
+    it('shows the empty-list hint when the org has no programs configured yet', async () => {
+      const user = userEvent.setup()
+      renderAt()
+      await screen.findByText(/No users have been granted permissions/i)
+      await user.click(screen.getByRole('button', { name: 'Add User' }))
+
+      expect(screen.getByText(/No programs are configured for this organization/i))
+        .toBeInTheDocument()
+    })
+
+    it('summary row shows "All programs" when the user has no restrictions', async () => {
+      userPermStore.put('test-org', 'unlimited@clinic.com', {
+        role: 'member',
+        report_permissions: { Billing: ['view'] },
+        analytics_permissions: [],
+        program_permissions: [],
+      })
+      renderAt()
+      const row = (await screen.findByText('unlimited@clinic.com')).closest('tr')
+      expect(within(row).getByText('All programs')).toBeInTheDocument()
+    })
+
+    it('adds a program through the Programs tab and persists it', async () => {
+      const user = userEvent.setup()
+      renderAt()
+      await screen.findByText(/No users have been granted permissions/i)
+
+      await user.click(screen.getByRole('button', { name: 'Programs' }))
+      await user.type(screen.getByPlaceholderText(/e\.g\. Mental Health/i), 'Behavioral Health')
+      await user.click(screen.getByRole('button', { name: 'Add' }))
+      await user.click(screen.getByRole('button', { name: /Save programs/i }))
+
+      await waitFor(() => {
+        expect(orgProgramsStore.get('test-org')).toEqual(['Behavioral Health'])
+      })
+    })
   })
 })

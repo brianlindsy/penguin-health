@@ -159,6 +159,8 @@ def lambda_handler(event, context):
         'PUT /api/organizations/{orgId}/rules-config': update_rules_config,
         'GET /api/organizations/{orgId}/ui-display-fields': get_ui_display_fields,
         'PUT /api/organizations/{orgId}/ui-display-fields': update_ui_display_fields,
+        'GET /api/organizations/{orgId}/programs': get_org_programs,
+        'PUT /api/organizations/{orgId}/programs': update_org_programs,
         'POST /api/organizations/{orgId}/rules/enhance-fields': enhance_fields,
         'POST /api/organizations/{orgId}/rules/enhance-note': enhance_note,
         'POST /api/organizations/{orgId}/analytics/nl-query': nl_query,
@@ -659,6 +661,83 @@ def update_ui_display_fields(event, path_params, body, **kwargs):
     })
 
 
+# ---- Org Programs ----
+
+def get_org_programs(event, path_params, **kwargs):
+    """Return the org's canonical list of program names.
+
+    Programs are the org-scoped labels that appear on each document validation
+    at `field_values.program`. The list is used both by the UI (as the source of
+    truth for the per-user program_permissions checkboxes) and by the API
+    validation in `build_user_perm_item` to reject unknown programs.
+    Returns an empty list when unset.
+    """
+    org_id = path_params.get('orgId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    result = table.get_item(Key={'pk': f'ORG#{org_id}', 'sk': 'PROGRAMS'})
+    item = result.get('Item') or {}
+    return response(200, {
+        'organization_id': org_id,
+        'programs': list(item.get('programs') or []),
+        'updated_at': item.get('updated_at'),
+    })
+
+
+def update_org_programs(event, path_params, body, **kwargs):
+    """Overwrite the org's PROGRAMS list. Super admin only.
+
+    Body: `{"programs": ["Program A", "Program B", ...]}`. Duplicates are
+    dropped; entries are stored sorted so the DDB item is stable across writes.
+    """
+    org_id = path_params.get('orgId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+    if not is_super_admin(claims):
+        return response(403, {'error': 'Super admin required'})
+
+    if not body or 'programs' not in body:
+        return response(400, {'error': 'Request body must include programs'})
+
+    raw = body['programs']
+    if not isinstance(raw, list):
+        return response(400, {'error': 'programs must be a list'})
+
+    programs = []
+    seen = set()
+    for p in raw:
+        if not isinstance(p, str) or not p.strip():
+            return response(400, {'error': 'programs must be non-empty strings'})
+        clean = p.strip()
+        if clean in seen:
+            continue
+        seen.add(clean)
+        programs.append(clean)
+    programs.sort()
+
+    item = {
+        'pk': f'ORG#{org_id}',
+        'sk': 'PROGRAMS',
+        'organization_id': org_id,
+        'programs': programs,
+        'updated_at': datetime.utcnow().isoformat() + 'Z',
+    }
+    table.put_item(Item=item)
+    perms_module.invalidate_org_programs_cache(org_id)
+    print(f"Updated PROGRAMS for {org_id} ({len(programs)} entries)")
+
+    return response(200, {
+        'organization_id': org_id,
+        'programs': programs,
+        'updated_at': item['updated_at'],
+    })
+
+
 # ---- Validation Results ----
 
 DETAILS_DEFAULT_LIMIT = 50
@@ -707,7 +786,34 @@ def _query_all(table, **kwargs):
     return items
 
 
-def _fetch_run_documents(run_id, org_id, claims, allowed, slim=False):
+def _document_program(item):
+    """Read the program label off a validation-result row.
+
+    Prefers the canonical UI projection (`ui_display_fields.program`) so a
+    per-org rename via UI_DISPLAY_FIELDS doesn't silently break the filter,
+    and falls back to the raw `field_values.program`.
+    """
+    udf = item.get('ui_display_fields') or {}
+    if 'program' in udf:
+        return udf.get('program')
+    fv = item.get('field_values') or {}
+    return fv.get('program')
+
+
+def _program_allowed(item, allowed_programs):
+    """True when the doc's program is in the caller's allowed set.
+
+    `allowed_programs is None` means "unrestricted" — every doc passes.
+    When restricted, a doc with no program label is denied; leaking rows
+    the caller can't classify would defeat the point of the filter.
+    """
+    if allowed_programs is None:
+        return True
+    program = _document_program(item)
+    return program in allowed_programs
+
+
+def _fetch_run_documents(run_id, org_id, claims, allowed, allowed_programs, slim=False):
     """Fetch + RBAC-filter the documents for a single validation run.
 
     Mirrors the per-document filtering in get_validation_run so the bulk
@@ -722,6 +828,8 @@ def _fetch_run_documents(run_id, org_id, claims, allowed, slim=False):
     documents = []
     for item in items:
         if item.get('organization_id') != org_id and not is_super_admin(claims):
+            continue
+        if not _program_allowed(item, allowed_programs):
             continue
         rules = [r for r in (item.get('rules') or []) if r.get('category') in allowed]
         if not rules:
@@ -790,6 +898,7 @@ def list_validation_runs(event, path_params, **kwargs):
     )
 
     allowed = perms_module.viewable_categories(claims, org_id)
+    allowed_programs = perms_module.viewable_programs(claims, org_id)
     runs = []
     for item in items:
         ts = item.get('timestamp')
@@ -827,7 +936,8 @@ def list_validation_runs(event, path_params, **kwargs):
         # blow past API Gateway's 30s timeout on a cold Lambda.
         with ThreadPoolExecutor(max_workers=DETAILS_FETCH_WORKERS) as pool:
             doc_lists = list(pool.map(
-                lambda r: _fetch_run_documents(r['validation_run_id'], org_id, claims, allowed, slim=slim),
+                lambda r: _fetch_run_documents(
+                    r['validation_run_id'], org_id, claims, allowed, allowed_programs, slim=slim),
                 runs,
             ))
         for run, docs in zip(runs, doc_lists):
@@ -862,10 +972,14 @@ def get_validation_run(event, path_params, **kwargs):
     )
 
     allowed = perms_module.viewable_categories(claims, org_id)
+    allowed_programs = perms_module.viewable_programs(claims, org_id)
     documents = []
     for item in items:
         # Filter by organization_id for RBAC (non-super-admins)
         if item.get('organization_id') != org_id and not is_super_admin(claims):
+            continue
+
+        if not _program_allowed(item, allowed_programs):
             continue
 
         rules = [r for r in (item.get('rules') or []) if r.get('category') in allowed]
@@ -916,6 +1030,10 @@ def get_validation_result(event, path_params, **kwargs):
 
     # RBAC check
     if item.get('organization_id') != org_id and not is_super_admin(claims):
+        return response(403, {'error': 'Access denied to this validation result'})
+
+    allowed_programs = perms_module.viewable_programs(claims, org_id)
+    if not _program_allowed(item, allowed_programs):
         return response(403, {'error': 'Access denied to this validation result'})
 
     allowed = perms_module.viewable_categories(claims, org_id)
@@ -975,6 +1093,9 @@ def confirm_finding(event, path_params, body, **kwargs):
 
     # RBAC check
     if item.get('organization_id') != org_id and not is_super_admin(claims):
+        return response(403, {'error': 'Access denied to this validation result'})
+
+    if not _program_allowed(item, perms_module.viewable_programs(claims, org_id)):
         return response(403, {'error': 'Access denied to this validation result'})
 
     # Get the primary key and sort key from the item
@@ -1080,6 +1201,9 @@ def mark_resolved(event, path_params, body, **kwargs):
     if item.get('organization_id') != org_id and not is_super_admin(claims):
         return response(403, {'error': 'Access denied to this validation result'})
 
+    if not _program_allowed(item, perms_module.viewable_programs(claims, org_id)):
+        return response(403, {'error': 'Access denied to this validation result'})
+
     # Get the primary key and sort key from the item
     pk = item.get('pk')
     sk = item.get('sk')
@@ -1174,6 +1298,9 @@ def mark_incorrect(event, path_params, body, **kwargs):
 
     # RBAC check
     if item.get('organization_id') != org_id and not is_super_admin(claims):
+        return response(403, {'error': 'Access denied to this validation result'})
+
+    if not _program_allowed(item, perms_module.viewable_programs(claims, org_id)):
         return response(403, {'error': 'Access denied to this validation result'})
 
     pk = item.get('pk')
@@ -1868,6 +1995,7 @@ def _format_user_perm(item):
         'role': item.get('role', 'member'),
         'report_permissions': item.get('report_permissions', {}),
         'analytics_permissions': item.get('analytics_permissions', []),
+        'program_permissions': item.get('program_permissions', []),
         'created_at': item.get('created_at'),
         'updated_at': item.get('updated_at'),
     }

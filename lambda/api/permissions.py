@@ -7,6 +7,13 @@ Permissions are stored in penguin-health-org-config under
   sk = ORG#<org_id>
 and loaded per-request via load_permissions(). Super admins (Cognito group
 'Admins') bypass all checks. Members default-deny when no record exists.
+
+Program-scope RBAC: each org has a canonical list of program names stored at
+  pk = ORG#<org_id>, sk = PROGRAMS
+A user's `program_permissions` list, when non-empty, restricts the document
+validations they can view to those whose `field_values.program` is in the list.
+An empty (or missing) `program_permissions` list means "no restriction — see
+every program in the org." Org admins and super admins always see everything.
 """
 
 import time
@@ -23,6 +30,7 @@ VERBS = ("view", "run")
 
 _CACHE_TTL_SECONDS = 60
 _perm_cache: dict[tuple[str, str], tuple[float, dict | None]] = {}
+_org_programs_cache: dict[str, tuple[float, list[str]]] = {}
 
 
 def _now() -> float:
@@ -70,13 +78,47 @@ def _normalize(item: dict) -> dict:
         page for page in (item.get('analytics_permissions') or [])
         if page in ANALYTICS_PAGES
     ]
+    program_perms = [
+        p for p in (item.get('program_permissions') or [])
+        if isinstance(p, str) and p
+    ]
     return {
         'email': item.get('email'),
         'organization_id': item.get('organization_id'),
         'role': item.get('role') or 'member',
         'report_permissions': report_perms,
         'analytics_permissions': analytics,
+        'program_permissions': program_perms,
     }
+
+
+def load_org_programs(org_id: str | None) -> list[str]:
+    """Return the org's canonical program list. Empty list when unset.
+
+    Cached per-org for 60s to keep the per-request cost bounded; the
+    programs PUT endpoint calls invalidate_org_programs_cache to make
+    updates visible immediately.
+    """
+    if not org_id:
+        return []
+    cached = _org_programs_cache.get(org_id)
+    if cached is not None:
+        expires_at, value = cached
+        if _now() < expires_at:
+            return value
+
+    result = table.get_item(Key={'pk': f'ORG#{org_id}', 'sk': 'PROGRAMS'})
+    item = result.get('Item') or {}
+    programs = [p for p in (item.get('programs') or []) if isinstance(p, str) and p]
+    _org_programs_cache[org_id] = (_now() + _CACHE_TTL_SECONDS, programs)
+    return programs
+
+
+def invalidate_org_programs_cache(org_id: str | None = None) -> None:
+    if org_id is None:
+        _org_programs_cache.clear()
+        return
+    _org_programs_cache.pop(org_id, None)
 
 
 def is_super_admin(claims: dict) -> bool:
@@ -127,6 +169,27 @@ def runnable_categories(claims: dict, org_id: str) -> set[str]:
     return {c for c, verbs in perms['report_permissions'].items() if 'run' in verbs}
 
 
+def viewable_programs(claims: dict, org_id: str) -> set[str] | None:
+    """Programs whose document validations the caller may view.
+
+    Returns None to mean "unrestricted — every program is visible." That's
+    the case for super admins, org admins, and any member whose
+    program_permissions list is empty. A non-empty list narrows the view to
+    exactly those programs.
+    """
+    if is_org_admin(claims, org_id):
+        return None
+    perms = load_permissions(claims.get('email'), org_id)
+    if not perms:
+        # No perm record: category-level filtering already denies everything;
+        # returning None keeps this filter from adding a second denial layer.
+        return None
+    listed = perms.get('program_permissions') or []
+    if not listed:
+        return None
+    return set(listed)
+
+
 def can_view_analytics(claims: dict, org_id: str, page: str) -> bool:
     if is_org_admin(claims, org_id):
         return True
@@ -171,6 +234,7 @@ def serialize_for_me_endpoint(claims: dict) -> dict:
             'organization_id': None,
             'report_permissions': {cat: list(VERBS) for cat in CATEGORIES},
             'analytics_permissions': list(ANALYTICS_PAGES),
+            'program_permissions': [],
             'eligibility_unread_count': 0,  # super-admin nav has no org context
         }
     org_id = claims.get('organization_id')
@@ -183,6 +247,7 @@ def serialize_for_me_endpoint(claims: dict) -> dict:
             'organization_id': org_id,
             'report_permissions': {cat: [] for cat in CATEGORIES},
             'analytics_permissions': [],
+            'program_permissions': [],
             'eligibility_unread_count': unread,
         }
     return {
@@ -191,6 +256,7 @@ def serialize_for_me_endpoint(claims: dict) -> dict:
         'organization_id': perms['organization_id'],
         'report_permissions': perms['report_permissions'],
         'analytics_permissions': perms['analytics_permissions'],
+        'program_permissions': perms.get('program_permissions') or [],
         'eligibility_unread_count': unread,
     }
 
@@ -218,6 +284,24 @@ def build_user_perm_item(email: str, org_id: str, body: dict, *, existing: dict 
         if page not in ANALYTICS_PAGES:
             raise ValueError(f"Unknown analytics page: {page!r}")
 
+    raw_programs = body.get('program_permissions',
+                            existing.get('program_permissions') if existing else []) or []
+    if not isinstance(raw_programs, list):
+        raise ValueError('program_permissions must be a list')
+    org_programs = set(load_org_programs(org_id))
+    program_perms = []
+    seen = set()
+    for p in raw_programs:
+        if not isinstance(p, str) or not p.strip():
+            raise ValueError('program_permissions entries must be non-empty strings')
+        clean = p.strip()
+        if org_programs and clean not in org_programs:
+            raise ValueError(f"Unknown program: {clean!r}")
+        if clean in seen:
+            continue
+        seen.add(clean)
+        program_perms.append(clean)
+
     now = datetime.utcnow().isoformat() + 'Z'
     return {
         'pk': f'USER#{email}',
@@ -229,6 +313,7 @@ def build_user_perm_item(email: str, org_id: str, body: dict, *, existing: dict 
         'role': role,
         'report_permissions': report_perms,
         'analytics_permissions': list(raw_analytics),
+        'program_permissions': program_perms,
         'created_at': existing.get('created_at') if existing else now,
         'updated_at': now,
     }

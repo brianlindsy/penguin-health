@@ -37,8 +37,8 @@ Field mapping (per the design doc):
 | extracted_fields.note_provider_billed_time    | NoteFields (from PDF) |
 | extracted_fields.note_provider_billed         | NoteFields (from PDF) |
 | extracted_fields.note_provider_signature_name | NoteFields (from PDF) |
-| extracted_fields.note_supervisor_signature    | NoteFields (from PDF) |
-| extracted_fields.note_supervisor_name         | NoteFields (from PDF) |
+| extracted_fields.note_supervisor_name         | NoteFields (from PDF) — from the supervisor-attribution section |
+| extracted_fields.note_supervisor_signature_name | NoteFields (from PDF) — the name at the supervisor signature line |
 
 Two prefixes signal source unambiguously so rules and dashboards can
 tell where a value came from at a glance:
@@ -318,10 +318,10 @@ def build_record(
         extracted_fields["note_provider_billed"] = note_fields.provider_billed
     if note_fields.provider_signature_name is not None:
         extracted_fields["note_provider_signature_name"] = note_fields.provider_signature_name
-    if note_fields.supervisor_signature is not None:
-        extracted_fields["note_supervisor_signature"] = note_fields.supervisor_signature
     if note_fields.supervisor_name is not None:
         extracted_fields["note_supervisor_name"] = note_fields.supervisor_name
+    if note_fields.supervisor_signature_name is not None:
+        extracted_fields["note_supervisor_signature_name"] = note_fields.supervisor_signature_name
 
     # `billing_list_*` — everything CR sent on the list endpoint for
     # this entry, mapped 1:1 to snake_case. Emitted verbatim (empty

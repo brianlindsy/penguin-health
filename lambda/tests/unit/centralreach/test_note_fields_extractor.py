@@ -1,17 +1,17 @@
 """Tests for centralreach.note_fields_extractor.
 
-Pins the contracts around the five-field Bedrock extraction:
-  1. Happy path: all five fields present → typed NoteFields
+Pins the contracts around the six-field Bedrock extraction:
+  1. Happy path: all six fields present → typed NoteFields
   2. Field-level absence (`null`) is normal → None on the result
   3. Field-level whitespace-only string → None (empty extraction)
   4. Bedrock invocation failure → NoteFieldsExtractionError
   5. Non-dict Bedrock response → NoteFieldsExtractionError
   6. Wrong type on a string field → NoteFieldsExtractionError
-  7. Wrong type on the bool field → NoteFieldsExtractionError
-  8. Oversized field value → NoteFieldsExtractionError
-  9. PDF ships as base64 document content block
- 10. Cost attribution kwargs (call_type, parent_request_id, org_id)
- 11. Unknown response keys are ignored (defensive)
+  7. Oversized field value → NoteFieldsExtractionError
+  8. PDF ships as base64 document content block
+  9. Cost attribution kwargs (call_type, parent_request_id, org_id)
+ 10. Unknown response keys are ignored (defensive)
+ 11. supervisor_name and supervisor_signature_name capture independently
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ _FULL_RESPONSE = {
     "provider_billed_time": "75 minutes",
     "provider_billed": "Ann Smith, BCBA",
     "provider_signature_name": "Ann Smith, BCBA",
-    "supervisor_signature": True,
     "supervisor_name": "Dr. Jane Doe",
+    "supervisor_signature_name": "Dr. Jane Doe",
 }
 
 
@@ -74,8 +74,54 @@ def test_returns_all_six_fields_when_bedrock_populates_them():
     assert result.provider_billed_time == "75 minutes"
     assert result.provider_billed == "Ann Smith, BCBA"
     assert result.provider_signature_name == "Ann Smith, BCBA"
-    assert result.supervisor_signature is True
     assert result.supervisor_name == "Dr. Jane Doe"
+    assert result.supervisor_signature_name == "Dr. Jane Doe"
+
+
+def test_supervisor_name_and_signature_name_can_diverge():
+    """The attribution section names the supervisor of record, while
+    the signature line names whoever actually signed. When those
+    differ, the cross-check rule should catch it — verify the two
+    fields are captured independently."""
+    result, _ = _invoke({
+        **_FULL_RESPONSE,
+        "supervisor_name": "Dr. Jane Doe",
+        "supervisor_signature_name": "J. Roe, BCBA-D",
+    })
+    assert result.supervisor_name == "Dr. Jane Doe"
+    assert result.supervisor_signature_name == "J. Roe, BCBA-D"
+
+
+def test_provider_and_supervisor_signature_names_can_be_the_same_person():
+    """On a solo ABA note whose sole signature block reads e.g. "Jane
+    Doe, Supervising Analyst, BCBA-D", the same name populates both
+    fields: the block is the provider signature (it sits under the
+    provider signature line) and its role label also identifies the
+    signer as a supervisor. The extractor must accept and preserve
+    that overlap — the two fields are semantically independent."""
+    result, _ = _invoke({
+        **_FULL_RESPONSE,
+        "provider_signature_name": "Jane Doe",
+        "supervisor_signature_name": "Jane Doe",
+    })
+    assert result.provider_signature_name == "Jane Doe"
+    assert result.supervisor_signature_name == "Jane Doe"
+
+
+def test_provider_billed_and_supervisor_name_can_be_the_same_person():
+    """The attribution-side mirror of the signature-side case: a note
+    with no dedicated Supervisor section whose Provider section reads
+    "Jane Doe, Supervising Analyst, BCBA-D" populates both
+    `provider_billed` and `supervisor_name` with "Jane Doe" — the
+    role label identifies the sole named provider as also being the
+    supervising provider of record."""
+    result, _ = _invoke({
+        **_FULL_RESPONSE,
+        "provider_billed": "Jane Doe",
+        "supervisor_name": "Jane Doe",
+    })
+    assert result.provider_billed == "Jane Doe"
+    assert result.supervisor_name == "Jane Doe"
 
 
 def test_provider_billed_and_signature_name_can_diverge():
@@ -133,8 +179,66 @@ def test_system_prompt_names_all_six_fields():
     assert "provider_billed_time" in system
     assert "provider_billed" in system
     assert "provider_signature_name" in system
-    assert "supervisor_signature" in system
     assert "supervisor_name" in system
+    assert "supervisor_signature_name" in system
+
+
+def test_system_prompt_defines_supervisor_signature_by_role_label():
+    """The `supervisor_signature_name` field is defined by the
+    signature block's role text ("supervis" case-insensitive
+    contains), NOT by the label of the line above the block. This is
+    what lets solo notes signed by a supervising BCBA under a
+    "Provider Signature" line land the signer's name on the record.
+    The prompt has to keep that rule explicit — if a future edit
+    reverts to line-label semantics, that class of note silently
+    stops populating the field again."""
+    _, invoker = _invoke(_FULL_RESPONSE)
+    system = invoker.calls[0]["body"]["system"].lower()
+    assert "supervis" in system
+    assert "role" in system
+
+
+def test_system_prompt_defines_supervisor_name_with_role_fallback():
+    """`supervisor_name` falls back to a supervis-role-labeled name in
+    the provider section when the note has no dedicated supervisor
+    section. Without this, notes like "Provider: Jane Doe,
+    Supervising Analyst, BCBA-D" (no separate Supervisor line) leave
+    the field null even though the note names a supervisor of record.
+    The prompt must keep both the primary supervisor-section path AND
+    the provider-section fallback documented."""
+    _, invoker = _invoke(_FULL_RESPONSE)
+    system = invoker.calls[0]["body"]["system"]
+    supervisor_name_entry = system.split("- supervisor_name:", 1)[1]
+    supervisor_name_entry = supervisor_name_entry.split("- supervisor_signature_name:", 1)[0].lower()
+    assert "supervisor" in supervisor_name_entry
+    assert "provider" in supervisor_name_entry
+    assert "supervis" in supervisor_name_entry
+
+
+def test_system_prompt_defines_supervisor_name_participants_checkbox_fallback():
+    """`supervisor_name` also falls back to a Participants-style
+    checkbox block whose top-level "Supervisor" checkbox is checked,
+    with BCBA / BCaBA / QBA credential sub-options and the name
+    written below. The checkbox is the signal — a supervisor named
+    only in that block, with no role label near their name, still
+    needs to land on the record. The prompt must keep the credential
+    sub-options and the ambiguity fallback (multiple sub-boxes
+    checked → use signature-line name) documented so a future edit
+    doesn't drop the third source silently."""
+    _, invoker = _invoke(_FULL_RESPONSE)
+    system = invoker.calls[0]["body"]["system"]
+    supervisor_name_entry = system.split("- supervisor_name:", 1)[1]
+    supervisor_name_entry = supervisor_name_entry.split("- supervisor_signature_name:", 1)[0]
+    lowered = supervisor_name_entry.lower()
+    assert "checkbox" in lowered
+    assert "participants" in lowered
+    # All three credential sub-options must be named so the model
+    # doesn't drift toward some other credential set.
+    assert "bcba" in lowered
+    assert "bcaba" in lowered
+    assert "qba" in lowered
+    # Ambiguity fallback to the signature-line name.
+    assert "supervisor_signature_name" in supervisor_name_entry
 
 
 # ----- field-level absence -------------------------------------------------
@@ -146,11 +250,11 @@ def test_null_on_field_returns_none():
     NOT an error."""
     result, _ = _invoke({
         **_FULL_RESPONSE,
-        "supervisor_signature": None,
         "supervisor_name": None,
+        "supervisor_signature_name": None,
     })
-    assert result.supervisor_signature is None
     assert result.supervisor_name is None
+    assert result.supervisor_signature_name is None
     # The other fields are still populated.
     assert result.provider_location is not None
 
@@ -159,11 +263,11 @@ def test_missing_key_treated_as_null():
     result, _ = _invoke({
         "provider_location": "Clinic",
         "provider_billed_time": "60 min",
-        # provider_signature_name / supervisor_signature / supervisor_name absent
+        # provider_signature_name / supervisor_name / supervisor_signature_name absent
     })
     assert result.provider_signature_name is None
-    assert result.supervisor_signature is None
     assert result.supervisor_name is None
+    assert result.supervisor_signature_name is None
 
 
 def test_whitespace_only_string_becomes_none():
@@ -184,16 +288,16 @@ def test_all_null_response_is_valid():
         "provider_billed_time": None,
         "provider_billed": None,
         "provider_signature_name": None,
-        "supervisor_signature": None,
         "supervisor_name": None,
+        "supervisor_signature_name": None,
     })
     assert result == NoteFields(
         provider_location=None,
         provider_billed_time=None,
         provider_billed=None,
         provider_signature_name=None,
-        supervisor_signature=None,
         supervisor_name=None,
+        supervisor_signature_name=None,
     )
 
 
@@ -223,13 +327,6 @@ def test_non_string_type_on_string_field_raises():
     skip the entry rather than coerce."""
     with pytest.raises(NoteFieldsExtractionError):
         _invoke({**_FULL_RESPONSE, "provider_location": 42})
-
-
-def test_non_bool_type_on_bool_field_raises():
-    """`supervisor_signature` must be JSON true/false/null. A string
-    'true' would silently coerce; force the error."""
-    with pytest.raises(NoteFieldsExtractionError):
-        _invoke({**_FULL_RESPONSE, "supervisor_signature": "yes"})
 
 
 def test_oversized_string_field_raises():

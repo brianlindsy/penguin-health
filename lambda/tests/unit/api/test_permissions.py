@@ -201,6 +201,114 @@ class TestBuildUserPermItem:
         assert item['gsi1sk'] == 'ORG#org#USER#a@b.com'
 
 
+class TestViewablePrograms:
+    def test_super_admin_is_unrestricted(self, mock_dynamodb):
+        import permissions
+        assert permissions.viewable_programs(SUPER_ADMIN_CLAIMS, 'any-org') is None
+
+    def test_org_admin_is_unrestricted(self, mock_dynamodb, seed_user_perms):
+        import permissions
+        seed_user_perms('member@example.com', 'test-org', role='org_admin')
+        assert permissions.viewable_programs(MEMBER_CLAIMS, 'test-org') is None
+
+    def test_member_with_no_record_is_unrestricted_at_program_layer(self, mock_dynamodb):
+        import permissions
+        # No perm record: the category filter still denies everything, so the
+        # program layer stays quiet (returns None) to avoid double-denying.
+        assert permissions.viewable_programs(MEMBER_CLAIMS, 'test-org') is None
+
+    def test_member_with_empty_list_is_unrestricted(self, mock_dynamodb, seed_user_perms):
+        import permissions
+        seed_user_perms('member@example.com', 'test-org', program_permissions=[])
+        assert permissions.viewable_programs(MEMBER_CLAIMS, 'test-org') is None
+
+    def test_member_with_listed_programs(self, mock_dynamodb, seed_user_perms, seed_org_programs):
+        import permissions
+        seed_org_programs('test-org', ['Program A', 'Program B'])
+        seed_user_perms('member@example.com', 'test-org',
+                        program_permissions=['Program A'])
+        assert permissions.viewable_programs(MEMBER_CLAIMS, 'test-org') == {'Program A'}
+
+
+class TestBuildUserPermItemPrograms:
+    def test_rejects_unknown_program(self, mock_dynamodb, seed_org_programs):
+        import permissions
+        import pytest
+        seed_org_programs('test-org', ['Program A'])
+        with pytest.raises(ValueError, match='Unknown program'):
+            permissions.build_user_perm_item(
+                'a@b.com', 'test-org',
+                {'role': 'member', 'program_permissions': ['Program C']},
+            )
+
+    def test_accepts_known_program(self, mock_dynamodb, seed_org_programs):
+        import permissions
+        seed_org_programs('test-org', ['Program A', 'Program B'])
+        item = permissions.build_user_perm_item(
+            'a@b.com', 'test-org',
+            {'role': 'member', 'program_permissions': ['Program A']},
+        )
+        assert item['program_permissions'] == ['Program A']
+
+    def test_dedupes_and_trims(self, mock_dynamodb, seed_org_programs):
+        import permissions
+        seed_org_programs('test-org', ['Program A'])
+        item = permissions.build_user_perm_item(
+            'a@b.com', 'test-org',
+            {'role': 'member', 'program_permissions': ['Program A', '  Program A  ']},
+        )
+        assert item['program_permissions'] == ['Program A']
+
+    def test_empty_list_is_valid(self, mock_dynamodb, seed_org_programs):
+        import permissions
+        seed_org_programs('test-org', ['Program A'])
+        item = permissions.build_user_perm_item(
+            'a@b.com', 'test-org',
+            {'role': 'member', 'program_permissions': []},
+        )
+        assert item['program_permissions'] == []
+
+    def test_rejects_non_string(self, mock_dynamodb, seed_org_programs):
+        import permissions
+        import pytest
+        seed_org_programs('test-org', ['Program A'])
+        with pytest.raises(ValueError, match='non-empty strings'):
+            permissions.build_user_perm_item(
+                'a@b.com', 'test-org',
+                {'role': 'member', 'program_permissions': [42]},
+            )
+
+    def test_skips_org_validation_when_no_programs_configured(self, mock_dynamodb):
+        # An org that has never had its PROGRAMS list initialized shouldn't
+        # break user upserts — the allowlist just isn't enforced yet.
+        import permissions
+        item = permissions.build_user_perm_item(
+            'a@b.com', 'test-org',
+            {'role': 'member', 'program_permissions': ['Anything']},
+        )
+        assert item['program_permissions'] == ['Anything']
+
+
+class TestSerializeMePayloadIncludesPrograms:
+    def test_super_admin_payload(self, mock_dynamodb):
+        import permissions
+        payload = permissions.serialize_for_me_endpoint(SUPER_ADMIN_CLAIMS)
+        assert payload['program_permissions'] == []
+
+    def test_member_with_no_record_returns_empty_list(self, mock_dynamodb):
+        import permissions
+        payload = permissions.serialize_for_me_endpoint(MEMBER_CLAIMS)
+        assert payload['program_permissions'] == []
+
+    def test_member_payload_carries_program_list(self, mock_dynamodb, seed_user_perms, seed_org_programs):
+        import permissions
+        seed_org_programs('test-org', ['Program A'])
+        seed_user_perms('member@example.com', 'test-org',
+                        program_permissions=['Program A'])
+        payload = permissions.serialize_for_me_endpoint(MEMBER_CLAIMS)
+        assert payload['program_permissions'] == ['Program A']
+
+
 class TestCacheInvalidation:
     def test_invalidate_clears_specific_entry(self, mock_dynamodb, seed_user_perms):
         import permissions

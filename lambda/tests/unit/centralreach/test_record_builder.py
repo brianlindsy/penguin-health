@@ -41,8 +41,8 @@ def _make_note_fields(**overrides) -> NoteFields:
         "provider_billed_time": "75 minutes",
         "provider_billed": "Ann Smith, BCBA",
         "provider_signature_name": "Ann Smith, BCBA",
-        "supervisor_signature": True,
         "supervisor_name": "Dr. Jane Doe",
+        "supervisor_signature_name": "Dr. Jane Doe",
     }
     return NoteFields(**{**defaults, **overrides})
 
@@ -52,8 +52,8 @@ _EMPTY_NOTE_FIELDS = NoteFields(
     provider_billed_time=None,
     provider_billed=None,
     provider_signature_name=None,
-    supervisor_signature=None,
     supervisor_name=None,
+    supervisor_signature_name=None,
 )
 
 
@@ -348,16 +348,15 @@ def test_build_record_extracted_fields():
     assert ef["note_provider_billed_time"] == "75 minutes"
     assert ef["note_provider_billed"] == "Ann Smith, BCBA"
     assert ef["note_provider_signature_name"] == "Ann Smith, BCBA"
-    assert ef["note_supervisor_signature"] is True
     assert ef["note_supervisor_name"] == "Dr. Jane Doe"
+    assert ef["note_supervisor_signature_name"] == "Dr. Jane Doe"
 
 
 def test_build_record_omits_note_fields_when_extractor_returned_none():
     """The extractor returns None for each field that isn't present
     on the note. The builder must omit the key rather than emit an
-    explicit null — otherwise a rule looking for
-    `note_supervisor_signature == False` would match against a null
-    value from a supervisor-less note format."""
+    explicit null so a rule can distinguish "not present on the note"
+    from a false match against an empty string."""
     rec = build_record(
         entry=_make_entry(),
         preview=_make_preview(),
@@ -374,18 +373,22 @@ def test_build_record_omits_note_fields_when_extractor_returned_none():
         "note_provider_billed_time",
         "note_provider_billed",
         "note_provider_signature_name",
-        "note_supervisor_signature",
         "note_supervisor_name",
+        "note_supervisor_signature_name",
     ):
         assert key not in rec.extracted_fields
 
 
-def test_build_record_note_supervisor_signature_false_is_kept():
-    """`False` on the bool field is a real signal — "note has a
-    supervisor line but it's blank." Distinct from `None` ("no
-    supervisor line at all"). The builder must keep False, only
-    omit None."""
-    note_fields = _make_note_fields(supervisor_signature=False)
+def test_build_record_supervisor_name_and_signature_name_land_separately():
+    """The two supervisor fields cover different sections of the note:
+    `note_supervisor_name` is the attribution (e.g. header
+    "Supervisor: Jane Doe"), `note_supervisor_signature_name` is what
+    was signed at the bottom. Rules that cross-check the two must see
+    both values on the record independently."""
+    note_fields = _make_note_fields(
+        supervisor_name="Dr. Jane Doe",
+        supervisor_signature_name="J. Roe, BCBA-D",
+    )
     rec = build_record(
         entry=_make_entry(),
         preview=_make_preview(),
@@ -397,7 +400,9 @@ def test_build_record_note_supervisor_signature_false_is_kept():
         ingest_run_id="run-abc",
         captured_at="2026-06-28T22:00:00Z",
     )
-    assert rec.extracted_fields["note_supervisor_signature"] is False
+    ef = rec.extracted_fields
+    assert ef["note_supervisor_name"] == "Dr. Jane Doe"
+    assert ef["note_supervisor_signature_name"] == "J. Roe, BCBA-D"
 
 
 def test_build_record_note_fields_are_prefixed_and_do_not_shadow_api_fields():

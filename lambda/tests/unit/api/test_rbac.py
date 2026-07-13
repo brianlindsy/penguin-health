@@ -193,6 +193,159 @@ class TestTriggerValidationRunRBAC:
 
 # ---------- finding actions ----------
 
+def _seed_two_program_docs(mock_dynamodb):
+    """Put two validation-result rows into the same run — one Program A, one B."""
+    table = mock_dynamodb.Table('penguin-health-validation-results')
+    common = {
+        'gsi1pk': 'ORG#test-org',
+        'gsi2pk': 'RUN#run-2p',
+        'organization_id': 'test-org',
+        'validation_run_id': 'run-2p',
+        'rules': [{'rule_id': 'rule-001', 'category': 'Compliance Audit',
+                   'status': 'FAIL', 'message': 'nope'}],
+    }
+    table.put_item(Item={
+        **common,
+        'pk': 'DOC#docA', 'sk': 'VALIDATION#2024-01-15T10:00:00',
+        'gsi1sk': 'DOC#docA', 'gsi2sk': 'DOC#docA',
+        'document_id': 'docA',
+        'field_values': {'program': 'Program A'},
+    })
+    table.put_item(Item={
+        **common,
+        'pk': 'DOC#docB', 'sk': 'VALIDATION#2024-01-15T10:00:00',
+        'gsi1sk': 'DOC#docB', 'gsi2sk': 'DOC#docB',
+        'document_id': 'docB',
+        'field_values': {'program': 'Program B'},
+    })
+    # Run summary
+    table.put_item(Item={
+        'pk': 'ORG#test-org', 'sk': 'RUN#run-2p',
+        'gsi1pk': 'VALIDATION_RUN', 'gsi1sk': 'ORG#test-org#run-2p',
+        'validation_run_id': 'run-2p',
+        'organization_id': 'test-org',
+        'timestamp': '2024-01-15T10:00:00Z',
+        'categories': ['Compliance Audit'],
+    })
+
+
+class TestValidationRunProgramFilter:
+    def test_member_with_program_a_sees_only_a(
+        self, mock_dynamodb, sample_org_config, member_event,
+        seed_user_perms, seed_org_programs,
+    ):
+        from api.admin_api import get_validation_run
+        _seed_two_program_docs(mock_dynamodb)
+        seed_org_programs('test-org', ['Program A', 'Program B'])
+        seed_user_perms(
+            'member@example.com', 'test-org',
+            report_permissions={'Compliance Audit': ['view']},
+            program_permissions=['Program A'],
+        )
+
+        resp = get_validation_run(
+            event=member_event,
+            path_params={'orgId': 'test-org', 'runId': 'run-2p'},
+        )
+        assert resp['statusCode'] == 200
+        docs = json.loads(resp['body'])['documents']
+        assert {d['document_id'] for d in docs} == {'docA'}
+
+    def test_member_with_empty_program_list_sees_all(
+        self, mock_dynamodb, sample_org_config, member_event,
+        seed_user_perms, seed_org_programs,
+    ):
+        from api.admin_api import get_validation_run
+        _seed_two_program_docs(mock_dynamodb)
+        seed_org_programs('test-org', ['Program A', 'Program B'])
+        seed_user_perms(
+            'member@example.com', 'test-org',
+            report_permissions={'Compliance Audit': ['view']},
+            program_permissions=[],
+        )
+
+        resp = get_validation_run(
+            event=member_event,
+            path_params={'orgId': 'test-org', 'runId': 'run-2p'},
+        )
+        docs = json.loads(resp['body'])['documents']
+        assert {d['document_id'] for d in docs} == {'docA', 'docB'}
+
+    def test_org_admin_sees_all_programs(
+        self, mock_dynamodb, sample_org_config, member_event,
+        seed_user_perms, seed_org_programs,
+    ):
+        from api.admin_api import get_validation_run
+        _seed_two_program_docs(mock_dynamodb)
+        seed_org_programs('test-org', ['Program A', 'Program B'])
+        seed_user_perms('member@example.com', 'test-org', role='org_admin')
+
+        resp = get_validation_run(
+            event=member_event,
+            path_params={'orgId': 'test-org', 'runId': 'run-2p'},
+        )
+        docs = json.loads(resp['body'])['documents']
+        assert {d['document_id'] for d in docs} == {'docA', 'docB'}
+
+    def test_get_single_result_denied_for_wrong_program(
+        self, mock_dynamodb, sample_org_config, member_event,
+        seed_user_perms, seed_org_programs,
+    ):
+        from api.admin_api import get_validation_result
+        _seed_two_program_docs(mock_dynamodb)
+        seed_org_programs('test-org', ['Program A', 'Program B'])
+        seed_user_perms(
+            'member@example.com', 'test-org',
+            report_permissions={'Compliance Audit': ['view']},
+            program_permissions=['Program A'],
+        )
+
+        # Same user can read docA (Program A) but not docB (Program B).
+        allowed = get_validation_result(
+            event=member_event,
+            path_params={'orgId': 'test-org', 'runId': 'run-2p', 'docId': 'docA'},
+        )
+        assert allowed['statusCode'] == 200
+
+        denied = get_validation_result(
+            event=member_event,
+            path_params={'orgId': 'test-org', 'runId': 'run-2p', 'docId': 'docB'},
+        )
+        assert denied['statusCode'] == 403
+
+    def test_restricted_member_denied_for_row_without_program(
+        self, mock_dynamodb, sample_org_config, member_event,
+        seed_user_perms, seed_org_programs,
+    ):
+        # Rows missing a program label should be hidden from restricted
+        # members — we can't classify them, so we don't leak them.
+        from api.admin_api import get_validation_result
+        table = mock_dynamodb.Table('penguin-health-validation-results')
+        table.put_item(Item={
+            'pk': 'DOC#docX', 'sk': 'VALIDATION#2024-01-15T10:00:00',
+            'gsi1pk': 'ORG#test-org', 'gsi1sk': 'DOC#docX',
+            'gsi2pk': 'RUN#run-x', 'gsi2sk': 'DOC#docX',
+            'document_id': 'docX',
+            'validation_run_id': 'run-x',
+            'organization_id': 'test-org',
+            'rules': [{'rule_id': 'rule-001', 'category': 'Compliance Audit',
+                       'status': 'FAIL', 'message': 'nope'}],
+            'field_values': {},  # no program key
+        })
+        seed_org_programs('test-org', ['Program A'])
+        seed_user_perms(
+            'member@example.com', 'test-org',
+            report_permissions={'Compliance Audit': ['view']},
+            program_permissions=['Program A'],
+        )
+
+        resp = get_validation_result(
+            event=member_event,
+            path_params={'orgId': 'test-org', 'runId': 'run-x', 'docId': 'docX'},
+        )
+        assert resp['statusCode'] == 403
+
+
 class TestConfirmFindingPerCategoryGuard:
     def test_member_without_view_blocked_from_confirm(
         self, mock_dynamodb, sample_org_config, sample_validation_result,
