@@ -142,7 +142,9 @@ export function ValidationRunDetailPage() {
   const [resolvingRuleId, setResolvingRuleId] = useState(null)
   const [markingIncorrectRuleId, setMarkingIncorrectRuleId] = useState(null)
   const [incorrectFeedbackText, setIncorrectFeedbackText] = useState('')
+  const [incorrectOutcome, setIncorrectOutcome] = useState('PASS')
   const [submittingIncorrect, setSubmittingIncorrect] = useState(false)
+  const [confirmingDocument, setConfirmingDocument] = useState(false)
   const [categoryFilter, setCategoryFilter] = useState('all')
   // Multi-select filters for specific field_values fields. Each entry is a Set
   // of allowed values (OR semantics); an empty set means "no filter". Hydrated
@@ -266,12 +268,15 @@ export function ValidationRunDetailPage() {
     return failedRules.every(r => r.fixed)
   }
 
-  // Compute summary stats
+  // Compute summary stats. "Passed" and "Confirmed" are both no-FAIL states;
+  // Confirmed is Passed + an explicit reviewer sign-off via `document_confirmed`.
+  // See docs/validation-workflow-states.md for the full state machine.
   const stats = useMemo(() => {
-    if (!data?.documents) return { needsAction: 0, awaitingStaff: 0, confirmed: 0, revenueAtRisk: 0 }
+    if (!data?.documents) return { needsAction: 0, awaitingStaff: 0, passed: 0, confirmed: 0, revenueAtRisk: 0 }
 
     let needsAction = 0
     let awaitingStaff = 0
+    let passed = 0
     let confirmed = 0
     let revenueAtRisk = 0
 
@@ -294,25 +299,24 @@ export function ValidationRunDetailPage() {
       const failedRules = doc.rules?.filter(r => r.status === 'FAIL') || []
       if (failedRules.length > 0) {
         if (allFailedRulesFixed(doc)) {
-          // All failed rules fixed - confirmed/resolved
-          confirmed++
+          // All failed rules fixed — passed (reviewer may still doc-confirm).
+          if (doc.document_confirmed) confirmed++
+          else passed++
         } else if (allFailedRulesConfirmed(doc)) {
-          // All failed rules confirmed but not all fixed - awaiting staff action
           awaitingStaff++
         } else {
-          // Has failures, not all confirmed yet
           needsAction++
-          // Only count revenue at risk for documents still needing action
           const rate = parseFloat(doc.field_values?.rate) || 0
           revenueAtRisk += rate
         }
-      } else {
-        // No failures — confirmed. Skips are acceptable and still count here.
+      } else if (doc.document_confirmed) {
         confirmed++
+      } else {
+        passed++
       }
     })
 
-    return { needsAction, awaitingStaff, confirmed, revenueAtRisk }
+    return { needsAction, awaitingStaff, passed, confirmed, revenueAtRisk }
   }, [data])
 
   // Get unique categories and rules for filters
@@ -489,36 +493,39 @@ export function ValidationRunDetailPage() {
         if (!matchesId && !matchesEmployee && !matchesProgram) return false
       }
 
-      // Status filter (from the Needs Action / Awaiting Staff / Confirmed summary cards at top)
+      // Status filter (from the Needs Action / Awaiting Staff / Passed / Confirmed
+      // summary cards at top). Passed and Confirmed are both no-FAIL states;
+      // Confirmed = Passed + explicit reviewer sign-off.
       const failedRules = doc.rules?.filter(r => r.status === 'FAIL') || []
       const hasFailures = failedRules.length > 0
+      const noOpenFailures = !hasFailures || allFailedRulesFixed(doc)
       if (statusFilter === 'needs_action') {
-        // Needs action: has failures AND not all confirmed/fixed yet
         if (!(hasFailures && !allFailedRulesConfirmed(doc) && !allFailedRulesFixed(doc))) return false
       }
       if (statusFilter === 'awaiting_staff') {
-        // Awaiting staff: has failures AND all confirmed but not all fixed
         if (!(hasFailures && allFailedRulesConfirmed(doc) && !allFailedRulesFixed(doc))) return false
       }
+      if (statusFilter === 'passed') {
+        if (!(noOpenFailures && !doc.document_confirmed)) return false
+      }
       if (statusFilter === 'confirmed') {
-        // Confirmed: no failures OR all failures have been fixed
-        if (!(doc.summary?.failed === 0 || allFailedRulesFixed(doc))) return false
+        if (!(noOpenFailures && doc.document_confirmed)) return false
       }
 
       // Rule filter: the rule result we look for on each doc depends on the
       // active status filter:
-      //   Needs Action → rule must have FAILED
-      //   Confirmed    → rule must NOT have FAILED (PASS or SKIP both count,
-      //                  matching the Confirmed definition of "no fail").
-      //                  This way every rule in the dropdown is reachable:
-      //                  rules that never pass but only skip still surface
-      //                  their docs here.
-      //   All statuses → rule just has to exist on the doc (any status)
+      //   Needs Action        → rule must have FAILED
+      //   Passed / Confirmed  → rule must NOT have FAILED (PASS or SKIP both
+      //                         count, matching the no-open-FAIL bucket
+      //                         definition). This way every rule in the
+      //                         dropdown is reachable — rules that never pass
+      //                         but only skip still surface their docs here.
+      //   All statuses        → rule just has to exist on the doc (any status)
       if (ruleFilter !== 'all') {
         const hasMatchingRule = doc.rules?.some(r => {
           if ((r.rule_name || r.rule_id) !== ruleFilter) return false
           if (statusFilter === 'needs_action') return r.status === 'FAIL'
-          if (statusFilter === 'confirmed') return r.status !== 'FAIL'
+          if (statusFilter === 'passed' || statusFilter === 'confirmed') return r.status !== 'FAIL'
           return true
         })
         if (!hasMatchingRule) return false
@@ -583,7 +590,7 @@ export function ValidationRunDetailPage() {
     <OrgWorkspaceLayout>
     <div className="h-full flex flex-col">
       {/* Summary Cards */}
-      <div className={`grid ${canViewRevenue ? 'grid-cols-4' : 'grid-cols-3'} gap-4 mb-6`}>
+      <div className={`grid ${canViewRevenue ? 'grid-cols-5' : 'grid-cols-4'} gap-4 mb-6`}>
         <SummaryCard
           label="NEEDS ACTION"
           value={stats.needsAction}
@@ -597,6 +604,13 @@ export function ValidationRunDetailPage() {
           color="yellow"
           active={statusFilter === 'awaiting_staff'}
           onClick={() => setStatusFilter(statusFilter === 'awaiting_staff' ? 'all' : 'awaiting_staff')}
+        />
+        <SummaryCard
+          label="PASSED"
+          value={stats.passed}
+          color="green"
+          active={statusFilter === 'passed'}
+          onClick={() => setStatusFilter(statusFilter === 'passed' ? 'all' : 'passed')}
         />
         <SummaryCard
           label="CONFIRMED"
@@ -778,7 +792,7 @@ export function ValidationRunDetailPage() {
                     ? doc.rules?.find(r => {
                         if ((r.rule_name || r.rule_id) !== ruleFilter) return false
                         if (statusFilter === 'needs_action') return r.status === 'FAIL'
-                        if (statusFilter === 'confirmed') return r.status !== 'FAIL'
+                        if (statusFilter === 'passed' || statusFilter === 'confirmed') return r.status !== 'FAIL'
                         return true
                       })
                     : null
@@ -888,13 +902,12 @@ export function ValidationRunDetailPage() {
               incorrectFeedbackText={incorrectFeedbackText}
               setIncorrectFeedbackText={setIncorrectFeedbackText}
               submittingIncorrect={submittingIncorrect}
-              onMarkIncorrect={async (ruleId, feedbackText) => {
+              incorrectOutcome={incorrectOutcome}
+              setIncorrectOutcome={setIncorrectOutcome}
+              onMarkIncorrect={async (ruleId, feedbackText, outcome) => {
                 setSubmittingIncorrect(true)
                 try {
-                  // Get the rule to pass rule_text for enhance-note
                   const rule = selectedDoc.rules.find(r => r.rule_id === ruleId)
-
-                  // 1. Submit feedback via enhance-note
                   await api.enhanceNote(
                     orgId,
                     feedbackText,
@@ -904,46 +917,56 @@ export function ValidationRunDetailPage() {
                     ruleId,
                     rule?.notes || []
                   )
+                  await api.markIncorrect(orgId, runId, selectedDoc.document_id, ruleId, outcome)
 
-                  // 2. Mark as incorrect (sets feedback_given=true, status=PASS)
-                  await api.markIncorrect(orgId, runId, selectedDoc.document_id, ruleId)
-
-                  // 3. Update local state to reflect the change
                   const timestamp = new Date().toISOString()
+                  const patch = { status: outcome, feedback_given: true, feedback_given_at: timestamp }
                   setData(prev => ({
                     ...prev,
                     documents: prev.documents.map(d =>
                       d.document_id === selectedDoc.document_id
-                        ? {
-                            ...d,
-                            rules: d.rules.map(r =>
-                              r.rule_id === ruleId
-                                ? { ...r, status: 'PASS', feedback_given: true, feedback_given_at: timestamp }
-                                : r
-                            )
-                          }
+                        ? { ...d, rules: d.rules.map(r => r.rule_id === ruleId ? { ...r, ...patch } : r) }
                         : d
                     )
                   }))
                   setSelectedDoc(prev => ({
                     ...prev,
-                    rules: prev.rules.map(r =>
-                      r.rule_id === ruleId
-                        ? { ...r, status: 'PASS', feedback_given: true, feedback_given_at: timestamp }
-                        : r
-                    )
+                    rules: prev.rules.map(r => r.rule_id === ruleId ? { ...r, ...patch } : r)
                   }))
                   if (selectedRule?.rule_id === ruleId) {
-                    setSelectedRule(prev => ({ ...prev, status: 'PASS', feedback_given: true, feedback_given_at: timestamp }))
+                    setSelectedRule(prev => ({ ...prev, ...patch }))
                   }
 
-                  // Reset UI state
                   setMarkingIncorrectRuleId(null)
                   setIncorrectFeedbackText('')
+                  setIncorrectOutcome('PASS')
                 } catch (err) {
                   setError(`Failed to submit feedback: ${err.message}`)
                 } finally {
                   setSubmittingIncorrect(false)
+                }
+              }}
+              confirmingDocument={confirmingDocument}
+              onConfirmDocument={async () => {
+                setConfirmingDocument(true)
+                try {
+                  const resp = await api.confirmDocument(orgId, runId, selectedDoc.document_id)
+                  const patch = {
+                    document_confirmed: true,
+                    document_confirmed_at: resp.document_confirmed_at,
+                    document_confirmed_by: resp.document_confirmed_by,
+                  }
+                  setData(prev => ({
+                    ...prev,
+                    documents: prev.documents.map(d =>
+                      d.document_id === selectedDoc.document_id ? { ...d, ...patch } : d
+                    )
+                  }))
+                  setSelectedDoc(prev => ({ ...prev, ...patch }))
+                } catch (err) {
+                  setError(`Failed to confirm document: ${err.message}`)
+                } finally {
+                  setConfirmingDocument(false)
                 }
               }}
             />
@@ -1289,7 +1312,7 @@ function DocumentListItem({ doc, orgId, selected, onClick }) {
 }
 
 
-function DocumentDetailPanel({ doc, orgId, selectedRule, onSelectRule, confirmingRuleId, onConfirmFinding, resolvingRuleId, onMarkResolved, markingIncorrectRuleId, setMarkingIncorrectRuleId, incorrectFeedbackText, setIncorrectFeedbackText, submittingIncorrect, onMarkIncorrect }) {
+function DocumentDetailPanel({ doc, orgId, selectedRule, onSelectRule, confirmingRuleId, onConfirmFinding, resolvingRuleId, onMarkResolved, markingIncorrectRuleId, setMarkingIncorrectRuleId, incorrectFeedbackText, setIncorrectFeedbackText, incorrectOutcome, setIncorrectOutcome, submittingIncorrect, onMarkIncorrect, confirmingDocument, onConfirmDocument }) {
   const failedRules = doc.rules?.filter(r => r.status === 'FAIL') || []
   const passedRules = doc.rules?.filter(r => r.status === 'PASS') || []
   const skippedRules = doc.rules?.filter(r => r.status === 'SKIP') || []
@@ -1297,6 +1320,8 @@ function DocumentDetailPanel({ doc, orgId, selectedRule, onSelectRule, confirmin
   const confirmedOrFixedCount = failedRules.filter(r => r.finding_confirmed || r.fixed).length
   const allFixed = failedRules.length > 0 && fixedCount === failedRules.length
   const allConfirmedOrFixed = failedRules.length > 0 && confirmedOrFixedCount === failedRules.length
+  const isDocConfirmed = !!doc.document_confirmed
+  const canConfirmDoc = !isDocConfirmed && (doc.rules || []).every(r => r.status === 'PASS' || r.status === 'SKIP')
 
   return (
     <div className="flex flex-col h-full">
@@ -1325,21 +1350,44 @@ function DocumentDetailPanel({ doc, orgId, selectedRule, onSelectRule, confirmin
           </div>
         </div>
         {/* Show confirmation/resolution progress or completed status */}
-        {failedRules.length > 0 && (
-          <div className="mt-3 flex items-center gap-2">
-            {allFixed ? (
-              <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800">
-                All Findings Resolved
-              </span>
-            ) : allConfirmedOrFixed ? (
-              <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-yellow-100 text-yellow-800">
-                {fixedCount > 0 ? `${fixedCount}/${failedRules.length} Resolved - ` : ''}Awaiting Staff Action
-              </span>
-            ) : confirmedOrFixedCount > 0 ? (
-              <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-orange-100 text-orange-800">
-                {confirmedOrFixedCount}/{failedRules.length} Confirmed/Resolved
-              </span>
-            ) : null}
+        {(failedRules.length > 0 || isDocConfirmed || canConfirmDoc) && (
+          <div className="mt-3 flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              {isDocConfirmed && (
+                <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800">
+                  DOCUMENT CONFIRMED
+                  {doc.document_confirmed_by && (
+                    <span className="ml-1 font-normal text-green-700">
+                      by {doc.document_confirmed_by}
+                    </span>
+                  )}
+                </span>
+              )}
+              {!isDocConfirmed && allFixed && (
+                <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800">
+                  All Findings Resolved
+                </span>
+              )}
+              {!isDocConfirmed && !allFixed && allConfirmedOrFixed && (
+                <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-yellow-100 text-yellow-800">
+                  {fixedCount > 0 ? `${fixedCount}/${failedRules.length} Resolved - ` : ''}Awaiting Staff Action
+                </span>
+              )}
+              {!isDocConfirmed && !allFixed && !allConfirmedOrFixed && confirmedOrFixedCount > 0 && (
+                <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-orange-100 text-orange-800">
+                  {confirmedOrFixedCount}/{failedRules.length} Confirmed/Resolved
+                </span>
+              )}
+            </div>
+            {canConfirmDoc && (
+              <button
+                onClick={onConfirmDocument}
+                disabled={confirmingDocument}
+                className="px-3 py-1.5 bg-green-600 text-white text-xs font-medium rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {confirmingDocument ? 'Confirming…' : 'Confirm Document'}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -1409,8 +1457,11 @@ function DocumentDetailPanel({ doc, orgId, selectedRule, onSelectRule, confirmin
             setMarkingIncorrectRuleId={setMarkingIncorrectRuleId}
             incorrectFeedbackText={incorrectFeedbackText}
             setIncorrectFeedbackText={setIncorrectFeedbackText}
+            incorrectOutcome={incorrectOutcome}
+            setIncorrectOutcome={setIncorrectOutcome}
             submittingIncorrect={submittingIncorrect}
             onMarkIncorrect={onMarkIncorrect}
+            isDocConfirmed={isDocConfirmed}
           />
         ) : (
           <p className="text-gray-500">Select a rule to view details</p>
@@ -1437,7 +1488,7 @@ function RuleTab({ label, count, color }) {
 }
 
 
-function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding, resolvingRuleId, onMarkResolved, markingIncorrectRuleId, setMarkingIncorrectRuleId, incorrectFeedbackText, setIncorrectFeedbackText, submittingIncorrect, onMarkIncorrect }) {
+function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding, resolvingRuleId, onMarkResolved, markingIncorrectRuleId, setMarkingIncorrectRuleId, incorrectFeedbackText, setIncorrectFeedbackText, incorrectOutcome, setIncorrectOutcome, submittingIncorrect, onMarkIncorrect, isDocConfirmed }) {
   // Extract reasoning from message (format: "STATUS - reasoning")
   const extractReasoning = () => {
     const message = rule.message || ''
@@ -1463,10 +1514,13 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
   const isResolving = resolvingRuleId === rule.rule_id
   const isMarkingIncorrect = markingIncorrectRuleId === rule.rule_id
   const isFailed = rule.status === 'FAIL'
+  const isSkipped = rule.status === 'SKIP'
   const isConfirmed = rule.finding_confirmed
   const isFixed = rule.fixed
   const hasFeedbackGiven = rule.feedback_given
   const isLlmRule = rule.rule_type !== 'deterministic'  // Default is 'llm' when not set
+  // Doc-confirmed locks all rule mutations. See docs/validation-workflow-states.md.
+  const canMutate = !isDocConfirmed
 
   return (
     <div className="space-y-4">
@@ -1528,7 +1582,7 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
       )}
 
       {/* Confirm Finding and Mark Incorrect Buttons - only for failed rules that haven't been confirmed or fixed */}
-      {isFailed && !isConfirmed && !isFixed && !isMarkingIncorrect && (
+      {canMutate && isFailed && !isConfirmed && !isFixed && !isMarkingIncorrect && (
         <div className="pt-2">
           <div className="flex gap-2">
             <button
@@ -1540,7 +1594,7 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
             </button>
             {isLlmRule && (
               <button
-                onClick={() => setMarkingIncorrectRuleId(rule.rule_id)}
+                onClick={() => { setIncorrectOutcome('PASS'); setMarkingIncorrectRuleId(rule.rule_id); }}
                 className="px-4 py-2 bg-gray-500 text-white text-sm font-medium rounded-md hover:bg-gray-600"
               >
                 Mark Incorrect
@@ -1555,29 +1609,77 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
         </div>
       )}
 
-      {/* Mark Incorrect Feedback Form */}
+      {/* Mark Incorrect entry for SKIPPED rules — reviewer picks the true outcome */}
+      {canMutate && isSkipped && !hasFeedbackGiven && !isMarkingIncorrect && isLlmRule && (
+        <div className="pt-2">
+          <button
+            onClick={() => { setIncorrectOutcome('PASS'); setMarkingIncorrectRuleId(rule.rule_id); }}
+            className="px-4 py-2 bg-gray-500 text-white text-sm font-medium rounded-md hover:bg-gray-600"
+          >
+            Mark Incorrect
+          </button>
+          <p className="text-xs text-gray-500 mt-2">
+            This rule was skipped. If it should have evaluated, mark it incorrect and choose whether it should have passed or failed.
+          </p>
+        </div>
+      )}
+
+      {/* Mark Incorrect Feedback Form (used for both FAIL false-positive and SKIP recategorization) */}
       {isMarkingIncorrect && (
         <div className="p-4 rounded-lg border border-gray-300 bg-gray-50">
+          {isSkipped && (
+            <div className="mb-3">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                What should the true outcome have been?
+              </label>
+              <div className="flex gap-2">
+                <label className="inline-flex items-center gap-1.5 text-sm text-gray-700">
+                  <input
+                    type="radio"
+                    name="incorrect-outcome"
+                    value="PASS"
+                    checked={incorrectOutcome === 'PASS'}
+                    onChange={() => setIncorrectOutcome('PASS')}
+                    disabled={submittingIncorrect}
+                  />
+                  Passed
+                </label>
+                <label className="inline-flex items-center gap-1.5 text-sm text-gray-700 ml-4">
+                  <input
+                    type="radio"
+                    name="incorrect-outcome"
+                    value="FAIL"
+                    checked={incorrectOutcome === 'FAIL'}
+                    onChange={() => setIncorrectOutcome('FAIL')}
+                    disabled={submittingIncorrect}
+                  />
+                  Failed
+                </label>
+              </div>
+            </div>
+          )}
           <label className="block text-sm font-medium text-gray-700 mb-2">
-            Why is this finding incorrect?
+            {isSkipped ? 'Why should this rule not have been skipped?' : 'Why is this finding incorrect?'}
           </label>
           <textarea
             value={incorrectFeedbackText}
             onChange={(e) => setIncorrectFeedbackText(e.target.value)}
-            placeholder="Explain why this rule validation is incorrect..."
+            placeholder={isSkipped
+              ? 'Explain why this rule should have evaluated for this document...'
+              : 'Explain why this rule validation is incorrect...'}
             className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             rows={3}
           />
           <div className="mt-3 flex gap-2">
             <button
-              onClick={() => onMarkIncorrect(rule.rule_id, incorrectFeedbackText)}
+              onClick={() => onMarkIncorrect(rule.rule_id, incorrectFeedbackText, isSkipped ? incorrectOutcome : 'PASS')}
               disabled={submittingIncorrect || !incorrectFeedbackText.trim()}
               className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {submittingIncorrect ? 'Submitting...' : 'Submit Feedback'}
             </button>
             <button
-              onClick={() => { setMarkingIncorrectRuleId(null); setIncorrectFeedbackText(''); }}
+              onClick={() => { setMarkingIncorrectRuleId(null); setIncorrectFeedbackText(''); setIncorrectOutcome('PASS'); }}
               disabled={submittingIncorrect}
               className="px-4 py-2 bg-gray-200 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-300 disabled:opacity-50"
             >
@@ -1585,7 +1687,9 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
             </button>
           </div>
           <p className="text-xs text-gray-500 mt-2">
-            Your feedback will be used to improve rule accuracy. The finding will be marked as passed.
+            {isSkipped
+              ? `Your feedback will be used to improve rule accuracy. The rule will be recorded as ${isSkipped ? (incorrectOutcome === 'FAIL' ? 'FAILED' : 'PASSED') : 'passed'}.`
+              : 'Your feedback will be used to improve rule accuracy. The finding will be marked as passed.'}
           </p>
         </div>
       )}
@@ -1602,18 +1706,20 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
               </span>
             )}
           </p>
-          <div className="mt-3">
-            <button
-              onClick={() => onMarkResolved(rule.rule_id)}
-              disabled={isResolving}
-              className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isResolving ? 'Marking Resolved...' : 'Mark Resolved'}
-            </button>
-            <p className="text-xs text-yellow-600 mt-2">
-              Mark this finding as resolved after staff has addressed it in the source system.
-            </p>
-          </div>
+          {canMutate && (
+            <div className="mt-3">
+              <button
+                onClick={() => onMarkResolved(rule.rule_id)}
+                disabled={isResolving}
+                className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isResolving ? 'Marking Resolved...' : 'Mark Resolved'}
+              </button>
+              <p className="text-xs text-yellow-600 mt-2">
+                Mark this finding as resolved after staff has addressed it in the source system.
+              </p>
+            </div>
+          )}
         </div>
       )}
 

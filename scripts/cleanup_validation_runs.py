@@ -15,12 +15,12 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 # Configuration
-ORG_ID = "circles-of-care"
+ORG_ID = "supportive-care"
 # Delete all runs on or before this date (inclusive). Run IDs are
 # formatted as YYYYMMDD-HHMMSS, so the date prefix is the first 8 chars.
-CUTOFF_DATE = "20260422"
+CUTOFF_DATE = "20260707"
 EXTRA_RUN_IDS = {
-    "20260514-205110"
+    "20260708-012927"
 }
 TABLE_NAME = "penguin-health-validation-results"
 DRY_RUN = False  # Set to False to actually delete

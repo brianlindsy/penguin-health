@@ -322,6 +322,15 @@ def parse_date(value):
         except ValueError:
             continue
 
+    # Fall back to datetime formats — some source fields carry a time
+    # component (e.g. "10/08/2026 12:00 AM"); date operators compare
+    # .date() downstream, so the time is harmless.
+    for fmt in DATETIME_FORMATS:
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+
     return None
 
 

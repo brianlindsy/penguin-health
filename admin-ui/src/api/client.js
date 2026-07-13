@@ -204,10 +204,16 @@ export const api = {
       body: JSON.stringify({ rule_id: ruleId }),
     }),
 
-  markIncorrect: (orgId, runId, docId, ruleId) =>
+  markIncorrect: (orgId, runId, docId, ruleId, outcome = 'PASS') =>
     request(`/api/organizations/${orgId}/validation-runs/${runId}/documents/${docId}/mark-incorrect`, {
       method: 'PUT',
-      body: JSON.stringify({ rule_id: ruleId }),
+      body: JSON.stringify({ rule_id: ruleId, outcome }),
+    }),
+
+  confirmDocument: (orgId, runId, docId) =>
+    request(`/api/organizations/${orgId}/validation-runs/${runId}/documents/${docId}/confirm-document`, {
+      method: 'PUT',
+      body: JSON.stringify({}),
     }),
 
   // Analytics: NL query

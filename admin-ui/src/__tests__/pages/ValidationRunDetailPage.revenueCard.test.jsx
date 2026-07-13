@@ -81,6 +81,7 @@ describe('ValidationRunDetailPage revenue-at-risk card gating', () => {
     expect(screen.queryByText('REVENUE AT RISK')).not.toBeInTheDocument()
     // Other summary cards remain visible.
     expect(screen.getByText('AWAITING STAFF')).toBeInTheDocument()
+    expect(screen.getByText('PASSED')).toBeInTheDocument()
     expect(screen.getByText('CONFIRMED')).toBeInTheDocument()
   })
 })

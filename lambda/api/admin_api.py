@@ -177,6 +177,7 @@ def lambda_handler(event, context):
         'PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/confirm-finding': confirm_finding,
         'PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-resolved': mark_resolved,
         'PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-incorrect': mark_incorrect,
+        'PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/confirm-document': confirm_document,
         'GET /api/me/permissions': get_my_permissions,
         'GET /api/organizations/{orgId}/subscriptions': list_org_subscriptions,
         'PUT /api/organizations/{orgId}/subscriptions/{email}': upsert_org_user_subscription,
@@ -1121,6 +1122,9 @@ def confirm_finding(event, path_params, body, **kwargs):
     if not perms_module.can_view_category(claims, org_id, rule_category):
         return response(403, {'error': 'Access denied to this rule category'})
 
+    if item.get('document_confirmed'):
+        return response(409, {'error': 'Document is confirmed; rule findings are locked'})
+
     # Update the specific rule in the rules array to set finding_confirmed=true
     try:
         timestamp = datetime.utcnow().isoformat() + 'Z'
@@ -1227,6 +1231,9 @@ def mark_resolved(event, path_params, body, **kwargs):
     if not perms_module.can_view_category(claims, org_id, rule_category):
         return response(403, {'error': 'Access denied to this rule category'})
 
+    if item.get('document_confirmed'):
+        return response(409, {'error': 'Document is confirmed; rule findings are locked'})
+
     # Update the specific rule: set fixed=true and remove finding_confirmed
     try:
         timestamp = datetime.utcnow().isoformat() + 'Z'
@@ -1267,10 +1274,12 @@ def mark_resolved(event, path_params, body, **kwargs):
          call_type='ddb_write')
 def mark_incorrect(event, path_params, body, **kwargs):
     """
-    Mark a rule finding as incorrect (false positive).
+    Mark a rule finding as incorrect and set the reviewer's chosen outcome.
 
-    Sets feedback_given=true and changes status to PASS.
-    Expects body with rule_id.
+    Sets feedback_given=true. `outcome` in the body picks the corrected
+    status ('PASS' or 'FAIL'); defaults to 'PASS' for the FAIL→false-positive
+    flow. Choosing 'FAIL' re-injects the rule into the normal FAIL workflow
+    (needs confirm/resolve), used when a SKIP should have flagged an issue.
     """
     org_id = path_params.get('orgId')
     run_id = path_params.get('runId')
@@ -1280,6 +1289,9 @@ def mark_incorrect(event, path_params, body, **kwargs):
         return response(400, {'error': 'Request body must include rule_id'})
 
     rule_id = body['rule_id']
+    outcome = body.get('outcome', 'PASS')
+    if outcome not in ('PASS', 'FAIL'):
+        return response(400, {'error': "outcome must be 'PASS' or 'FAIL'"})
 
     claims, error = authorize_request(event, org_id=org_id)
     if error:
@@ -1325,14 +1337,16 @@ def mark_incorrect(event, path_params, body, **kwargs):
     if not perms_module.can_view_category(claims, org_id, rule_category):
         return response(403, {'error': 'Access denied to this rule category'})
 
-    # Update: set feedback_given=true, status=PASS
+    if item.get('document_confirmed'):
+        return response(409, {'error': 'Document is confirmed; rule findings are locked'})
+
     try:
         timestamp = datetime.utcnow().isoformat() + 'Z'
         user = claims.get('email') or 'unknown'
 
         validation_results_table.update_item(
             Key={'pk': pk, 'sk': sk},
-            UpdateExpression=f'SET #rules[{rule_index}].feedback_given = :fg, #rules[{rule_index}].feedback_given_at = :ts, #rules[{rule_index}].feedback_given_by = :user, #rules[{rule_index}].#status = :pass',
+            UpdateExpression=f'SET #rules[{rule_index}].feedback_given = :fg, #rules[{rule_index}].feedback_given_at = :ts, #rules[{rule_index}].feedback_given_by = :user, #rules[{rule_index}].#status = :outcome',
             ExpressionAttributeNames={
                 '#rules': 'rules',
                 '#status': 'status',
@@ -1341,10 +1355,10 @@ def mark_incorrect(event, path_params, body, **kwargs):
                 ':fg': True,
                 ':ts': timestamp,
                 ':user': user,
-                ':pass': 'PASS',
+                ':outcome': outcome,
             },
         )
-        print(f"Marked rule {rule_id} as incorrect on document {doc_id} in run {run_id}")
+        print(f"Marked rule {rule_id} as incorrect (outcome={outcome}) on document {doc_id} in run {run_id}")
 
         return response(200, {
             'message': 'Rule marked as incorrect successfully',
@@ -1353,11 +1367,100 @@ def mark_incorrect(event, path_params, body, **kwargs):
             'rule_id': rule_id,
             'feedback_given': True,
             'feedback_given_at': timestamp,
-            'status': 'PASS',
+            'status': outcome,
         })
 
     except Exception as e:
         print(f"Error marking rule as incorrect: {e}")
+        return response(500, {'error': str(e)})
+
+
+@audited(action='write', resource_type='ValidationDocument',
+         resource_from_path='docId', purpose_of_use='OPERATIONS',
+         call_type='ddb_write')
+def confirm_document(event, path_params, body, **kwargs):
+    """
+    Confirm a document-level sign-off from a reviewer.
+
+    Only allowed when every rule on the document has status PASS or SKIP —
+    a doc with any FAIL or ERROR rule cannot be doc-confirmed. Setting this
+    flag locks the document: rule-level confirm/resolve/mark-incorrect
+    endpoints will reject further mutations until the flag is cleared
+    (which today has no endpoint — confirmation is intentionally terminal).
+    """
+    org_id = path_params.get('orgId')
+    run_id = path_params.get('runId')
+    doc_id = path_params.get('docId')
+
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return error
+
+    result = validation_results_table.query(
+        IndexName='gsi2',
+        KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}') & Key('gsi2sk').eq(f'DOC#{doc_id}'),
+    )
+
+    if not result.get('Items'):
+        return response(404, {'error': f'Validation result not found for document {doc_id} in run {run_id}'})
+
+    item = result['Items'][0]
+
+    if item.get('organization_id') != org_id and not is_super_admin(claims):
+        return response(403, {'error': 'Access denied to this validation result'})
+
+    if not _program_allowed(item, perms_module.viewable_programs(claims, org_id)):
+        return response(403, {'error': 'Access denied to this validation result'})
+
+    pk = item.get('pk')
+    sk = item.get('sk')
+
+    if not pk or not sk:
+        return response(500, {'error': 'Item missing primary key attributes'})
+
+    rules = item.get('rules', [])
+    if not is_super_admin(claims):
+        for rule in rules:
+            cat = rule.get('category')
+            if cat and not perms_module.can_view_category(claims, org_id, cat):
+                return response(403, {'error': 'Access denied to a rule category on this document'})
+
+    ineligible = [r.get('rule_id') for r in rules if r.get('status') not in ('PASS', 'SKIP')]
+    if ineligible:
+        return response(409, {
+            'error': 'Document has rules that are not PASS or SKIP; cannot confirm',
+            'rule_ids': ineligible,
+        })
+
+    if item.get('document_confirmed'):
+        return response(409, {'error': 'Document already confirmed'})
+
+    try:
+        timestamp = datetime.utcnow().isoformat() + 'Z'
+        user = claims.get('email') or 'unknown'
+
+        validation_results_table.update_item(
+            Key={'pk': pk, 'sk': sk},
+            UpdateExpression='SET document_confirmed = :val, document_confirmed_at = :ts, document_confirmed_by = :user',
+            ExpressionAttributeValues={
+                ':val': True,
+                ':ts': timestamp,
+                ':user': user,
+            },
+        )
+        print(f"Confirmed document {doc_id} in run {run_id}")
+
+        return response(200, {
+            'message': 'Document confirmed successfully',
+            'document_id': doc_id,
+            'validation_run_id': run_id,
+            'document_confirmed': True,
+            'document_confirmed_at': timestamp,
+            'document_confirmed_by': user,
+        })
+
+    except Exception as e:
+        print(f"Error confirming document: {e}")
         return response(500, {'error': str(e)})
 
 

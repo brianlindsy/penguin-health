@@ -128,6 +128,22 @@ class TestDateParsing:
         assert result.month == 7
         assert result.day == 1
 
+    def test_parse_date_accepts_us_datetime_with_am_pm(self):
+        """Regression: Catholic Charities plan-date fields
+        (e.g. '39_Plan_End_Date', '49h_Plan_Signed_Date_QP') arrive as
+        'MM/DD/YYYY H:MM AM/PM' strings. `parse_date` must accept the
+        datetime shape — otherwise date operators SKIP with
+        'Could not parse date'."""
+        from deterministic_evaluator import parse_date
+
+        result = parse_date('10/08/2026 12:00 AM')
+        assert result is not None
+        assert (result.year, result.month, result.day) == (2026, 10, 8)
+
+        result = parse_date('04/10/2026 7:02 PM')
+        assert result is not None
+        assert (result.year, result.month, result.day) == (2026, 4, 10)
+
 
 class TestDatetimeParsing:
     """Test datetime parsing utilities."""
