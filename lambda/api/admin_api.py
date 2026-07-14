@@ -1509,6 +1509,8 @@ def _validate_dates(requested):
     return list(dict.fromkeys(parsed)), None
 
 
+@audited(action='execute', resource_type='ValidationRun',
+         purpose_of_use='OPERATIONS')
 def trigger_validation_run(event, path_params, body, **kwargs):
     """
     Trigger a validation run for an organization.

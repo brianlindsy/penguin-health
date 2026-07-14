@@ -143,3 +143,67 @@ class TestTriggerValidationRunDates:
         payload = json.loads(invoke_kwargs['Payload'])
         assert payload['categories'] == ['Billing']
         assert payload['dates'] == ['2026-05-12']
+
+
+@freeze_time("2026-05-15")
+class TestTriggerValidationRunAudit:
+    """The trigger endpoint touches PHI-bearing pipelines, so every
+    click on "Start validation run" must land in the audit trail with
+    the caller's identity."""
+
+    def test_success_emits_execute_event(
+        self, mock_dynamodb, sample_org_config, super_admin_event, mocker,
+    ):
+        from api.admin_api import trigger_validation_run
+        from boto3.dynamodb.conditions import Key
+        fake = mocker.patch('api.admin_api.lambda_client')
+        fake.invoke.return_value = {'StatusCode': 202}
+
+        resp = trigger_validation_run(
+            event=super_admin_event,
+            path_params={'orgId': 'test-org'},
+            body=None,
+        )
+        assert resp['statusCode'] == 202
+
+        rows = mock_dynamodb.Table('penguin-health-audit').query(
+            KeyConditionExpression=Key('pk').eq('ORG#test-org')
+                                   & Key('sk').begins_with('AUDIT#'),
+        )['Items']
+        assert len(rows) == 1
+        row = rows[0]
+        assert row['action'] == 'execute'
+        assert row['resource_type'] == 'ValidationRun'
+        assert row['outcome'] == 'success'
+        assert row['agent_email'] == 'admin@example.com'
+        assert row['event']['purpose_of_use'] == 'OPERATIONS'
+        assert row['event']['http_status'] == 202
+
+    def test_permission_denied_still_audits(
+        self, mock_dynamodb, sample_org_config, org_user_event, mocker,
+    ):
+        """A 403 response is exactly the case we want audited — someone
+        without run permission clicked the button. The audit row records
+        the attempt with a failure outcome."""
+        from api.admin_api import trigger_validation_run
+        from boto3.dynamodb.conditions import Key
+        mocker.patch('api.admin_api.lambda_client')
+
+        resp = trigger_validation_run(
+            event=org_user_event,
+            path_params={'orgId': 'test-org'},
+            body=None,
+        )
+        assert resp['statusCode'] == 403
+
+        rows = mock_dynamodb.Table('penguin-health-audit').query(
+            KeyConditionExpression=Key('pk').eq('ORG#test-org')
+                                   & Key('sk').begins_with('AUDIT#'),
+        )['Items']
+        assert len(rows) == 1
+        row = rows[0]
+        assert row['action'] == 'execute'
+        assert row['resource_type'] == 'ValidationRun'
+        assert row['agent_email'] == 'user@example.com'
+        assert row['outcome'] != 'success'
+        assert row['event']['http_status'] == 403
