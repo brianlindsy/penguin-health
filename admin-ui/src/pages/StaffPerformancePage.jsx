@@ -37,6 +37,7 @@ export function StaffPerformancePage() {
   const [data, setData] = useState(null)
   const [ruleDefinitions, setRuleDefinitions] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadElapsedSec, setLoadElapsedSec] = useState(0)
   const [error, setError] = useState('')
   // Store only the staff name so re-derivations across filtered lists stay
   // automatic and we don't need a sync effect; the selected staff object
@@ -58,11 +59,11 @@ export function StaffPerformancePage() {
   useEffect(() => {
     // Load rule definitions + validation runs in parallel. Rule definitions
     // are the authoritative source for rule.category (same as the admin table).
-    // We fetch a wider run history (up to 50) so the date filter can narrow
-    // into older windows like "Last 90 days" without silently dropping runs.
+    // Limit capped at 25 runs to stay under API Gateway's 30s integration
+    // timeout on large tenants; older windows may silently drop runs.
     Promise.all([
       api.listRules(orgId),
-      api.listValidationRuns(orgId, { includeDetails: true, slim: true, limit: 50 })
+      api.listValidationRuns(orgId, { includeDetails: true, slim: true, limit: 25 })
         .then(runsData => runsData.runs || []),
     ])
       .then(([rulesResponse, runsWithDetails]) => {
@@ -72,6 +73,19 @@ export function StaffPerformancePage() {
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
   }, [orgId])
+
+  // Tick the elapsed-seconds counter while loading so the user can see the
+  // request is still running (validation-runs details fetch can take 10–20s
+  // on large tenants). Interval is torn down as soon as loading flips false.
+  useEffect(() => {
+    if (!loading) return
+    setLoadElapsedSec(0)
+    const started = Date.now()
+    const id = setInterval(() => {
+      setLoadElapsedSec(Math.floor((Date.now() - started) / 1000))
+    }, 1000)
+    return () => clearInterval(id)
+  }, [loading])
 
   // rule_id -> category, drawn from the authoritative rule definitions.
   const ruleCategoryById = useMemo(() => {
@@ -247,8 +261,19 @@ export function StaffPerformancePage() {
   if (loading) {
     return (
       <OrgWorkspaceLayout>
-        <div className="flex items-center justify-center h-64">
-          <p className="text-gray-500">Loading staff performance data...</p>
+        <div className="flex flex-col items-center justify-center h-64 gap-3 text-gray-600">
+          <svg className="animate-spin h-6 w-6 text-blue-600" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          <p className="text-sm font-medium">
+            Loading staff performance data… <span className="tabular-nums text-gray-500">({loadElapsedSec}s)</span>
+          </p>
+          {loadElapsedSec >= 5 && (
+            <p className="text-xs text-gray-500 max-w-sm text-center">
+              Fetching validation history — this can take up to 30 seconds for large organizations.
+            </p>
+          )}
         </div>
       </OrgWorkspaceLayout>
     )
@@ -342,7 +367,9 @@ export function StaffPerformancePage() {
       )}
 
       {/* Right Panel - Summary (default) or Staff Detail */}
-      <div className="flex-1 flex flex-col">
+      {/* min-w-0 prevents wide inner content (long names, bar chart, tag rows)
+          from forcing the flex row past the viewport width. */}
+      <div className="flex-1 min-w-0 flex flex-col">
         {selectedStaff ? (
           <StaffDetailPanel
             staff={selectedStaff}

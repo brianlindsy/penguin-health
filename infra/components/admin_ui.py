@@ -683,6 +683,7 @@ class AdminUi(Construct):
             ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/confirm-finding"),
             ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-resolved"),
             ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-incorrect"),
+            ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/confirm-document"),
             ("GET",  "/api/me/permissions"),
             ("GET",  "/api/organizations/{orgId}/subscriptions"),
             ("PUT",  "/api/organizations/{orgId}/subscriptions/{email}"),

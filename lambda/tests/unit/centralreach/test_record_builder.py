@@ -42,7 +42,7 @@ def _make_note_fields(**overrides) -> NoteFields:
         "provider_billed": "Ann Smith, BCBA",
         "provider_signature_name": "Ann Smith, BCBA",
         "supervisor_name": "Dr. Jane Doe",
-        "supervisor_signature_name": "Dr. Jane Doe",
+        "supervisor_signature_names": ("Dr. Jane Doe",),
     }
     return NoteFields(**{**defaults, **overrides})
 
@@ -53,7 +53,7 @@ _EMPTY_NOTE_FIELDS = NoteFields(
     provider_billed=None,
     provider_signature_name=None,
     supervisor_name=None,
-    supervisor_signature_name=None,
+    supervisor_signature_names=(),
 )
 
 
@@ -349,7 +349,7 @@ def test_build_record_extracted_fields():
     assert ef["note_provider_billed"] == "Ann Smith, BCBA"
     assert ef["note_provider_signature_name"] == "Ann Smith, BCBA"
     assert ef["note_supervisor_name"] == "Dr. Jane Doe"
-    assert ef["note_supervisor_signature_name"] == "Dr. Jane Doe"
+    assert ef["note_supervisor_signature_names"] == ["Dr. Jane Doe"]
 
 
 def test_build_record_omits_note_fields_when_extractor_returned_none():
@@ -374,20 +374,20 @@ def test_build_record_omits_note_fields_when_extractor_returned_none():
         "note_provider_billed",
         "note_provider_signature_name",
         "note_supervisor_name",
-        "note_supervisor_signature_name",
+        "note_supervisor_signature_names",
     ):
         assert key not in rec.extracted_fields
 
 
-def test_build_record_supervisor_name_and_signature_name_land_separately():
+def test_build_record_supervisor_name_and_signature_names_land_separately():
     """The two supervisor fields cover different sections of the note:
     `note_supervisor_name` is the attribution (e.g. header
-    "Supervisor: Jane Doe"), `note_supervisor_signature_name` is what
+    "Supervisor: Jane Doe"), `note_supervisor_signature_names` is what
     was signed at the bottom. Rules that cross-check the two must see
     both values on the record independently."""
     note_fields = _make_note_fields(
         supervisor_name="Dr. Jane Doe",
-        supervisor_signature_name="J. Roe, BCBA-D",
+        supervisor_signature_names=("J. Roe, BCBA-D",),
     )
     rec = build_record(
         entry=_make_entry(),
@@ -402,7 +402,57 @@ def test_build_record_supervisor_name_and_signature_name_land_separately():
     )
     ef = rec.extracted_fields
     assert ef["note_supervisor_name"] == "Dr. Jane Doe"
-    assert ef["note_supervisor_signature_name"] == "J. Roe, BCBA-D"
+    assert ef["note_supervisor_signature_names"] == ["J. Roe, BCBA-D"]
+
+
+def test_build_record_preserves_every_supervisor_signature():
+    """A PDF can carry more than one supervisor signature (co-
+    supervisors, multi-approver forms). Downstream rules match the
+    expected supervisor against ANY entry in the list, so the builder
+    must emit every signer — not just the first — under
+    `note_supervisor_signature_names`."""
+    note_fields = _make_note_fields(
+        supervisor_signature_names=(
+            "Dr. Jane Doe",
+            "J. Roe, BCBA-D",
+            "Alex Kim",
+        ),
+    )
+    rec = build_record(
+        entry=_make_entry(),
+        preview=_make_preview(),
+        pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
+        narrative_text=_NARRATIVE,
+        note_fields=note_fields,
+        org_id="demo",
+        ingest_run_id="run-abc",
+        captured_at="2026-06-28T22:00:00Z",
+    )
+    assert rec.extracted_fields["note_supervisor_signature_names"] == [
+        "Dr. Jane Doe",
+        "J. Roe, BCBA-D",
+        "Alex Kim",
+    ]
+
+
+def test_build_record_omits_supervisor_signature_names_when_list_is_empty():
+    """Empty tuple → key omitted, so a rule can distinguish "no
+    supervisor signed" (key absent) from a false match against an
+    empty list."""
+    note_fields = _make_note_fields(supervisor_signature_names=())
+    rec = build_record(
+        entry=_make_entry(),
+        preview=_make_preview(),
+        pdf_s3_key="pdfs/x.pdf",
+        preview_file_id=8901,
+        narrative_text=_NARRATIVE,
+        note_fields=note_fields,
+        org_id="demo",
+        ingest_run_id="run-abc",
+        captured_at="2026-06-28T22:00:00Z",
+    )
+    assert "note_supervisor_signature_names" not in rec.extracted_fields
 
 
 def test_build_record_note_fields_are_prefixed_and_do_not_shadow_api_fields():

@@ -37,7 +37,9 @@ from bedrock_client import (
     MODEL_ID,
 )
 
-dynamodb = boto3.resource('dynamodb')
+# max_pool_connections sized to DETAILS_FETCH_WORKERS so the parallel
+# per-run fanout in list_validation_runs doesn't queue on the HTTP pool.
+dynamodb = boto3.resource('dynamodb', config=BotoConfig(max_pool_connections=25))
 s3_client = boto3.client('s3')
 lambda_client = boto3.client('lambda')
 table = dynamodb.Table('penguin-health-org-config')
@@ -743,7 +745,7 @@ def update_org_programs(event, path_params, body, **kwargs):
 
 DETAILS_DEFAULT_LIMIT = 50
 DETAILS_MAX_LIMIT = 200
-DETAILS_FETCH_WORKERS = 10
+DETAILS_FETCH_WORKERS = 25
 
 # Fields the analytics pages actually read off each rule and field_values blob.
 # Anything else (LLM reasoning, evidence, full clinical fields) is dropped from

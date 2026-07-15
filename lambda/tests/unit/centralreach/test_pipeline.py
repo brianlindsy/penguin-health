@@ -264,7 +264,7 @@ def stub_narrative_extract(monkeypatch):
         provider_billed="Ann Smith, BCBA",
         provider_signature_name="Ann Smith, BCBA",
         supervisor_name="Dr. Jane Doe",
-        supervisor_signature_name="Dr. Jane Doe",
+        supervisor_signature_names=("Dr. Jane Doe",),
     )
     monkeypatch.setattr(
         pipeline_mod, "extract_note_fields",
@@ -689,7 +689,7 @@ def test_note_fields_flow_through_to_record_extracted_fields(
             provider_billed="A. Smith, BCBA",
             provider_signature_name="A. Smith",
             supervisor_name="Dr. Doe",
-            supervisor_signature_name="Dr. Doe",
+            supervisor_signature_names=("Dr. Doe", "J. Roe, BCBA-D"),
         ),
     )
 
@@ -729,7 +729,11 @@ def test_note_fields_flow_through_to_record_extracted_fields(
     assert ef["note_provider_billed"] == "A. Smith, BCBA"
     assert ef["note_provider_signature_name"] == "A. Smith"
     assert ef["note_supervisor_name"] == "Dr. Doe"
-    assert ef["note_supervisor_signature_name"] == "Dr. Doe"
+    # Both supervisor signers flow through — a rule that expects "J.
+    # Roe, BCBA-D" matches the second entry.
+    assert ef["note_supervisor_signature_names"] == [
+        "Dr. Doe", "J. Roe, BCBA-D",
+    ]
 
 
 # ----- ingest_run_id behavior ----------------------------------------------

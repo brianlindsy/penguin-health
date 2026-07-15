@@ -38,7 +38,7 @@ Field mapping (per the design doc):
 | extracted_fields.note_provider_billed         | NoteFields (from PDF) |
 | extracted_fields.note_provider_signature_name | NoteFields (from PDF) |
 | extracted_fields.note_supervisor_name         | NoteFields (from PDF) — from the supervisor-attribution section |
-| extracted_fields.note_supervisor_signature_name | NoteFields (from PDF) — the name at the supervisor signature line |
+| extracted_fields.note_supervisor_signature_names | NoteFields (from PDF) — list of every name signed as a supervisor; a note may carry more than one |
 
 Two prefixes signal source unambiguously so rules and dashboards can
 tell where a value came from at a glance:
@@ -250,12 +250,14 @@ def build_record(
         this verbatim, and `extracted_fields.narrative_hash` is
         computed from it (rule 1 dedup signal).
       * `note_fields` from a prior call to
-        `note_fields_extractor.extract_note_fields` — five structured
+        `note_fields_extractor.extract_note_fields` — six structured
         fields Bedrock read off the rendered PDF (location, billed
-        time, provider/supervisor signatures + names). Every field is
-        optional; the builder omits `note_*` keys that are None so
-        downstream rules can distinguish "extractor found nothing
-        there" from a bogus empty-string match.
+        time, provider/supervisor names, and the list of every name
+        that signed as a supervisor). Every field is optional; the
+        builder omits `note_*` keys that are None (or, for the
+        supervisor-signature list, an empty tuple) so downstream rules
+        can distinguish "extractor found nothing there" from a bogus
+        empty-string match.
       * `org_id` and `ingest_run_id` from the runner
       * `captured_at` ISO-8601 UTC string from the runner's clock
 
@@ -320,8 +322,13 @@ def build_record(
         extracted_fields["note_provider_signature_name"] = note_fields.provider_signature_name
     if note_fields.supervisor_name is not None:
         extracted_fields["note_supervisor_name"] = note_fields.supervisor_name
-    if note_fields.supervisor_signature_name is not None:
-        extracted_fields["note_supervisor_signature_name"] = note_fields.supervisor_signature_name
+    if note_fields.supervisor_signature_names:
+        # Emit as a list so downstream rules see the full set of
+        # supervisor signers. Rule 7's supervisor-name match passes
+        # when the expected name equals any element.
+        extracted_fields["note_supervisor_signature_names"] = list(
+            note_fields.supervisor_signature_names,
+        )
 
     # `billing_list_*` — everything CR sent on the list endpoint for
     # this entry, mapped 1:1 to snake_case. Emitted verbatim (empty

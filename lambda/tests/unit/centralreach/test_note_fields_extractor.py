@@ -2,7 +2,7 @@
 
 Pins the contracts around the six-field Bedrock extraction:
   1. Happy path: all six fields present → typed NoteFields
-  2. Field-level absence (`null`) is normal → None on the result
+  2. Field-level absence (`null`) is normal → None / () on the result
   3. Field-level whitespace-only string → None (empty extraction)
   4. Bedrock invocation failure → NoteFieldsExtractionError
   5. Non-dict Bedrock response → NoteFieldsExtractionError
@@ -11,7 +11,8 @@ Pins the contracts around the six-field Bedrock extraction:
   8. PDF ships as base64 document content block
   9. Cost attribution kwargs (call_type, parent_request_id, org_id)
  10. Unknown response keys are ignored (defensive)
- 11. supervisor_name and supervisor_signature_name capture independently
+ 11. supervisor_name and supervisor_signature_names capture independently
+ 12. supervisor_signature_names is a list — every signer is preserved
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ _FULL_RESPONSE = {
     "provider_billed": "Ann Smith, BCBA",
     "provider_signature_name": "Ann Smith, BCBA",
     "supervisor_name": "Dr. Jane Doe",
-    "supervisor_signature_name": "Dr. Jane Doe",
+    "supervisor_signature_names": ["Dr. Jane Doe"],
 }
 
 
@@ -75,10 +76,10 @@ def test_returns_all_six_fields_when_bedrock_populates_them():
     assert result.provider_billed == "Ann Smith, BCBA"
     assert result.provider_signature_name == "Ann Smith, BCBA"
     assert result.supervisor_name == "Dr. Jane Doe"
-    assert result.supervisor_signature_name == "Dr. Jane Doe"
+    assert result.supervisor_signature_names == ("Dr. Jane Doe",)
 
 
-def test_supervisor_name_and_signature_name_can_diverge():
+def test_supervisor_name_and_signature_names_can_diverge():
     """The attribution section names the supervisor of record, while
     the signature line names whoever actually signed. When those
     differ, the cross-check rule should catch it — verify the two
@@ -86,10 +87,47 @@ def test_supervisor_name_and_signature_name_can_diverge():
     result, _ = _invoke({
         **_FULL_RESPONSE,
         "supervisor_name": "Dr. Jane Doe",
-        "supervisor_signature_name": "J. Roe, BCBA-D",
+        "supervisor_signature_names": ["J. Roe, BCBA-D"],
     })
     assert result.supervisor_name == "Dr. Jane Doe"
-    assert result.supervisor_signature_name == "J. Roe, BCBA-D"
+    assert result.supervisor_signature_names == ("J. Roe, BCBA-D",)
+
+
+def test_supervisor_signature_names_returns_every_signer():
+    """A note can carry more than one supervisor signature (co-
+    supervisors, multi-approver forms). The extractor must return
+    EVERY qualifying signer, in document order, so a downstream rule
+    can match the expected supervisor against any entry. If the
+    extractor collapsed to a single value, expected-supervisor checks
+    would falsely fail when the match sits at position 2+."""
+    result, _ = _invoke({
+        **_FULL_RESPONSE,
+        "supervisor_signature_names": [
+            "Dr. Jane Doe",
+            "J. Roe, BCBA-D",
+            "Alex Kim",
+        ],
+    })
+    assert result.supervisor_signature_names == (
+        "Dr. Jane Doe",
+        "J. Roe, BCBA-D",
+        "Alex Kim",
+    )
+
+
+def test_supervisor_signature_names_strips_and_drops_empties():
+    """Bedrock may return items with trailing whitespace, or a stray
+    empty string. Apply the same hygiene as the string-field path:
+    strip, drop empties, keep the rest in order."""
+    result, _ = _invoke({
+        **_FULL_RESPONSE,
+        "supervisor_signature_names": [
+            "  Dr. Jane Doe  ", "", "   ", "J. Roe, BCBA-D",
+        ],
+    })
+    assert result.supervisor_signature_names == (
+        "Dr. Jane Doe", "J. Roe, BCBA-D",
+    )
 
 
 def test_provider_and_supervisor_signature_names_can_be_the_same_person():
@@ -102,10 +140,10 @@ def test_provider_and_supervisor_signature_names_can_be_the_same_person():
     result, _ = _invoke({
         **_FULL_RESPONSE,
         "provider_signature_name": "Jane Doe",
-        "supervisor_signature_name": "Jane Doe",
+        "supervisor_signature_names": ["Jane Doe"],
     })
     assert result.provider_signature_name == "Jane Doe"
-    assert result.supervisor_signature_name == "Jane Doe"
+    assert result.supervisor_signature_names == ("Jane Doe",)
 
 
 def test_provider_billed_and_supervisor_name_can_be_the_same_person():
@@ -180,11 +218,24 @@ def test_system_prompt_names_all_six_fields():
     assert "provider_billed" in system
     assert "provider_signature_name" in system
     assert "supervisor_name" in system
-    assert "supervisor_signature_name" in system
+    assert "supervisor_signature_names" in system
+
+
+def test_system_prompt_asks_for_every_supervisor_signature():
+    """The prompt must direct the model to return an array containing
+    every qualifying signature block, not just the first. If a future
+    edit reverts to "return the first", multi-supervisor notes
+    silently drop signers again — and downstream matches against the
+    non-first signer stop working."""
+    _, invoker = _invoke(_FULL_RESPONSE)
+    system = invoker.calls[0]["body"]["system"]
+    entry = system.split("- supervisor_signature_names:", 1)[1].lower()
+    assert "every" in entry
+    assert "array" in entry
 
 
 def test_system_prompt_defines_supervisor_signature_by_role_label():
-    """The `supervisor_signature_name` field is defined by the
+    """The `supervisor_signature_names` field is defined by the
     signature block's role text ("supervis" case-insensitive
     contains), NOT by the label of the line above the block. This is
     what lets solo notes signed by a supervising BCBA under a
@@ -209,7 +260,7 @@ def test_system_prompt_defines_supervisor_name_with_role_fallback():
     _, invoker = _invoke(_FULL_RESPONSE)
     system = invoker.calls[0]["body"]["system"]
     supervisor_name_entry = system.split("- supervisor_name:", 1)[1]
-    supervisor_name_entry = supervisor_name_entry.split("- supervisor_signature_name:", 1)[0].lower()
+    supervisor_name_entry = supervisor_name_entry.split("- supervisor_signature_names:", 1)[0].lower()
     assert "supervisor" in supervisor_name_entry
     assert "provider" in supervisor_name_entry
     assert "supervis" in supervisor_name_entry
@@ -228,7 +279,7 @@ def test_system_prompt_defines_supervisor_name_participants_checkbox_fallback():
     _, invoker = _invoke(_FULL_RESPONSE)
     system = invoker.calls[0]["body"]["system"]
     supervisor_name_entry = system.split("- supervisor_name:", 1)[1]
-    supervisor_name_entry = supervisor_name_entry.split("- supervisor_signature_name:", 1)[0]
+    supervisor_name_entry = supervisor_name_entry.split("- supervisor_signature_names:", 1)[0]
     lowered = supervisor_name_entry.lower()
     assert "checkbox" in lowered
     assert "participants" in lowered
@@ -238,7 +289,7 @@ def test_system_prompt_defines_supervisor_name_participants_checkbox_fallback():
     assert "bcaba" in lowered
     assert "qba" in lowered
     # Ambiguity fallback to the signature-line name.
-    assert "supervisor_signature_name" in supervisor_name_entry
+    assert "supervisor_signature_names" in supervisor_name_entry
 
 
 # ----- field-level absence -------------------------------------------------
@@ -246,28 +297,37 @@ def test_system_prompt_defines_supervisor_name_participants_checkbox_fallback():
 
 def test_null_on_field_returns_none():
     """Bedrock returns null when a field isn't present on the note.
-    This is normal — the corresponding NoteFields attribute is None,
-    NOT an error."""
+    This is normal — the corresponding NoteFields attribute is None
+    (or `()` for the supervisor-signature list), NOT an error."""
     result, _ = _invoke({
         **_FULL_RESPONSE,
         "supervisor_name": None,
-        "supervisor_signature_name": None,
+        "supervisor_signature_names": None,
     })
     assert result.supervisor_name is None
-    assert result.supervisor_signature_name is None
+    assert result.supervisor_signature_names == ()
     # The other fields are still populated.
     assert result.provider_location is not None
+
+
+def test_empty_list_supervisor_signatures_returns_empty_tuple():
+    """A note with no supervisor signature block returns []."""
+    result, _ = _invoke({
+        **_FULL_RESPONSE,
+        "supervisor_signature_names": [],
+    })
+    assert result.supervisor_signature_names == ()
 
 
 def test_missing_key_treated_as_null():
     result, _ = _invoke({
         "provider_location": "Clinic",
         "provider_billed_time": "60 min",
-        # provider_signature_name / supervisor_name / supervisor_signature_name absent
+        # provider_signature_name / supervisor_name / supervisor_signature_names absent
     })
     assert result.provider_signature_name is None
     assert result.supervisor_name is None
-    assert result.supervisor_signature_name is None
+    assert result.supervisor_signature_names == ()
 
 
 def test_whitespace_only_string_becomes_none():
@@ -289,7 +349,7 @@ def test_all_null_response_is_valid():
         "provider_billed": None,
         "provider_signature_name": None,
         "supervisor_name": None,
-        "supervisor_signature_name": None,
+        "supervisor_signature_names": None,
     })
     assert result == NoteFields(
         provider_location=None,
@@ -297,7 +357,7 @@ def test_all_null_response_is_valid():
         provider_billed=None,
         provider_signature_name=None,
         supervisor_name=None,
-        supervisor_signature_name=None,
+        supervisor_signature_names=(),
     )
 
 
@@ -334,4 +394,32 @@ def test_oversized_string_field_raises():
     dumped surrounding context. Better to skip loudly than persist."""
     with pytest.raises(NoteFieldsExtractionError) as exc:
         _invoke({**_FULL_RESPONSE, "provider_location": "x" * 600})
+    assert "exceeds" in str(exc.value).lower()
+
+
+def test_non_list_supervisor_signature_names_raises():
+    """The field is documented as a JSON array. If Bedrock drifts and
+    returns a bare string, skip the entry — silently coercing "one
+    string" into ("string",) would mask a prompt regression that
+    otherwise collapses multi-supervisor notes."""
+    with pytest.raises(NoteFieldsExtractionError) as exc:
+        _invoke({**_FULL_RESPONSE, "supervisor_signature_names": "Dr. Doe"})
+    assert "non-list" in str(exc.value).lower()
+
+
+def test_non_string_entry_in_supervisor_signature_names_raises():
+    with pytest.raises(NoteFieldsExtractionError) as exc:
+        _invoke({
+            **_FULL_RESPONSE,
+            "supervisor_signature_names": ["Dr. Doe", 42],
+        })
+    assert "non-string" in str(exc.value).lower()
+
+
+def test_oversized_supervisor_signature_names_entry_raises():
+    with pytest.raises(NoteFieldsExtractionError) as exc:
+        _invoke({
+            **_FULL_RESPONSE,
+            "supervisor_signature_names": ["Dr. Doe", "x" * 600],
+        })
     assert "exceeds" in str(exc.value).lower()
