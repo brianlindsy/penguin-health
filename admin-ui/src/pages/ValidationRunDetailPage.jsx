@@ -23,6 +23,7 @@ const FIELD_LABELS = {
   employee_name: 'Employee',
   document_id: 'Document ID',
   payer_description: 'Payer',
+  note_supervisor_name: 'Supervisor',
 }
 
 const CANONICAL_FIELD_KEYS = new Set(Object.keys(FIELD_LABELS))
