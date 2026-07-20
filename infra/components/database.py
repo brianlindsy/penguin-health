@@ -132,6 +132,57 @@ class Database(Construct):
             sort_key=dynamodb.Attribute(name="gsi1sk", type=dynamodb.AttributeType.STRING),
         )
 
+        # ----- penguin-health-document-queue -----
+        # Ongoing per-document validation queue fed by overnight runs. One
+        # pointer row per unique document (pk=ORG#{org_id}, sk=DOC#{doc_id})
+        # plus append-only version-history rows
+        # (pk=ORG#{org_id}#DOC#{doc_id}, sk=VERSION#{iso_ts}).
+        # GSI1 lists active entries by status/last-updated for reviewers;
+        # GSI2 supports the daily auto-close scan for idle open entries.
+        self.document_queue_table = dynamodb.Table(self, "DocumentQueueTable",
+            table_name=f"{config.PROJECT_NAME}-document-queue",
+            partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True,
+            ),
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+        self.document_queue_table.add_global_secondary_index(
+            index_name="gsi1",
+            partition_key=dynamodb.Attribute(name="gsi1pk", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="gsi1sk", type=dynamodb.AttributeType.STRING),
+        )
+        self.document_queue_table.add_global_secondary_index(
+            index_name="gsi2",
+            partition_key=dynamodb.Attribute(name="gsi2pk", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="gsi2sk", type=dynamodb.AttributeType.STRING),
+        )
+
+        # ----- penguin-health-centralreach-ingest-cursor -----
+        # Presence-only "we have ingested this CR billing entry" cursor.
+        # The runner checks it at the top of per-entry processing to skip
+        # PDF fetches + Bedrock calls on entries we've already ingested
+        # in a prior run. Once a row lands here, that entry is not
+        # re-ingested even if CR's `modified_date` later changes —
+        # provider re-signs and note edits are intentionally out of
+        # scope for auto-reprocessing (see docs/centralreach-api-integration.md).
+        # Point lookups only: pk=ORG#{org_id}, sk=ENTRY#{source_record_id}.
+        self.centralreach_ingest_cursor_table = dynamodb.Table(
+            self, "CentralReachIngestCursorTable",
+            table_name=f"{config.PROJECT_NAME}-centralreach-ingest-cursor",
+            partition_key=dynamodb.Attribute(
+                name="pk", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(
+                name="sk", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True,
+            ),
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+
         # ----- SNS Topic for Textract notifications -----
         self.notifications_topic = sns.Topic(self, "NotificationsTopic",
             topic_name=f"{config.PROJECT_NAME}-notifications-multi-org",

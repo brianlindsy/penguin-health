@@ -351,13 +351,13 @@ class TestConfirmFindingPerCategoryGuard:
         self, mock_dynamodb, sample_org_config, sample_validation_result,
         member_event, seed_user_perms,
     ):
-        from api.admin_api import confirm_finding
+        from api.admin_api import queue_confirm_finding
         seed_user_perms('member@example.com', 'test-org')  # nothing
 
-        resp = confirm_finding(
+        resp = queue_confirm_finding(
             event=member_event,
-            path_params={'orgId': 'test-org', 'runId': '20240115-100000', 'docId': '12345'},
-            body={'rule_id': 'rule-001'},
+            path_params={'orgId': 'test-org', 'docId': '12345', 'ruleId': 'rule-001'},
+            body={},
         )
         assert resp['statusCode'] == 403
 
@@ -365,16 +365,16 @@ class TestConfirmFindingPerCategoryGuard:
         self, mock_dynamodb, sample_org_config, sample_validation_result,
         member_event, seed_user_perms,
     ):
-        from api.admin_api import confirm_finding
+        from api.admin_api import queue_confirm_finding
         seed_user_perms(
             'member@example.com', 'test-org',
             report_permissions={'Compliance Audit': ['view']},
         )
 
-        resp = confirm_finding(
+        resp = queue_confirm_finding(
             event=member_event,
-            path_params={'orgId': 'test-org', 'runId': '20240115-100000', 'docId': '12345'},
-            body={'rule_id': 'rule-001'},
+            path_params={'orgId': 'test-org', 'docId': '12345', 'ruleId': 'rule-001'},
+            body={},
         )
         assert resp['statusCode'] == 200
 

@@ -36,6 +36,7 @@ from zoneinfo import ZoneInfo
 
 from .client import CentralReachClient
 from .exceptions import CentralReachError
+from . import ingest_cursor
 from .list_query import BillingEntry, paginate_billing_entries
 from .narrative_extractor import NarrativeExtractionError, extract_narrative
 from .note_fields_extractor import (
@@ -89,9 +90,46 @@ def _compact(dt: datetime) -> str:
 def _ingest_date(dt: datetime) -> str:
     # Partition folder tracks the org's clinical day, not wall-clock UTC:
     # a cron firing just after 00:00 UTC still belongs to the prior US day.
-    # Eastern matches `parameters._yesterday_eastern` — revisit when a
+    # Eastern matches `parameters._today_eastern` — revisit when a
     # non-Eastern org lands.
     return dt.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+
+
+def _emit_dedupe_skip_audit(
+    *,
+    org_id: str,
+    source_record_id: str,
+    ingest_run_id: str,
+    actor: dict,
+    audit_emit_fn: Callable | None,
+) -> None:
+    """Audit an entry the runner intentionally skipped because a
+    prior run already ingested it. Emitted for compliance visibility
+    — the seen-vs-processed counts wouldn't otherwise reconcile.
+
+    Contains only ids + org, no patient identity or note content.
+    """
+    emit = audit_emit_fn if audit_emit_fn is not None else _default_audit_emit
+    emit(
+        action="execute",
+        resource={
+            "type": "CentralReachBillingEntry",
+            "id": source_record_id,
+            "org": org_id,
+        },
+        actor=actor,
+        org_id=org_id,
+        purpose_of_use="OPERATIONS",
+        call_type="centralreach_ingest_dedupe_skip",
+        external_control_number=ingest_run_id,
+    )
+
+
+def _default_audit_emit(**kwargs: Any) -> None:
+    """Lazy import so pipeline stays importable in contexts that don't
+    ship the audit module (CLI helpers, some tests)."""
+    from audit import emit as audit_emit
+    audit_emit(**kwargs)
 
 
 def _process_one(
@@ -106,9 +144,33 @@ def _process_one(
     counters: _RunCounters,
     s3_client: Any | None,
     audit_emit_fn: Callable | None,
+    cursor_table: Any | None,
+    dedupe_enabled: bool,
+    force_reingest: bool,
 ) -> None:
     """Process a single billing entry. Records skip or failure into
     counters; does not raise."""
+    source_record_id = str(entry.id)
+
+    # Ingest-cursor dedupe: skip entries already ingested by a prior
+    # run before touching CR or Bedrock. Zero CR API calls on the skip
+    # path — the whole point is to save PDF fetches + Claude spend on
+    # the wide-lookback window. `force_reingest` is the operator
+    # escape hatch for manual reprocessing.
+    if dedupe_enabled and not force_reingest:
+        if ingest_cursor.has_ingested(
+            org_id, source_record_id, table=cursor_table,
+        ):
+            counters.skipped_by_reason["already_ingested"] += 1
+            _emit_dedupe_skip_audit(
+                org_id=org_id,
+                source_record_id=source_record_id,
+                ingest_run_id=ingest_run_id,
+                actor=actor,
+                audit_emit_fn=audit_emit_fn,
+            )
+            return
+
     try:
         preview = get_preview(client, entry.id)
     except CentralReachError as e:
@@ -175,7 +237,6 @@ def _process_one(
     ingest_date = _ingest_date(now)
     captured_at = _iso(now)
     captured_at_compact = _compact(now)
-    source_record_id = str(entry.id)
 
     try:
         pdf_s3_key = write_pdf(
@@ -218,10 +279,22 @@ def _process_one(
         if audit_emit_fn is not None:
             persist_kwargs["audit_emit_fn"] = audit_emit_fn
 
-        persist_note(**persist_kwargs)
+        result = persist_note(**persist_kwargs)
     except Exception as e:
         counters.failures_by_type[type(e).__name__] += 1
         return
+
+    if dedupe_enabled:
+        # Only mark on the success path. Failures/skips must not write
+        # a cursor row — the next run needs to retry them.
+        ingest_cursor.mark_ingested(
+            org_id, source_record_id,
+            ingest_run_id=ingest_run_id,
+            pdf_s3_key=pdf_s3_key,
+            record_s3_key=result["s3_key"],
+            now_iso=_iso(now),
+            table=cursor_table,
+        )
 
     counters.processed.append(entry.id)
 
@@ -238,6 +311,9 @@ def run_ingest(
     now_fn: Callable[[], datetime] = _utc_now,
     s3_client: Any | None = None,
     audit_emit_fn: Callable | None = None,
+    cursor_table: Any | None = None,
+    dedupe_enabled: bool | None = None,
+    force_reingest: bool | None = None,
 ) -> IngestSummary:
     """Run the centralreach ingest pipeline.
 
@@ -253,7 +329,15 @@ def run_ingest(
         a fresh uuid4 is generated if not provided
       * `entries`: optional iterable for testing — defaults to the
         paginated list query results for the date range
-      * `now_fn`, `s3_client`, `audit_emit_fn`: test injection points
+      * `now_fn`, `s3_client`, `audit_emit_fn`, `cursor_table`: test
+        injection points
+      * `dedupe_enabled` / `force_reingest`: resolved from
+        `CENTRALREACH_INGEST_DEDUPE_ENABLED` /
+        `CENTRALREACH_FORCE_REINGEST` env vars when not supplied.
+        When dedupe is on, entries previously marked in the ingest-
+        cursor table are skipped without any CR API or Bedrock calls.
+        `force_reingest` overrides the skip so an operator can
+        reprocess entries without deleting cursor rows.
 
     Returns an `IngestSummary` the caller emits to the run_completed
     audit event.
@@ -265,6 +349,11 @@ def run_ingest(
     """
     if ingest_run_id is None:
         ingest_run_id = str(uuid.uuid4())
+
+    if dedupe_enabled is None:
+        dedupe_enabled = ingest_cursor.is_enabled()
+    if force_reingest is None:
+        force_reingest = ingest_cursor.is_force_reingest()
 
     if entries is None:
         entries = paginate_billing_entries(
@@ -299,6 +388,9 @@ def run_ingest(
             counters=counters,
             s3_client=s3_client,
             audit_emit_fn=audit_emit_fn,
+            cursor_table=cursor_table,
+            dedupe_enabled=dedupe_enabled,
+            force_reingest=force_reingest,
         )
 
     return IngestSummary(

@@ -22,6 +22,7 @@ from components.audit_layer import AuditLayer
 from components.analytics import Analytics
 from components.jwks_hosting import JwksHosting
 from components.centralreach import CentralReach
+from components.document_queue import DocumentQueue
 
 
 class PenguinHealthStack(Stack):
@@ -42,6 +43,7 @@ class PenguinHealthStack(Stack):
         # grants needed by lambda/api/centralreach_api.py.
         centralreach = CentralReach(self, "CentralReach",
             org_config_table=db.org_config_table,
+            ingest_cursor_table=db.centralreach_ingest_cursor_table,
         )
 
         # ----- Admin UI -----
@@ -51,6 +53,7 @@ class PenguinHealthStack(Stack):
             analytics_reports_table=db.analytics_reports_table,
             deep_jobs_table=db.deep_jobs_table,
             stedi_table=db.stedi_table,
+            document_queue_table=db.document_queue_table,
             centralreach_state_machine=centralreach.state_machine,
         )
 
@@ -59,7 +62,14 @@ class PenguinHealthStack(Stack):
             org_config_table=db.org_config_table,
             validation_results_table=db.validation_results_table,
             narrative_hashes_table=db.narrative_hashes_table,
+            document_queue_table=db.document_queue_table,
             notifications_topic=db.notifications_topic,
+        )
+
+        # ----- Document Queue auto-close job -----
+        document_queue = DocumentQueue(self, "DocumentQueue",
+            org_config_table=db.org_config_table,
+            document_queue_table=db.document_queue_table,
         )
 
         # ----- Audit Layer -----
@@ -76,6 +86,7 @@ class PenguinHealthStack(Stack):
                 audit_engine.rules_engine_fn,
                 audit_engine.csv_splitter_fn,
                 audit_engine.fhir_materializer_fn,
+                document_queue.autoclose_fn,
             ],
         )
 

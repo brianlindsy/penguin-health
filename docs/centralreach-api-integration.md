@@ -92,7 +92,7 @@ lambda/multi-org/centralreach/
   record.py                # CentralReachNoteRecord dataclass (renamed RpaNoteRecord)
   pdf_storage.py           # write PDF bytes to per-org S3 prefix
   normalize.py             # date/time parsers (subset of rpa.normalize)
-  parameters.py            # yesterday_eastern + env-var overrides (moved from rpa)
+  parameters.py            # 7-day Eastern rolling window + env-var overrides (moved from rpa)
   rate_limiter.py          # min-delay between HTTP requests (moved from rpa)
 
 fargate/centralreach_ingest/
@@ -111,7 +111,7 @@ lambda/multi-org/rules-engine/
 These move to `centralreach/` with imports rewritten but otherwise
 unmodified:
 
-- `parameters.py` — yesterday-Eastern resolver + env-var overrides
+- `parameters.py` — 7-day Eastern rolling-window resolver + env-var overrides
 - `rate_limiter.py` — async min-delay gate
 - `normalize.py` (subset) — date parsing, whitespace cleanup. Most
   of the existing `normalize.py` was DOM-derived value parsing
@@ -183,6 +183,53 @@ domain. We rate-limit it the same way as the CR calls — partly out of
 caution (the presigned URL ultimately came from CR; an unusual request
 rate could trigger their monitoring) and partly because it doesn't
 materially extend the run.
+
+### Ingest-cursor dedupe
+
+The runner keeps a presence-only cursor per successfully-ingested
+entry in `penguin-health-centralreach-ingest-cursor` (DynamoDB):
+
+```
+pk = ORG#{org_id}
+sk = ENTRY#{source_record_id}
+attrs: first_ingested_at, first_ingest_run_id, pdf_s3_key, record_s3_key
+```
+
+At the top of per-entry processing, before any CR API call, the
+pipeline calls `has_ingested(org_id, entry.id)`. A hit skips the
+entry entirely — no preview call, no PDF fetch, no Bedrock work —
+and emits a `centralreach_ingest_dedupe_skip` audit event so the
+seen-vs-processed counts reconcile.
+
+Semantics are "once-ever": a cursor row means we will not re-ingest
+this entry, even if CR's `modified_date` later changes. Provider
+re-signs, supervisor signature additions, and note-text edits are
+intentionally out of scope for auto-reprocessing. This is what
+makes a wide daily lookback (~two weeks) affordable — after day 1,
+most of the window's entries are cursor hits and cost nothing.
+
+Feature flag: `CENTRALREACH_INGEST_DEDUPE_ENABLED` on the task
+definition. Off by default so the infra can land ahead of the
+behavior change.
+
+Operator overrides:
+* Force reprocessing of every entry in a run: set
+  `CENTRALREACH_FORCE_REINGEST=true` on the manual invocation. The
+  runner still consults the cursor for accounting but does not skip.
+* Force reprocessing of a specific entry: delete its cursor row
+  (`pk=ORG#{org_id}, sk=ENTRY#{id}`). The next run treats the entry
+  as never-ingested.
+
+The `mark_ingested` write uses `ConditionExpression=attribute_not_exists(pk)`,
+so a concurrent second run that reprocesses the same entry is a
+silent no-op and does not clobber the first-ingest provenance.
+
+Cutover: seed the cursor from the per-org `data/` S3 prefix
+BEFORE flipping the flag, otherwise the first post-flag run will
+re-ingest everything in the lookback window. Use
+`scripts/backfill_centralreach_ingest_cursor.py` — dry-run by
+default, `--commit` writes. Reads S3 keys only (no record-body
+reads), idempotent via `attribute_not_exists`, safe to re-run.
 
 ### List query — required body shape
 
@@ -751,8 +798,8 @@ identity) is NOT preserved — the filename in S3 derives only from
 `ingest_date` is the run's wall-clock date in `America/New_York`, not
 UTC. A cron firing just after 00:00 UTC still belongs to the prior US
 clinical day, matching the `parameters.resolve_date_range` default
-("yesterday-Eastern"). Non-Eastern orgs will need a per-org tz here
-when they land — do not generalize preemptively.
+(7-day Eastern rolling window ending yesterday). Non-Eastern orgs will
+need a per-org tz here when they land — do not generalize preemptively.
 
 ### Object metadata
 

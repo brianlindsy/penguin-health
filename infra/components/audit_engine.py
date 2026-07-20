@@ -30,6 +30,7 @@ class AuditEngine(Construct):
                  org_config_table: dynamodb.ITable,
                  validation_results_table: dynamodb.ITable,
                  narrative_hashes_table: dynamodb.ITable,
+                 document_queue_table: dynamodb.ITable,
                  notifications_topic: sns.ITopic) -> None:
         super().__init__(scope, id)
 
@@ -144,6 +145,7 @@ class AuditEngine(Construct):
             "results_handler.py",        # DynamoDB storage and CSV reports
             "field_extractor.py",        # Text field extraction
             "parquet_writer.py",         # End-of-run Parquet snapshot for Athena
+            "queue_handler.py",          # Ongoing document queue: hash, lookup, upsert
         ]
 
         rules_engine_requirements = [
@@ -182,6 +184,11 @@ class AuditEngine(Construct):
                 "ORG_CONFIG_TABLE_NAME": org_config_table.table_name,
                 "STEDI_TABLE_NAME": "penguin-health-stedi",
                 "NARRATIVE_HASH_TABLE": narrative_hashes_table.table_name,
+                "DOCUMENT_QUEUE_TABLE": document_queue_table.table_name,
+                # Feature flag: rules engine writes to the queue only when
+                # this is "true". Live after the backfill cutover on
+                # 2026-07-19.
+                "QUEUE_WRITE_ENABLED": "true",
                 "EMAIL_FROM_ADDRESS": "noreply@penguinhealth.io",
                 "EMAIL_REPLY_TO": "noreply@penguinhealth.io",
                 "ADMIN_UI_BASE_URL": "https://app.penguinhealth.io",
@@ -197,6 +204,16 @@ class AuditEngine(Construct):
             self.rules_engine_fn,
             "dynamodb:GetItem",
             "dynamodb:PutItem",
+        )
+        # Document queue writes: pointer + version rows on the base table.
+        # Rules engine never queries the queue's GSIs — those are for the
+        # admin API's reviewer views and the auto-close scan — so no
+        # /index/* grant here.
+        document_queue_table.grant(
+            self.rules_engine_fn,
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
         )
 
         # Bedrock permissions for LLM-based rule evaluation

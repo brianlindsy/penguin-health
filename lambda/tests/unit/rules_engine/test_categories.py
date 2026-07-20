@@ -76,3 +76,32 @@ class TestStoreRunSummaryCategories:
             Key={'pk': 'ORG#test-org', 'sk': 'RUN#run-456'}
         )['Item']
         assert item['categories'] == []
+        # Queue counters default to zero when the caller didn't supply
+        # any — safe for the pre-cutover call path.
+        assert item['queue_new_documents'] == 0
+        assert item['queue_new_versions'] == 0
+        assert item['queue_duplicate_skips'] == 0
+
+    def test_queue_counters_persist_when_supplied(self, mock_dynamodb):
+        """The rules engine passes its per-leg queue counters through so
+        analytics + the completion email can surface the delta."""
+        from results_handler import store_run_summary
+
+        env_config = {'DYNAMODB_TABLE': 'penguin-health-validation-results'}
+        summary = {'total': 15, 'passed': 12, 'failed': 3, 'skipped': 0}
+        store_run_summary(
+            'run-789', 'test-org', summary, env_config,
+            queue_counters={
+                'new_documents': 7,
+                'new_versions': 2,
+                'duplicate_skips': 45,
+            },
+        )
+
+        table = mock_dynamodb.Table('penguin-health-validation-results')
+        item = table.get_item(
+            Key={'pk': 'ORG#test-org', 'sk': 'RUN#run-789'}
+        )['Item']
+        assert item['queue_new_documents'] == 7
+        assert item['queue_new_versions'] == 2
+        assert item['queue_duplicate_skips'] == 45

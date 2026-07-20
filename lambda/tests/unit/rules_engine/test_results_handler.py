@@ -93,3 +93,45 @@ class TestAggregateRunSummaryPagination:
 
         assert len(call_log) == 1
         assert summary == {'total': 1, 'passed': 1, 'failed': 0, 'skipped': 0}
+
+
+class TestAggregateRunSummarySkipsSentinelRows:
+    """Sentinel rows written by ``queue_handler.write_sentinel_row`` mark
+    resends we recognized as byte-identical duplicates. They carry no
+    real rule outcomes and must not distort the run rollup."""
+
+    def test_sentinel_rows_excluded_from_totals(self, mock_dynamodb, monkeypatch):
+        import results_handler
+        from results_handler import aggregate_run_summary
+
+        env_config = {'DYNAMODB_TABLE': 'penguin-health-validation-results'}
+
+        # Two real rows + two sentinels. The sentinels carry the same
+        # markers ``queue_handler.write_sentinel_row`` writes.
+        real = [
+            {'summary': {'passed': 1, 'failed': 0, 'skipped': 0}},
+            {'summary': {'passed': 0, 'failed': 1, 'skipped': 0}},
+        ]
+        sentinels = [
+            {'summary': {'passed': 0, 'failed': 0, 'skipped': 0},
+             'pk': 'DOC#DOC-1#SKIPPED#run-x',
+             'duplicate_of_version_sk': 'VERSION#2026-07-15T10:00:00'},
+            {'summary': {'passed': 0, 'failed': 0, 'skipped': 0},
+             'pk': 'DOC#DOC-2#SKIPPED#run-x',
+             'duplicate_of_version_sk': 'VERSION#2026-07-15T10:05:00'},
+        ]
+
+        class FakeTable:
+            def query(self, **kwargs):
+                return {'Items': real + sentinels}
+
+        class FakeResource:
+            def Table(self, name):
+                return FakeTable()
+
+        monkeypatch.setattr(results_handler, 'dynamodb', FakeResource())
+
+        summary = aggregate_run_summary('run-x', env_config)
+
+        # Sentinels dropped: 2 real rows, one PASS + one FAIL.
+        assert summary == {'total': 2, 'passed': 1, 'failed': 1, 'skipped': 0}

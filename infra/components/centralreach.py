@@ -83,7 +83,8 @@ _PER_ORG_SCHEDULES: list[dict] = [
 class CentralReach(Construct):
 
     def __init__(self, scope: Construct, construct_id: str, *,
-                 org_config_table) -> None:
+                 org_config_table,
+                 ingest_cursor_table) -> None:
         super().__init__(scope, construct_id)
 
         # ----- VPC ------------------------------------------------------
@@ -141,6 +142,13 @@ class CentralReach(Construct):
 
         # DDB: read CENTRALREACH_CONFIG (no writes).
         org_config_table.grant_read_data(self.task_role)
+
+        # DDB: read + write on the ingest-cursor table. Read to check
+        # "already ingested" before doing PDF+Bedrock work; write to
+        # mark an entry as ingested after `persist_note` succeeds. No
+        # deletes — a re-ingest is an operator-initiated action, not
+        # something the runner does on its own.
+        ingest_cursor_table.grant_read_write_data(self.task_role)
 
         # Secrets Manager: only the per-org credentials secret.
         # Wildcard scoped to the `/centralreach/*/credentials` path so
@@ -255,6 +263,12 @@ class CentralReach(Construct):
                 "ORG_CONFIG_TABLE_NAME": org_config_table.table_name,
                 "AUDIT_TABLE_NAME": f"{config.PROJECT_NAME}-audit",
                 "AUDIT_FIREHOSE_NAME": f"{config.PROJECT_NAME}-audit",
+                "CENTRALREACH_INGEST_CURSOR_TABLE":
+                    ingest_cursor_table.table_name,
+                # Feature flag for the ingest-cursor dedupe. Off by
+                # default so the infra can land ahead of the behavior
+                # change; flip via a task-def env override to enable.
+                "CENTRALREACH_INGEST_DEDUPE_ENABLED": "true",
             },
             # ORG_ID, RUN_ID, MODE are injected per-execution by the
             # Step Functions task below via container overrides.
@@ -374,7 +388,7 @@ class CentralReach(Construct):
             self, "CentralReachStateMachine",
             state_machine_name=f"{config.PROJECT_NAME}-centralreach-ingest",
             definition_body=sfn.DefinitionBody.from_chainable(choose_run_id),
-            timeout=Duration.minutes(180),
+            timeout=Duration.minutes(600),
             tracing_enabled=True,
         )
 

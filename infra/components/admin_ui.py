@@ -72,6 +72,7 @@ class AdminUi(Construct):
                  analytics_reports_table: dynamodb.ITable,
                  deep_jobs_table: dynamodb.ITable,
                  stedi_table: dynamodb.ITable,
+                 document_queue_table: dynamodb.ITable,
                  centralreach_state_machine=None) -> None:
         # centralreach_state_machine is optional so the admin UI can be
         # deployed standalone (e.g., a dev stack without the CentralReach
@@ -209,6 +210,8 @@ class AdminUi(Construct):
                 "DEEP_WORKER_LAMBDA": f"{config.PROJECT_NAME}-deep-analytics-worker",
                 "STEDI_TABLE_NAME": stedi_table.table_name,
                 "STEDI_API_KEY_SECRET": "penguin-health/stedi/api-key",
+                "VALIDATION_RESULTS_TABLE": validation_results_table.table_name,
+                "DOCUMENT_QUEUE_TABLE": document_queue_table.table_name,
             },
         )
 
@@ -360,6 +363,16 @@ class AdminUi(Construct):
             actions=["dynamodb:Query", "dynamodb:Scan", "dynamodb:GetItem",
                      "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
             resources=[f"{validation_results_table.table_arn}/index/*"],
+        ))
+
+        # Document queue: the admin API is the only reader/writer of
+        # reviewer state (status flips, finding rollups) and the only
+        # queryer of GSI1 for the reviewer's active-queue view.
+        document_queue_table.grant_read_write_data(self.api_function)
+        self.api_function.add_to_role_policy(iam.PolicyStatement(
+            actions=["dynamodb:Query", "dynamodb:Scan", "dynamodb:GetItem",
+                     "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
+            resources=[f"{document_queue_table.table_arn}/index/*"],
         ))
 
         analytics_reports_table.grant_read_write_data(self.api_function)
@@ -676,14 +689,24 @@ class AdminUi(Construct):
             ("GET",  "/api/organizations/{orgId}/analytics/reports"),
             ("GET",  "/api/organizations/{orgId}/analytics/reports/{reportId}"),
             ("DELETE", "/api/organizations/{orgId}/analytics/reports/{reportId}"),
+            # Validation-run reads stay for analytics + the queue's debug
+            # `?firstSeenRunId=…` filter. Per-run mutation endpoints were
+            # removed with the queue cutover — reviewers now mutate via
+            # /document-queue.
             ("GET",  "/api/organizations/{orgId}/validation-runs"),
             ("POST", "/api/organizations/{orgId}/validation-runs"),
             ("GET",  "/api/organizations/{orgId}/validation-runs/{runId}"),
             ("GET",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}"),
-            ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/confirm-finding"),
-            ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-resolved"),
-            ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-incorrect"),
-            ("PUT",  "/api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/confirm-document"),
+            # Document queue endpoints — must be registered here or API
+            # Gateway returns a route-not-found without CORS headers,
+            # which the browser reports as a CORS block.
+            ("GET",  "/api/organizations/{orgId}/document-queue"),
+            ("GET",  "/api/organizations/{orgId}/document-queue/{docId}"),
+            ("GET",  "/api/organizations/{orgId}/document-queue/{docId}/history"),
+            ("PUT",  "/api/organizations/{orgId}/document-queue/{docId}/findings/{ruleId}/confirm"),
+            ("PUT",  "/api/organizations/{orgId}/document-queue/{docId}/findings/{ruleId}/mark-resolved"),
+            ("PUT",  "/api/organizations/{orgId}/document-queue/{docId}/findings/{ruleId}/mark-incorrect"),
+            ("PUT",  "/api/organizations/{orgId}/document-queue/{docId}/confirm-document"),
             ("GET",  "/api/me/permissions"),
             ("GET",  "/api/organizations/{orgId}/subscriptions"),
             ("PUT",  "/api/organizations/{orgId}/subscriptions/{email}"),
@@ -709,6 +732,34 @@ class AdminUi(Construct):
                 integration=integration,
                 authorizer=jwt_authorizer,
             )
+
+        # CDK auto-adds one `AWS::Lambda::Permission` per route on top of
+        # the API function's resource policy. At ~40 routes the policy
+        # exceeds Lambda's 20 KB limit and the stack fails to deploy with
+        # "The final policy size is bigger than the limit". Collapse the
+        # per-route grants into a single wildcard permission that covers
+        # every method + path on this API, then strip the auto-generated
+        # ones via the CDK escape hatch. The auto-added permissions live
+        # as `AdminApiIntegration-Permission` grandchildren of each
+        # HttpRoute construct under `http_api`.
+        def _strip_route_permissions(node):
+            for child in list(node.node.children):
+                if child.node.id == "AdminApiIntegration-Permission":
+                    node.node.try_remove_child(child.node.id)
+                    continue
+                _strip_route_permissions(child)
+        _strip_route_permissions(self.http_api)
+
+        self.api_function.add_permission(
+            "AdminApiWildcardInvoke",
+            principal=iam.ServicePrincipal("apigateway.amazonaws.com"),
+            action="lambda:InvokeFunction",
+            source_arn=(
+                f"arn:aws:execute-api:{config.AWS_REGION}:"
+                f"{self.http_api.env.account}:"
+                f"{self.http_api.http_api_id}/*/*/*"
+            ),
+        )
 
         # ----- S3 Bucket for frontend -----
         self.frontend_bucket = s3.Bucket(self, "FrontendBucket",

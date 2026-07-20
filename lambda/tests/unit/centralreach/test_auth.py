@@ -21,6 +21,7 @@ from centralreach.auth import (
     OAuthAuthenticator,
     PlaceholderAuthenticator,
     Session,
+    _AUTH_RETRY_BACKOFF_SECONDS,
     _DEFAULT_LEGACY_AUTH_URL,
     _DEFAULT_REFERER,
     _DEFAULT_SCOPE,
@@ -415,3 +416,59 @@ def test_happy_path_does_not_sleep():
     auth, calls = _build_authenticator(retry_backoff_seconds=(60.0, 60.0))
     auth.authenticate("demo")
     assert calls["sleep"] == []
+
+
+def test_retry_logs_each_failed_attempt_to_stderr(capsys):
+    """Pinned: every failed attempt writes one line to stderr, so
+    incident triage can distinguish 'retry loop never engaged' from
+    'all N attempts failed.' The final failure logs a `giving up`
+    line and interior failures log the next sleep duration."""
+    auth, _ = _build_authenticator(
+        legacy_response={"body": {}, "cookies": {}},
+        retry_backoff_seconds=(0.5, 1.0),
+    )
+    with pytest.raises(CentralReachAuthError):
+        auth.authenticate("demo")
+    err = capsys.readouterr().err
+    lines = [line for line in err.splitlines()
+             if "centralreach-auth:" in line]
+    assert len(lines) == 3
+    assert "attempt 1/3 failed, retrying in 0.5s" in lines[0]
+    assert "attempt 2/3 failed, retrying in 1s" in lines[1]
+    assert "attempt 3/3 failed, giving up" in lines[2]
+
+
+def test_happy_path_does_not_log_attempt_lines(capsys):
+    """A successful first attempt must be silent — no per-attempt
+    log line when nothing failed."""
+    auth, _ = _build_authenticator(retry_backoff_seconds=(0.5,))
+    auth.authenticate("demo")
+    err = capsys.readouterr().err
+    assert "centralreach-auth:" not in err
+
+
+def test_default_backoff_schedule_matches_documented_incident_response():
+    """Pinned: the default schedule is the escalating one designed
+    around the prior CR outage window (1m, 5m, 15m, 30m). If this
+    changes, an operator needs to know."""
+    assert _AUTH_RETRY_BACKOFF_SECONDS == (60.0, 300.0, 900.0, 1800.0)
+
+
+def test_missing_cookie_error_includes_status_and_body_when_available():
+    """Pinned: the missing-cookie error surfaces the HTTP status,
+    Set-Cookie header count, and a body snippet from the legacy-auth
+    response. Without these an operator can't tell 200-with-no-cookies
+    (transient) from other CR-side error shapes."""
+    auth, _ = _build_authenticator(legacy_response={
+        "body": {},
+        "cookies": {},
+        "status": 200,
+        "raw_set_cookie_count": 0,
+        "raw_body": b'{"error":"temporarily_unavailable"}',
+    })
+    with pytest.raises(CentralReachAuthError) as excinfo:
+        auth.authenticate("demo")
+    msg = str(excinfo.value)
+    assert "status=200" in msg
+    assert "set_cookie_headers=0" in msg
+    assert "temporarily_unavailable" in msg

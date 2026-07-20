@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { hasRequiredFields } from '../../pages/ValidationRunDetailPage.jsx'
+import { hasRequiredFields } from '../../pages/DocumentQueuePage.jsx'
 
 // This test pins the render-gate behavior directly on the exported
 // helper without pulling the whole page into a render(). The gate

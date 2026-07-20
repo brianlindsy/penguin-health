@@ -8,13 +8,11 @@ import { OrganizationsPage } from './pages/OrganizationsPage.jsx'
 import { OrganizationDetail } from './pages/OrganizationDetail.jsx'
 import { RuleEditor } from './pages/RuleEditor.jsx'
 import { RuleCreator } from './pages/RuleCreator.jsx'
-import { ValidationRunDetailPage } from './pages/ValidationRunDetailPage.jsx'
+import { DocumentQueuePage } from './pages/DocumentQueuePage.jsx'
 import { AuditRulesPage } from './pages/AuditRulesPage.jsx'
 import { AuditRuleDetailPage } from './pages/AuditRuleDetailPage.jsx'
-import { ValidationResultsPage } from './pages/ValidationResultsPage.jsx'
 import { AnalyticsHubPage } from './pages/AnalyticsHubPage.jsx'
 import { SavedReportPage } from './pages/SavedReportPage.jsx'
-import { DashboardPage } from './pages/DashboardPage.jsx'
 import { UsersPage } from './pages/UsersPage.jsx'
 import { EligibilityPage } from './pages/EligibilityPage.jsx'
 import { EligibilityWorklistPage } from './pages/EligibilityWorklistPage.jsx'
@@ -22,10 +20,35 @@ import { NotificationPreferencesPage } from './pages/NotificationPreferencesPage
 import { setTokenProvider, setOnUnauthorized } from './api/client.js'
 import { RoleGuard } from './auth/RoleGuard.jsx'
 
-// Redirect /organizations/:orgId/validation-runs to org detail with validation tab
-function ValidationRunsRedirect() {
+// The old /validation-runs list, /validation-results page, and /dashboard
+// all now redirect to the document queue — that's the one reviewer surface.
+function DocumentQueueRedirect() {
   const { orgId } = useParams()
-  return <Navigate to={`/organizations/${orgId}?tab=validation`} replace />
+  return <Navigate to={`/organizations/${orgId}/document-queue`} replace />
+}
+
+// Root landing: users whose Cognito profile carries a `custom:organization_id`
+// go straight to their queue. Super-admins / unassigned users keep landing
+// on the org picker so they can pick one.
+function RootLanding({ user }) {
+  if (user?.organizationId) {
+    return <Navigate to={`/organizations/${user.organizationId}/document-queue`} replace />
+  }
+  return <OrganizationsPage />
+}
+
+// Legacy per-run detail URL is preserved for bookmarks. Reviewers no longer
+// work by-run — the queue is the primary surface — so we drop the runId and
+// land on the queue. The `firstSeenRunId` query param carries the original
+// context so operators can still narrow to "everything from run X".
+function LegacyRunDetailRedirect() {
+  const { orgId, runId } = useParams()
+  return (
+    <Navigate
+      to={`/organizations/${orgId}/document-queue?firstSeenRunId=${runId}`}
+      replace
+    />
+  )
 }
 
 // Old analytics URLs now live as tabs inside the Analytics hub. Preserve
@@ -60,7 +83,9 @@ function App() {
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/" /> : <LoginPage />} />
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-        <Route path="/" element={<OrganizationsPage />} />
+        {/* Users tied to a specific org land on their queue by default;
+            super-admins without an assigned org still hit the picker. */}
+        <Route path="/" element={<RootLanding user={user} />} />
         <Route path="/organizations/:orgId" element={<OrganizationDetail />} />
         <Route
           path="/organizations/:orgId/rules/new"
@@ -78,8 +103,9 @@ function App() {
             </RoleGuard>
           }
         />
-        <Route path="/organizations/:orgId/validation-runs" element={<ValidationRunsRedirect />} />
-        <Route path="/organizations/:orgId/validation-runs/:runId" element={<ValidationRunDetailPage />} />
+        <Route path="/organizations/:orgId/validation-runs" element={<DocumentQueueRedirect />} />
+        <Route path="/organizations/:orgId/validation-runs/:runId" element={<LegacyRunDetailRedirect />} />
+        <Route path="/organizations/:orgId/document-queue" element={<DocumentQueuePage />} />
         <Route
           path="/organizations/:orgId/analytics"
           element={<AnalyticsHubPage />}
@@ -94,12 +120,13 @@ function App() {
         />
         <Route path="/organizations/:orgId/audit-rules" element={<AuditRulesPage />} />
         <Route path="/organizations/:orgId/audit-rules/:ruleId" element={<AuditRuleDetailPage />} />
-        <Route path="/organizations/:orgId/validation-results" element={<ValidationResultsPage />} />
+        {/* Legacy URLs — preserve bookmarks; queue is the one reviewer surface. */}
+        <Route path="/organizations/:orgId/validation-results" element={<DocumentQueueRedirect />} />
         <Route
           path="/organizations/:orgId/revenue-analysis"
           element={<AnalyticsTabRedirect tab="revenue-analysis" />}
         />
-        <Route path="/organizations/:orgId/dashboard" element={<DashboardPage />} />
+        <Route path="/organizations/:orgId/dashboard" element={<DocumentQueueRedirect />} />
         <Route path="/organizations/:orgId/eligibility" element={<EligibilityPage />} />
         <Route path="/organizations/:orgId/eligibility/worklist" element={<EligibilityWorklistPage />} />
         {/* Legacy URL — preserve bookmarks. */}

@@ -141,22 +141,23 @@ describe('API Client', () => {
     )
   })
 
-  it('confirms finding with correct request body', async () => {
+  it('confirms queue finding with correct URL and body', async () => {
     setTokenProvider(() => Promise.resolve('token'))
 
     fetchSpy.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ finding_confirmed: true }),
+      json: () => Promise.resolve({ finding_confirmed_at: '2026-07-19T00:00:00Z' }),
     })
 
-    await api.confirmFinding('org-123', 'run-001', 'doc-001', 'rule-001')
+    await api.queueConfirmFinding('org-123', 'doc-001', 'rule-001')
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      expect.stringContaining('/api/organizations/org-123/validation-runs/run-001/documents/doc-001/confirm-finding'),
+      expect.stringContaining('/api/organizations/org-123/document-queue/doc-001/findings/rule-001/confirm'),
       expect.objectContaining({
         method: 'PUT',
-        body: JSON.stringify({ rule_id: 'rule-001' }),
+        // Queue endpoint carries doc + rule in the path — no rule_id in body.
+        body: JSON.stringify({}),
       })
     )
   })

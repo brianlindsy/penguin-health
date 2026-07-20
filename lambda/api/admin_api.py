@@ -6,6 +6,7 @@ Reuses multi_org_config.py for DynamoDB reads where possible.
 Includes LLM-enhanced endpoints for rule field extraction and note enhancement.
 """
 
+import base64
 import json
 import os
 import re
@@ -44,6 +45,9 @@ s3_client = boto3.client('s3')
 lambda_client = boto3.client('lambda')
 table = dynamodb.Table('penguin-health-org-config')
 validation_results_table = dynamodb.Table('penguin-health-validation-results')
+document_queue_table = dynamodb.Table(
+    os.environ.get('DOCUMENT_QUEUE_TABLE', 'penguin-health-document-queue')
+)
 analytics_reports_table = dynamodb.Table(
     os.environ.get('ANALYTICS_REPORTS_TABLE', 'penguin-health-analytics-reports')
 )
@@ -176,10 +180,13 @@ def lambda_handler(event, context):
         'POST /api/organizations/{orgId}/validation-runs': trigger_validation_run,
         'GET /api/organizations/{orgId}/validation-runs/{runId}': get_validation_run,
         'GET /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}': get_validation_result,
-        'PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/confirm-finding': confirm_finding,
-        'PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-resolved': mark_resolved,
-        'PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/mark-incorrect': mark_incorrect,
-        'PUT /api/organizations/{orgId}/validation-runs/{runId}/documents/{docId}/confirm-document': confirm_document,
+        'GET /api/organizations/{orgId}/document-queue': list_queue_entries,
+        'GET /api/organizations/{orgId}/document-queue/{docId}': get_queue_entry,
+        'GET /api/organizations/{orgId}/document-queue/{docId}/history': list_queue_entry_versions,
+        'PUT /api/organizations/{orgId}/document-queue/{docId}/findings/{ruleId}/confirm': queue_confirm_finding,
+        'PUT /api/organizations/{orgId}/document-queue/{docId}/findings/{ruleId}/mark-resolved': queue_mark_resolved,
+        'PUT /api/organizations/{orgId}/document-queue/{docId}/findings/{ruleId}/mark-incorrect': queue_mark_incorrect,
+        'PUT /api/organizations/{orgId}/document-queue/{docId}/confirm-document': queue_confirm_document,
         'GET /api/me/permissions': get_my_permissions,
         'GET /api/organizations/{orgId}/subscriptions': list_org_subscriptions,
         'PUT /api/organizations/{orgId}/subscriptions/{email}': upsert_org_user_subscription,
@@ -1056,371 +1063,718 @@ def get_validation_result(event, path_params, **kwargs):
     })
 
 
-@audited(action='write', resource_type='ValidationFinding',
-         resource_from_path='docId', purpose_of_use='OPERATIONS',
-         call_type='ddb_write')
-def confirm_finding(event, path_params, body, **kwargs):
+# ============================================================
+# Document queue endpoints
+# ============================================================
+#
+# The queue is the reviewer-facing surface: one entry per unique document,
+# fed continuously by the overnight validation runs. The per-run
+# mutation endpoints that used to hang off `/validation-runs/{runId}/…`
+# are gone — reviewers work off the queue, and the run-scoped
+# `list_validation_runs` / `get_validation_run` endpoints remain only for
+# analytics and the debug filter (`?firstSeenRunId=…` on the queue view).
+
+_QUEUE_STATUSES = ('open', 'resolved', 'confirmed', 'auto-closed')
+
+# Denormalized filter columns are stored on the pointer row by the
+# rules-engine write path (see queue_handler._DENORMALIZED_FILTERS). Keep
+# this list in sync — any addition here needs a matching write on the
+# rules-engine side or filter chips will silently return empty.
+_QUEUE_FILTER_COLUMNS = ('program', 'service_type', 'payer_description')
+
+
+def _queue_pointer_key(org_id: str, doc_id: str) -> dict:
+    return {'pk': f'ORG#{org_id}', 'sk': f'DOC#{doc_id}'}
+
+
+def _queue_gsi1_pk(org_id: str, status: str) -> str:
+    return f'ORG#{org_id}#STATUS#{status}'
+
+
+def _queue_gsi1_sk(iso_ts: str) -> str:
+    return f'LAST_UPDATED#{iso_ts}'
+
+
+def _load_queue_pointer(org_id: str, doc_id: str):
+    resp = document_queue_table.get_item(Key=_queue_pointer_key(org_id, doc_id))
+    return resp.get('Item')
+
+
+def _result_row_key_for_pointer(pointer: dict):
+    """Return the (pk, sk) that maps a pointer to its backing results row,
+    or None if the pointer is missing the necessary hints.
+
+    Pointer rows carry back-pointers `latest_validation_result_pk/sk`
+    into `validation_results_table`. Falls back to the (pk=DOC#doc_id,
+    sk=VALIDATION#latest_validation_timestamp) derivation if the
+    back-pointers weren't populated on legacy rows (backfill only writes
+    latest, so this fallback should never be hit outside of a race).
     """
-    Confirm a finding for a specific rule on a document validation.
+    pk = pointer.get('latest_validation_result_pk')
+    sk = pointer.get('latest_validation_result_sk')
+    if not pk or not sk:
+        doc_id = pointer.get('document_id')
+        ts = pointer.get('latest_validation_timestamp')
+        if not doc_id or not ts:
+            return None
+        pk = f'DOC#{doc_id}'
+        sk = f'VALIDATION#{ts}'
+    return pk, sk
 
-    Expects body with rule_id to identify which rule's finding is being confirmed.
-    Updates the specific rule within the document's rules array to set finding_confirmed=true.
 
-    The in-place row mutation (finding_confirmed_by, finding_confirmed_at) is
-    intentionally kept as a UI summary field — the immutable record of who
-    confirmed this lives in the audit event emitted by the decorator above.
+def _load_result_row_for_pointer(pointer: dict):
+    """Single-shot fetch, retained for callers outside the list view."""
+    key = _result_row_key_for_pointer(pointer)
+    if key is None:
+        return None
+    pk, sk = key
+    resp = validation_results_table.get_item(Key={'pk': pk, 'sk': sk})
+    return resp.get('Item')
+
+
+def _batch_load_result_rows(pointers: list) -> dict:
+    """Batch-fetch the backing results rows for a list of pointers.
+
+    Returns `{(pk, sk): item}` keyed by the same (pk, sk) tuple
+    `_result_row_key_for_pointer` produces. Missing rows are omitted.
+
+    Serially calling `GetItem` from `list_queue_entries` cost ~5–15 ms
+    per pointer × 200 pointers per page = up to 3 s of round-trip time
+    per request. `BatchGetItem` handles up to 100 keys per call, so a
+    page collapses to at most two round trips — and DDB's internal
+    parallelism drops the wall-clock latency further.
+    """
+    table_name = validation_results_table.name
+
+    keys = []
+    seen = set()
+    for p in pointers:
+        k = _result_row_key_for_pointer(p)
+        if k is None:
+            continue
+        if k in seen:
+            continue
+        seen.add(k)
+        keys.append({'pk': k[0], 'sk': k[1]})
+
+    out = {}
+    for i in range(0, len(keys), 100):
+        request = {table_name: {'Keys': keys[i:i + 100]}}
+        # Small bounded retry for UnprocessedKeys — DDB returns those
+        # under throttling. Handful is fine on a hot day; infinite is
+        # not.
+        for _ in range(5):
+            resp = dynamodb.batch_get_item(RequestItems=request)
+            for item in resp.get('Responses', {}).get(table_name, []):
+                out[(item.get('pk'), item.get('sk'))] = item
+            unprocessed = resp.get('UnprocessedKeys') or {}
+            if not unprocessed.get(table_name, {}).get('Keys'):
+                break
+            request = unprocessed
+    return out
+
+
+def _reconcile_queue_from_result(pointer: dict, result_item: dict) -> dict:
+    """Recompute pointer rollups + status from the latest results row.
+
+    Called after every reviewer mutation on a document. Determines the
+    new terminal state:
+      * all FAIL rules `fixed=True`   → status='resolved'
+      * `document_confirmed=True`     → status='confirmed'
+      * else                          → status stays 'open'
+
+    Writes the new counters and status back to the pointer, moves the
+    row across GSI1 partitions if the status changed, and drops it out
+    of GSI2 (the sparse open-idle scan) on any terminal state.
+
+    Returns the update result dict for the caller to include in the
+    response body.
+    """
+    rules = result_item.get('rules') or []
+    total = len(rules)
+    failed = sum(1 for r in rules if r.get('status') == 'FAIL')
+    resolved = sum(1 for r in rules if r.get('status') == 'FAIL' and r.get('fixed'))
+    confirmed_findings = sum(1 for r in rules
+                             if r.get('status') == 'FAIL' and r.get('finding_confirmed')
+                             and not r.get('fixed'))
+    open_fails = failed - resolved - confirmed_findings
+
+    if result_item.get('document_confirmed'):
+        new_status = 'confirmed'
+    elif failed > 0 and open_fails == 0 and confirmed_findings == 0 and resolved == failed:
+        new_status = 'resolved'
+    else:
+        new_status = 'open'
+
+    org_id = pointer['organization_id']
+    now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+    key = {'pk': pointer['pk'], 'sk': pointer['sk']}
+
+    if new_status == 'open':
+        # Preserve open state on GSI2 for the auto-close scan.
+        document_queue_table.update_item(
+            Key=key,
+            UpdateExpression=(
+                'SET #status = :s, '
+                'total_findings = :total, '
+                'failed_findings = :failed, '
+                'resolved_findings = :resolved, '
+                'confirmed_findings = :confirmed, '
+                'open_findings = :open_, '
+                'last_updated_at = :ts, '
+                'gsi1pk = :gsi1pk, '
+                'gsi1sk = :gsi1sk, '
+                'gsi2pk = :gsi2pk, '
+                'gsi2sk = :gsi2sk'
+            ),
+            ExpressionAttributeNames={'#status': 'status'},
+            ExpressionAttributeValues={
+                ':s': 'open',
+                ':total': total,
+                ':failed': failed,
+                ':resolved': resolved,
+                ':confirmed': confirmed_findings,
+                ':open_': open_fails,
+                ':ts': now_iso,
+                ':gsi1pk': _queue_gsi1_pk(org_id, 'open'),
+                ':gsi1sk': _queue_gsi1_sk(now_iso),
+                ':gsi2pk': 'STATUS#open',
+                ':gsi2sk': _queue_gsi1_sk(now_iso),
+            },
+        )
+    else:
+        # Terminal state: remove from GSI2 so the auto-close scan skips
+        # this entry.
+        document_queue_table.update_item(
+            Key=key,
+            UpdateExpression=(
+                'SET #status = :s, '
+                'total_findings = :total, '
+                'failed_findings = :failed, '
+                'resolved_findings = :resolved, '
+                'confirmed_findings = :confirmed, '
+                'open_findings = :open_, '
+                'last_updated_at = :ts, '
+                'gsi1pk = :gsi1pk, '
+                'gsi1sk = :gsi1sk '
+                'REMOVE gsi2pk, gsi2sk'
+            ),
+            ExpressionAttributeNames={'#status': 'status'},
+            ExpressionAttributeValues={
+                ':s': new_status,
+                ':total': total,
+                ':failed': failed,
+                ':resolved': resolved,
+                ':confirmed': confirmed_findings,
+                ':open_': open_fails,
+                ':ts': now_iso,
+                ':gsi1pk': _queue_gsi1_pk(org_id, new_status),
+                ':gsi1sk': _queue_gsi1_sk(now_iso),
+            },
+        )
+    return {
+        'queue_status': new_status,
+        'open_findings': open_fails,
+        'resolved_findings': resolved,
+        'confirmed_findings': confirmed_findings,
+        'failed_findings': failed,
+        'total_findings': total,
+        'last_updated_at': now_iso,
+    }
+
+
+def _queue_entry_authorize(event, org_id, doc_id):
+    """Load pointer + result row and RBAC-check.
+
+    Returns (pointer, result_item, claims, None) on success, or
+    (None, None, None, error_response) on failure.
+    """
+    claims, error = authorize_request(event, org_id=org_id)
+    if error:
+        return None, None, None, error
+
+    pointer = _load_queue_pointer(org_id, doc_id)
+    if not pointer:
+        return None, None, None, response(404, {
+            'error': f'Queue entry not found for document {doc_id}',
+        })
+    if pointer.get('organization_id') != org_id and not is_super_admin(claims):
+        return None, None, None, response(403, {'error': 'Access denied to this queue entry'})
+    if not _program_allowed(pointer, perms_module.viewable_programs(claims, org_id)):
+        return None, None, None, response(403, {'error': 'Access denied to this queue entry'})
+
+    result_item = _load_result_row_for_pointer(pointer)
+    if not result_item:
+        return None, None, None, response(404, {
+            'error': f'Latest validation result missing for document {doc_id}',
+        })
+    return pointer, result_item, claims, None
+
+
+def _find_rule(result_item, rule_id):
+    for idx, rule in enumerate(result_item.get('rules') or []):
+        if rule.get('rule_id') == rule_id:
+            return idx, rule
+    return None, None
+
+
+@audited(action='read', resource_type='DocumentQueue',
+         purpose_of_use='OPERATIONS')
+def list_queue_entries(event, path_params, **kwargs):
+    """Paginated queue view for reviewers.
+
+    Query params on the raw event (not path):
+      status              — comma-separated (default 'open')
+      program             — comma-separated, exact-match on denormalized column
+      service_type        — comma-separated
+      payer_description   — comma-separated
+      limit               — max entries returned (default 50, max 200)
+      next_token          — opaque pagination cursor from prior page
+      first_seen_run_id   — debug filter: only entries first seen in this run
+
+    Reviewer state (finding rollups + status) is materialized on the
+    pointer, so the response avoids a fanout read into the results table.
     """
     org_id = path_params.get('orgId')
-    run_id = path_params.get('runId')
-    doc_id = path_params.get('docId')
-
-    if not body or 'rule_id' not in body:
-        return response(400, {'error': 'Request body must include rule_id'})
-
-    rule_id = body['rule_id']
-
     claims, error = authorize_request(event, org_id=org_id)
     if error:
         return error
 
-    # First, query using GSI2 to get the item's primary keys
-    result = validation_results_table.query(
-        IndexName='gsi2',
-        KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}') & Key('gsi2sk').eq(f'DOC#{doc_id}'),
-    )
+    query = event.get('queryStringParameters') or {}
+    statuses = [s for s in (query.get('status') or 'open').split(',') if s in _QUEUE_STATUSES]
+    if not statuses:
+        return response(400, {'error': f"status must be one of {list(_QUEUE_STATUSES)}"})
 
-    if not result.get('Items'):
-        return response(404, {'error': f'Validation result not found for document {doc_id} in run {run_id}'})
-
-    item = result['Items'][0]
-
-    # RBAC check
-    if item.get('organization_id') != org_id and not is_super_admin(claims):
-        return response(403, {'error': 'Access denied to this validation result'})
-
-    if not _program_allowed(item, perms_module.viewable_programs(claims, org_id)):
-        return response(403, {'error': 'Access denied to this validation result'})
-
-    # Get the primary key and sort key from the item
-    pk = item.get('pk')
-    sk = item.get('sk')
-
-    if not pk or not sk:
-        return response(500, {'error': 'Item missing primary key attributes'})
-
-    # Find the rule index in the rules array
-    rules = item.get('rules', [])
-    rule_index = None
-    rule_category = None
-    for idx, rule in enumerate(rules):
-        if rule.get('rule_id') == rule_id:
-            rule_index = idx
-            rule_category = rule.get('category')
-            break
-
-    if rule_index is None:
-        return response(404, {'error': f'Rule {rule_id} not found on document {doc_id}'})
-
-    if not perms_module.can_view_category(claims, org_id, rule_category):
-        return response(403, {'error': 'Access denied to this rule category'})
-
-    if item.get('document_confirmed'):
-        return response(409, {'error': 'Document is confirmed; rule findings are locked'})
-
-    # Update the specific rule in the rules array to set finding_confirmed=true
     try:
-        timestamp = datetime.utcnow().isoformat() + 'Z'
-        user = claims.get('email') or 'unknown'
+        limit = min(int(query.get('limit') or 50), 200)
+    except (TypeError, ValueError):
+        return response(400, {'error': 'limit must be a positive integer'})
 
-        validation_results_table.update_item(
-            Key={'pk': pk, 'sk': sk},
-            UpdateExpression=f'SET #rules[{rule_index}].finding_confirmed = :val, #rules[{rule_index}].finding_confirmed_at = :ts, #rules[{rule_index}].finding_confirmed_by = :user',
-            ExpressionAttributeNames={
-                '#rules': 'rules',
-            },
-            ExpressionAttributeValues={
-                ':val': True,
-                ':ts': timestamp,
-                ':user': user,
-            },
-        )
-        print(f"Confirmed finding for rule {rule_id} on document {doc_id} in run {run_id}")
+    # When `include=rules`, hydrate each entry's rule array from the
+    # backing validation-results row. Reviewer card grid needs this to
+    # render per-rule badges without an N+1 detail-fetch loop on the
+    # client. Bounded by the page limit (<= 200), so the fanout stays
+    # under a page's worth of GetItem calls.
+    include_rules = 'rules' in (query.get('include') or '').split(',')
 
-        return response(200, {
-            'message': 'Finding confirmed successfully',
-            'document_id': doc_id,
-            'validation_run_id': run_id,
-            'rule_id': rule_id,
-            'finding_confirmed': True,
-            'finding_confirmed_at': timestamp,
-            'finding_confirmed_by': user,
-        })
+    filter_selections = {}
+    for col in _QUEUE_FILTER_COLUMNS:
+        raw = query.get(col)
+        if raw:
+            filter_selections[col] = [v for v in raw.split(',') if v]
 
-    except Exception as e:
-        print(f"Error confirming finding: {e}")
-        return response(500, {'error': str(e)})
+    first_seen_run_id = query.get('first_seen_run_id')
+
+    allowed_programs = perms_module.viewable_programs(claims, org_id)
+    allowed_categories = perms_module.viewable_categories(claims, org_id)
+
+    # Single-status pagination only. The cursor round-trip encodes just
+    # the DDB LastEvaluatedKey; extending it to carry (status, key) is
+    # possible but the UI currently paginates one status at a time.
+    # number of statuses (4).
+    entries = []
+    next_token = None
+    remaining = limit
+    for status in statuses:
+        if remaining <= 0:
+            break
+        kwargs_q = {
+            'IndexName': 'gsi1',
+            'KeyConditionExpression': Key('gsi1pk').eq(_queue_gsi1_pk(org_id, status)),
+            'ScanIndexForward': False,
+            'Limit': remaining,
+        }
+        filter_parts = []
+        expr_names = {}
+        expr_values = {}
+        for col, values in filter_selections.items():
+            placeholders = []
+            for i, v in enumerate(values):
+                ph = f':{col}_{i}'
+                expr_values[ph] = v
+                placeholders.append(ph)
+            expr_names[f'#{col}'] = col
+            filter_parts.append(f"#{col} IN ({','.join(placeholders)})")
+        if first_seen_run_id:
+            expr_names['#fsr'] = 'first_seen_run_id'
+            expr_values[':fsr'] = first_seen_run_id
+            filter_parts.append('#fsr = :fsr')
+        if filter_parts:
+            kwargs_q['FilterExpression'] = ' AND '.join(filter_parts)
+            kwargs_q['ExpressionAttributeNames'] = expr_names
+            kwargs_q['ExpressionAttributeValues'] = expr_values
+
+        # Only paginate the first status if a next_token was provided;
+        # otherwise start fresh.
+        token = query.get('next_token') if status == statuses[0] else None
+        if token:
+            try:
+                kwargs_q['ExclusiveStartKey'] = json.loads(
+                    base64.b64decode(token.encode('utf-8')).decode('utf-8')
+                )
+            except (ValueError, TypeError, json.JSONDecodeError):
+                return response(400, {'error': 'invalid next_token'})
+
+        # DynamoDB's Query with Limit=N returns up to N items BEFORE the
+        # FilterExpression runs. When a program/service_type filter drops
+        # most rows, DDB may hand back a short page + a LastEvaluatedKey.
+        # Walk that cursor server-side until we've either filled the
+        # user's `limit` or exhausted the partition, so a single request
+        # doesn't strand entries behind an unusable next_token.
+        #
+        # Two-pass shape:
+        #   1) Collect pointer rows that pass RBAC (cheap in-memory work).
+        #   2) When include_rules is set, BatchGetItem the backing results
+        #      rows for the whole page in one shot instead of one GetItem
+        #      per pointer — the big latency win.
+        query_last_evaluated = kwargs_q.pop('ExclusiveStartKey', None)
+        page_last_evaluated = None
+        pointers = []
+        while remaining > 0:
+            if query_last_evaluated:
+                kwargs_q['ExclusiveStartKey'] = query_last_evaluated
+            elif 'ExclusiveStartKey' in kwargs_q:
+                del kwargs_q['ExclusiveStartKey']
+            resp = document_queue_table.query(**kwargs_q)
+            for item in resp.get('Items', []):
+                if not _program_allowed(item, allowed_programs):
+                    continue
+                pointers.append(item)
+                remaining -= 1
+                if remaining <= 0:
+                    break
+            query_last_evaluated = resp.get('LastEvaluatedKey')
+            page_last_evaluated = query_last_evaluated
+            if not query_last_evaluated:
+                break
+
+        result_row_map = {}
+        if include_rules and pointers:
+            result_row_map = _batch_load_result_rows(pointers)
+
+        for item in pointers:
+            entry = {
+                'document_id': item.get('document_id'),
+                'organization_id': item.get('organization_id'),
+                'status': item.get('status'),
+                'first_seen_at': item.get('first_seen_at'),
+                'first_seen_run_id': item.get('first_seen_run_id'),
+                'last_updated_at': item.get('last_updated_at'),
+                'last_seen_at': item.get('last_seen_at'),
+                'latest_validation_run_id': item.get('latest_validation_run_id'),
+                'latest_validation_timestamp': item.get('latest_validation_timestamp'),
+                'total_findings': convert_decimals(item.get('total_findings')),
+                'failed_findings': convert_decimals(item.get('failed_findings')),
+                'open_findings': convert_decimals(item.get('open_findings')),
+                'resolved_findings': convert_decimals(item.get('resolved_findings')),
+                'confirmed_findings': convert_decimals(item.get('confirmed_findings')),
+                'version_count': convert_decimals(item.get('version_count')),
+                'seen_count': convert_decimals(item.get('seen_count')),
+                'field_values': convert_decimals(item.get('field_values_snapshot') or {}),
+            }
+            if include_rules:
+                key = _result_row_key_for_pointer(item)
+                result_row = result_row_map.get(key) if key else None
+                if result_row:
+                    rules = [
+                        r for r in (result_row.get('rules') or [])
+                        if r.get('category') in allowed_categories
+                    ]
+                    entry['rules'] = convert_decimals(rules)
+                    entry['summary'] = convert_decimals(result_row.get('summary') or {})
+                    entry['document_confirmed'] = bool(result_row.get('document_confirmed'))
+                    # Merge canonical UI projection on top of the
+                    # snapshot so the card renders the same field
+                    # labels the detail endpoint would.
+                    entry['field_values'] = convert_decimals(
+                        merge_display_field_values(result_row)
+                    )
+                else:
+                    entry['rules'] = []
+                    entry['summary'] = {}
+            entries.append(entry)
+
+        if page_last_evaluated and remaining <= 0 and status == statuses[0]:
+            next_token = base64.b64encode(
+                json.dumps(page_last_evaluated, default=str).encode('utf-8')
+            ).decode('utf-8')
+
+    return response(200, {
+        'organization_id': org_id,
+        'entries': entries,
+        'next_token': next_token,
+    })
 
 
-@audited(action='write', resource_type='ValidationFinding',
-         resource_from_path='docId', purpose_of_use='OPERATIONS',
-         call_type='ddb_write')
-def mark_resolved(event, path_params, body, **kwargs):
-    """
-    Mark a rule finding as resolved/fixed.
-
-    Expects body with rule_id to identify which rule is being resolved.
-    Sets fixed=true, fixed_at, fixed_by and removes finding_confirmed attributes.
-
-    NOTE: this handler intentionally REMOVEs `finding_confirmed_*` from the
-    DDB item — the prior confirmation evidence is destroyed on the row. The
-    immutable record of the prior confirmation (and this resolution) lives
-    in the audit event emitted by the decorator above and in the WORM S3
-    archive. This is the right trade-off: the row stays small and the UI
-    has a single "currently resolved" summary, while history is preserved
-    in the audit log.
-    """
+@audited(action='read', resource_type='DocumentQueueEntry',
+         resource_from_path='docId', purpose_of_use='OPERATIONS')
+def get_queue_entry(event, path_params, **kwargs):
+    """Latest-version detail for a single queue entry."""
     org_id = path_params.get('orgId')
-    run_id = path_params.get('runId')
     doc_id = path_params.get('docId')
+    pointer, result_item, claims, error = _queue_entry_authorize(event, org_id, doc_id)
+    if error:
+        return error
 
-    if not body or 'rule_id' not in body:
-        return response(400, {'error': 'Request body must include rule_id'})
+    allowed = perms_module.viewable_categories(claims, org_id)
+    rules = [r for r in (result_item.get('rules') or []) if r.get('category') in allowed]
+    if not rules:
+        return response(403, {'error': 'No viewable rules for this document'})
 
-    rule_id = body['rule_id']
+    return response(200, {
+        'document_id': pointer.get('document_id'),
+        'organization_id': pointer.get('organization_id'),
+        'status': pointer.get('status'),
+        'first_seen_at': pointer.get('first_seen_at'),
+        'first_seen_run_id': pointer.get('first_seen_run_id'),
+        'last_updated_at': pointer.get('last_updated_at'),
+        'last_seen_at': pointer.get('last_seen_at'),
+        'version_count': convert_decimals(pointer.get('version_count')),
+        'seen_count': convert_decimals(pointer.get('seen_count')),
+        'latest_validation_run_id': pointer.get('latest_validation_run_id'),
+        'latest_validation_timestamp': pointer.get('latest_validation_timestamp'),
+        'filename': result_item.get('filename'),
+        'summary': convert_decimals(result_item.get('summary', {})),
+        'rules': convert_decimals(rules),
+        'field_values': convert_decimals(merge_display_field_values(result_item)),
+        'document_confirmed': bool(result_item.get('document_confirmed')),
+        'document_confirmed_at': result_item.get('document_confirmed_at'),
+        'document_confirmed_by': result_item.get('document_confirmed_by'),
+    })
 
+
+@audited(action='read', resource_type='DocumentQueueEntry',
+         resource_from_path='docId', purpose_of_use='OPERATIONS')
+def list_queue_entry_versions(event, path_params, **kwargs):
+    """Version history for a single document, newest-first."""
+    org_id = path_params.get('orgId')
+    doc_id = path_params.get('docId')
     claims, error = authorize_request(event, org_id=org_id)
     if error:
         return error
 
-    # First, query using GSI2 to get the item's primary keys
-    result = validation_results_table.query(
-        IndexName='gsi2',
-        KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}') & Key('gsi2sk').eq(f'DOC#{doc_id}'),
+    pointer = _load_queue_pointer(org_id, doc_id)
+    if not pointer:
+        return response(404, {'error': f'Queue entry not found for document {doc_id}'})
+    if pointer.get('organization_id') != org_id and not is_super_admin(claims):
+        return response(403, {'error': 'Access denied to this queue entry'})
+    if not _program_allowed(pointer, perms_module.viewable_programs(claims, org_id)):
+        return response(403, {'error': 'Access denied to this queue entry'})
+
+    items = _query_all(
+        document_queue_table,
+        KeyConditionExpression=Key('pk').eq(f'ORG#{org_id}#DOC#{doc_id}')
+        & Key('sk').begins_with('VERSION#'),
+        ScanIndexForward=False,
     )
+    versions = [{
+        'version_sk': item.get('sk'),
+        'validation_run_id': item.get('validation_run_id'),
+        'validation_timestamp': item.get('validation_timestamp'),
+        'content_hash': item.get('content_hash'),
+        'previous_version_sk': item.get('previous_version_sk'),
+        'summary': convert_decimals(item.get('summary') or {}),
+        'field_values': convert_decimals(item.get('field_values_snapshot') or {}),
+    } for item in items]
 
-    if not result.get('Items'):
-        return response(404, {'error': f'Validation result not found for document {doc_id} in run {run_id}'})
-
-    item = result['Items'][0]
-
-    # RBAC check
-    if item.get('organization_id') != org_id and not is_super_admin(claims):
-        return response(403, {'error': 'Access denied to this validation result'})
-
-    if not _program_allowed(item, perms_module.viewable_programs(claims, org_id)):
-        return response(403, {'error': 'Access denied to this validation result'})
-
-    # Get the primary key and sort key from the item
-    pk = item.get('pk')
-    sk = item.get('sk')
-
-    if not pk or not sk:
-        return response(500, {'error': 'Item missing primary key attributes'})
-
-    # Find the rule index in the rules array
-    rules = item.get('rules', [])
-    rule_index = None
-    rule_category = None
-    for idx, rule in enumerate(rules):
-        if rule.get('rule_id') == rule_id:
-            rule_index = idx
-            rule_category = rule.get('category')
-            break
-
-    if rule_index is None:
-        return response(404, {'error': f'Rule {rule_id} not found on document {doc_id}'})
-
-    if not perms_module.can_view_category(claims, org_id, rule_category):
-        return response(403, {'error': 'Access denied to this rule category'})
-
-    if item.get('document_confirmed'):
-        return response(409, {'error': 'Document is confirmed; rule findings are locked'})
-
-    # Update the specific rule: set fixed=true and remove finding_confirmed
-    try:
-        timestamp = datetime.utcnow().isoformat() + 'Z'
-        user = claims.get('email') or 'unknown'
-
-        validation_results_table.update_item(
-            Key={'pk': pk, 'sk': sk},
-            UpdateExpression=f'SET #rules[{rule_index}].#fixed = :val, #rules[{rule_index}].fixed_at = :ts, #rules[{rule_index}].fixed_by = :user REMOVE #rules[{rule_index}].finding_confirmed, #rules[{rule_index}].finding_confirmed_at, #rules[{rule_index}].finding_confirmed_by',
-            ExpressionAttributeNames={
-                '#rules': 'rules',
-                '#fixed': 'fixed',
-            },
-            ExpressionAttributeValues={
-                ':val': True,
-                ':ts': timestamp,
-                ':user': user,
-            },
-        )
-        print(f"Marked rule {rule_id} as resolved on document {doc_id} in run {run_id}")
-
-        return response(200, {
-            'message': 'Rule marked as resolved successfully',
-            'document_id': doc_id,
-            'validation_run_id': run_id,
-            'rule_id': rule_id,
-            'fixed': True,
-            'fixed_at': timestamp,
-            'fixed_by': user,
-        })
-
-    except Exception as e:
-        print(f"Error marking rule as resolved: {e}")
-        return response(500, {'error': str(e)})
+    return response(200, {
+        'document_id': doc_id,
+        'organization_id': org_id,
+        'versions': versions,
+    })
 
 
-@audited(action='write', resource_type='ValidationFinding',
+@audited(action='write', resource_type='DocumentQueueFinding',
          resource_from_path='docId', purpose_of_use='OPERATIONS',
          call_type='ddb_write')
-def mark_incorrect(event, path_params, body, **kwargs):
-    """
-    Mark a rule finding as incorrect and set the reviewer's chosen outcome.
+def queue_confirm_finding(event, path_params, body, **kwargs):
+    """Mark a failing rule as reviewer-confirmed (acknowledged, not fixed).
 
-    Sets feedback_given=true. `outcome` in the body picks the corrected
-    status ('PASS' or 'FAIL'); defaults to 'PASS' for the FAIL→false-positive
-    flow. Choosing 'FAIL' re-injects the rule into the normal FAIL workflow
-    (needs confirm/resolve), used when a SKIP should have flagged an issue.
+    Idempotent: repeat calls re-stamp finding_confirmed_at/by.
     """
     org_id = path_params.get('orgId')
-    run_id = path_params.get('runId')
     doc_id = path_params.get('docId')
+    rule_id = path_params.get('ruleId')
 
-    if not body or 'rule_id' not in body:
-        return response(400, {'error': 'Request body must include rule_id'})
+    pointer, result_item, claims, error = _queue_entry_authorize(event, org_id, doc_id)
+    if error:
+        return error
 
-    rule_id = body['rule_id']
-    outcome = body.get('outcome', 'PASS')
+    rule_index, rule = _find_rule(result_item, rule_id)
+    if rule_index is None:
+        return response(404, {'error': f'Rule {rule_id} not found on document {doc_id}'})
+    if not perms_module.can_view_category(claims, org_id, rule.get('category')):
+        return response(403, {'error': 'Access denied to this rule category'})
+    if result_item.get('document_confirmed'):
+        return response(409, {'error': 'Document is confirmed; rule findings are locked'})
+
+    timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+    user = claims.get('email') or 'unknown'
+
+    validation_results_table.update_item(
+        Key={'pk': result_item['pk'], 'sk': result_item['sk']},
+        UpdateExpression=(
+            f'SET #rules[{rule_index}].finding_confirmed = :val, '
+            f'#rules[{rule_index}].finding_confirmed_at = :ts, '
+            f'#rules[{rule_index}].finding_confirmed_by = :user'
+        ),
+        ExpressionAttributeNames={'#rules': 'rules'},
+        ExpressionAttributeValues={':val': True, ':ts': timestamp, ':user': user},
+    )
+
+    refreshed = validation_results_table.get_item(
+        Key={'pk': result_item['pk'], 'sk': result_item['sk']}
+    ).get('Item', result_item)
+    reconciled = _reconcile_queue_from_result(pointer, refreshed)
+
+    return response(200, {
+        'message': 'Finding confirmed successfully',
+        'document_id': doc_id,
+        'rule_id': rule_id,
+        'finding_confirmed_at': timestamp,
+        'finding_confirmed_by': user,
+        **reconciled,
+    })
+
+
+@audited(action='write', resource_type='DocumentQueueFinding',
+         resource_from_path='docId', purpose_of_use='OPERATIONS',
+         call_type='ddb_write')
+def queue_mark_resolved(event, path_params, body, **kwargs):
+    """Mark a failing rule as fixed. Clears any prior finding_confirmed.
+
+    The reviewer intent is: "I inspected this and corrected the underlying
+    issue." Confirmation evidence is destroyed on the row; the audit event
+    preserves history.
+    """
+    org_id = path_params.get('orgId')
+    doc_id = path_params.get('docId')
+    rule_id = path_params.get('ruleId')
+
+    pointer, result_item, claims, error = _queue_entry_authorize(event, org_id, doc_id)
+    if error:
+        return error
+
+    rule_index, rule = _find_rule(result_item, rule_id)
+    if rule and not perms_module.can_view_category(claims, org_id, rule.get('category')):
+        return response(403, {'error': 'Access denied to this rule category'})
+    if rule_index is None:
+        return response(404, {'error': f'Rule {rule_id} not found on document {doc_id}'})
+    if result_item.get('document_confirmed'):
+        return response(409, {'error': 'Document is confirmed; rule findings are locked'})
+
+    timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+    user = claims.get('email') or 'unknown'
+
+    validation_results_table.update_item(
+        Key={'pk': result_item['pk'], 'sk': result_item['sk']},
+        UpdateExpression=(
+            f'SET #rules[{rule_index}].#fixed = :val, '
+            f'#rules[{rule_index}].fixed_at = :ts, '
+            f'#rules[{rule_index}].fixed_by = :user '
+            f'REMOVE #rules[{rule_index}].finding_confirmed, '
+            f'#rules[{rule_index}].finding_confirmed_at, '
+            f'#rules[{rule_index}].finding_confirmed_by'
+        ),
+        ExpressionAttributeNames={'#rules': 'rules', '#fixed': 'fixed'},
+        ExpressionAttributeValues={':val': True, ':ts': timestamp, ':user': user},
+    )
+
+    refreshed = validation_results_table.get_item(
+        Key={'pk': result_item['pk'], 'sk': result_item['sk']}
+    ).get('Item', result_item)
+    reconciled = _reconcile_queue_from_result(pointer, refreshed)
+
+    return response(200, {
+        'message': 'Rule marked as resolved successfully',
+        'document_id': doc_id,
+        'rule_id': rule_id,
+        'fixed': True,
+        'fixed_at': timestamp,
+        'fixed_by': user,
+        **reconciled,
+    })
+
+
+@audited(action='write', resource_type='DocumentQueueFinding',
+         resource_from_path='docId', purpose_of_use='OPERATIONS',
+         call_type='ddb_write')
+def queue_mark_incorrect(event, path_params, body, **kwargs):
+    """Mark a rule as incorrectly evaluated; set the reviewer's outcome.
+
+    body.outcome must be 'PASS' or 'FAIL' (default 'PASS'). Setting to
+    'PASS' takes a FAIL out of the failing bucket, which can drive a
+    resolved status flip if it was the last open FAIL.
+    """
+    org_id = path_params.get('orgId')
+    doc_id = path_params.get('docId')
+    rule_id = path_params.get('ruleId')
+
+    outcome = (body or {}).get('outcome', 'PASS')
     if outcome not in ('PASS', 'FAIL'):
         return response(400, {'error': "outcome must be 'PASS' or 'FAIL'"})
 
-    claims, error = authorize_request(event, org_id=org_id)
+    pointer, result_item, claims, error = _queue_entry_authorize(event, org_id, doc_id)
     if error:
         return error
 
-    # Query using GSI2 to get the item's primary keys
-    result = validation_results_table.query(
-        IndexName='gsi2',
-        KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}') & Key('gsi2sk').eq(f'DOC#{doc_id}'),
-    )
-
-    if not result.get('Items'):
-        return response(404, {'error': f'Validation result not found for document {doc_id} in run {run_id}'})
-
-    item = result['Items'][0]
-
-    # RBAC check
-    if item.get('organization_id') != org_id and not is_super_admin(claims):
-        return response(403, {'error': 'Access denied to this validation result'})
-
-    if not _program_allowed(item, perms_module.viewable_programs(claims, org_id)):
-        return response(403, {'error': 'Access denied to this validation result'})
-
-    pk = item.get('pk')
-    sk = item.get('sk')
-
-    if not pk or not sk:
-        return response(500, {'error': 'Item missing primary key attributes'})
-
-    # Find the rule index
-    rules = item.get('rules', [])
-    rule_index = None
-    rule_category = None
-    for idx, rule in enumerate(rules):
-        if rule.get('rule_id') == rule_id:
-            rule_index = idx
-            rule_category = rule.get('category')
-            break
-
+    rule_index, rule = _find_rule(result_item, rule_id)
+    if rule and not perms_module.can_view_category(claims, org_id, rule.get('category')):
+        return response(403, {'error': 'Access denied to this rule category'})
     if rule_index is None:
         return response(404, {'error': f'Rule {rule_id} not found on document {doc_id}'})
-
-    if not perms_module.can_view_category(claims, org_id, rule_category):
-        return response(403, {'error': 'Access denied to this rule category'})
-
-    if item.get('document_confirmed'):
+    if result_item.get('document_confirmed'):
         return response(409, {'error': 'Document is confirmed; rule findings are locked'})
 
-    try:
-        timestamp = datetime.utcnow().isoformat() + 'Z'
-        user = claims.get('email') or 'unknown'
+    timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+    user = claims.get('email') or 'unknown'
 
-        validation_results_table.update_item(
-            Key={'pk': pk, 'sk': sk},
-            UpdateExpression=f'SET #rules[{rule_index}].feedback_given = :fg, #rules[{rule_index}].feedback_given_at = :ts, #rules[{rule_index}].feedback_given_by = :user, #rules[{rule_index}].#status = :outcome',
-            ExpressionAttributeNames={
-                '#rules': 'rules',
-                '#status': 'status',
-            },
-            ExpressionAttributeValues={
-                ':fg': True,
-                ':ts': timestamp,
-                ':user': user,
-                ':outcome': outcome,
-            },
-        )
-        print(f"Marked rule {rule_id} as incorrect (outcome={outcome}) on document {doc_id} in run {run_id}")
+    validation_results_table.update_item(
+        Key={'pk': result_item['pk'], 'sk': result_item['sk']},
+        UpdateExpression=(
+            f'SET #rules[{rule_index}].feedback_given = :fg, '
+            f'#rules[{rule_index}].feedback_given_at = :ts, '
+            f'#rules[{rule_index}].feedback_given_by = :user, '
+            f'#rules[{rule_index}].#status = :outcome'
+        ),
+        ExpressionAttributeNames={'#rules': 'rules', '#status': 'status'},
+        ExpressionAttributeValues={
+            ':fg': True, ':ts': timestamp, ':user': user, ':outcome': outcome,
+        },
+    )
 
-        return response(200, {
-            'message': 'Rule marked as incorrect successfully',
-            'document_id': doc_id,
-            'validation_run_id': run_id,
-            'rule_id': rule_id,
-            'feedback_given': True,
-            'feedback_given_at': timestamp,
-            'status': outcome,
-        })
+    refreshed = validation_results_table.get_item(
+        Key={'pk': result_item['pk'], 'sk': result_item['sk']}
+    ).get('Item', result_item)
+    reconciled = _reconcile_queue_from_result(pointer, refreshed)
 
-    except Exception as e:
-        print(f"Error marking rule as incorrect: {e}")
-        return response(500, {'error': str(e)})
+    return response(200, {
+        'message': 'Rule marked as incorrect successfully',
+        'document_id': doc_id,
+        'rule_id': rule_id,
+        'status': outcome,
+        'feedback_given_at': timestamp,
+        **reconciled,
+    })
 
 
-@audited(action='write', resource_type='ValidationDocument',
+@audited(action='write', resource_type='DocumentQueueDocument',
          resource_from_path='docId', purpose_of_use='OPERATIONS',
          call_type='ddb_write')
-def confirm_document(event, path_params, body, **kwargs):
-    """
-    Confirm a document-level sign-off from a reviewer.
+def queue_confirm_document(event, path_params, body, **kwargs):
+    """Reviewer sign-off on the whole document. Requires all rules PASS/SKIP.
 
-    Only allowed when every rule on the document has status PASS or SKIP —
-    a doc with any FAIL or ERROR rule cannot be doc-confirmed. Setting this
-    flag locks the document: rule-level confirm/resolve/mark-incorrect
-    endpoints will reject further mutations until the flag is cleared
-    (which today has no endpoint — confirmation is intentionally terminal).
+    Terminal: flips the queue pointer to `status='confirmed'` and removes
+    the row from the auto-close scan.
     """
     org_id = path_params.get('orgId')
-    run_id = path_params.get('runId')
     doc_id = path_params.get('docId')
 
-    claims, error = authorize_request(event, org_id=org_id)
+    pointer, result_item, claims, error = _queue_entry_authorize(event, org_id, doc_id)
     if error:
         return error
 
-    result = validation_results_table.query(
-        IndexName='gsi2',
-        KeyConditionExpression=Key('gsi2pk').eq(f'RUN#{run_id}') & Key('gsi2sk').eq(f'DOC#{doc_id}'),
-    )
-
-    if not result.get('Items'):
-        return response(404, {'error': f'Validation result not found for document {doc_id} in run {run_id}'})
-
-    item = result['Items'][0]
-
-    if item.get('organization_id') != org_id and not is_super_admin(claims):
-        return response(403, {'error': 'Access denied to this validation result'})
-
-    if not _program_allowed(item, perms_module.viewable_programs(claims, org_id)):
-        return response(403, {'error': 'Access denied to this validation result'})
-
-    pk = item.get('pk')
-    sk = item.get('sk')
-
-    if not pk or not sk:
-        return response(500, {'error': 'Item missing primary key attributes'})
-
-    rules = item.get('rules', [])
+    rules = result_item.get('rules') or []
     if not is_super_admin(claims):
         for rule in rules:
             cat = rule.get('category')
@@ -1433,37 +1787,49 @@ def confirm_document(event, path_params, body, **kwargs):
             'error': 'Document has rules that are not PASS or SKIP; cannot confirm',
             'rule_ids': ineligible,
         })
-
-    if item.get('document_confirmed'):
+    if result_item.get('document_confirmed'):
         return response(409, {'error': 'Document already confirmed'})
 
-    try:
-        timestamp = datetime.utcnow().isoformat() + 'Z'
-        user = claims.get('email') or 'unknown'
+    timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+    user = claims.get('email') or 'unknown'
 
-        validation_results_table.update_item(
-            Key={'pk': pk, 'sk': sk},
-            UpdateExpression='SET document_confirmed = :val, document_confirmed_at = :ts, document_confirmed_by = :user',
-            ExpressionAttributeValues={
-                ':val': True,
-                ':ts': timestamp,
-                ':user': user,
-            },
-        )
-        print(f"Confirmed document {doc_id} in run {run_id}")
+    validation_results_table.update_item(
+        Key={'pk': result_item['pk'], 'sk': result_item['sk']},
+        UpdateExpression=(
+            'SET document_confirmed = :val, '
+            'document_confirmed_at = :ts, '
+            'document_confirmed_by = :user'
+        ),
+        ExpressionAttributeValues={':val': True, ':ts': timestamp, ':user': user},
+    )
 
-        return response(200, {
-            'message': 'Document confirmed successfully',
-            'document_id': doc_id,
-            'validation_run_id': run_id,
-            'document_confirmed': True,
-            'document_confirmed_at': timestamp,
-            'document_confirmed_by': user,
-        })
+    refreshed = validation_results_table.get_item(
+        Key={'pk': result_item['pk'], 'sk': result_item['sk']}
+    ).get('Item', result_item)
+    reconciled = _reconcile_queue_from_result(pointer, refreshed)
 
-    except Exception as e:
-        print(f"Error confirming document: {e}")
-        return response(500, {'error': str(e)})
+    return response(200, {
+        'message': 'Document confirmed successfully',
+        'document_id': doc_id,
+        'document_confirmed': True,
+        'document_confirmed_at': timestamp,
+        'document_confirmed_by': user,
+        **reconciled,
+    })
+
+
+# ============================================================
+# Legacy per-run mutation endpoints — REMOVED (2026-07-19)
+# ============================================================
+#
+# `confirm_finding`, `mark_resolved`, `mark_incorrect`, and
+# `confirm_document` used to live here scoped by (runId, docId). They
+# were replaced by their `queue_*` counterparts above, which are
+# document-scoped. The UI cutover to `DocumentQueuePage` is shipping in
+# the same change, so no shim is retained. Historical read paths
+# (`list_validation_runs`, `get_validation_run`,
+# `get_validation_result`) remain for analytics + debug.
+
 
 
 CUTOVER_DATE = '2026-05-01'

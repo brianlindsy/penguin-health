@@ -14,32 +14,64 @@ def _admin_ui_base_url() -> str:
     return os.environ.get("ADMIN_UI_BASE_URL", "https://app.penguinhealth.io").rstrip("/")
 
 
-def render_validation_run_complete(*, org_id: str, validation_run_id: str, summary: dict) -> tuple[str, str]:
+def render_validation_run_complete(
+    *,
+    org_id: str,
+    validation_run_id: str,
+    summary: dict,
+    queue_counters: dict | None = None,
+) -> tuple[str, str]:
     """Subject + body for a finished validation run.
 
-    `summary` is the dict produced by results_handler.aggregate_run_summary —
-    only the aggregate counts are emitted into the body.
+    The reviewer-facing story after the document-queue cutover is:
+      * How many NEW documents landed in the queue for review tonight?
+      * How many resends were byte-identical and correctly skipped?
+      * How many prior docs got new versions (content changed)?
+
+    `queue_counters` (from the rules-engine per-run counters) supplies
+    the queue delta. Aggregate only — no document ids, no field values,
+    no rule messages. `summary` is accepted for the subject fallback
+    when queue_counters is absent; the body no longer surfaces rule
+    aggregates because reviewers work off the queue, not the run.
+
+    The deep link lands on the queue's default view for this org.
+    Reviewers can filter to tonight's run themselves inside the app if
+    needed; the email itself carries no run id.
     """
-    total = summary.get("total", 0)
-    passed = summary.get("passed", 0)
-    failed = summary.get("failed", 0)
-    skipped = summary.get("skipped", 0)
+    counters = queue_counters or {}
+    new_docs = int(counters.get("new_documents", 0) or 0)
+    new_versions = int(counters.get("new_versions", 0) or 0)
+    duplicates = int(counters.get("duplicate_skips", 0) or 0)
+    needs_review = new_docs + new_versions
 
-    deep_link = (
-        f"{_admin_ui_base_url()}/organizations/{org_id}/validation-runs/{validation_run_id}"
+    deep_link = f"{_admin_ui_base_url()}/organizations/{org_id}/document-queue"
+
+    if queue_counters is None:
+        # Old shape — kept for callers not yet threaded through with the
+        # queue counters. Behaves identically to the pre-cutover email.
+        failed = summary.get("failed", 0)
+        total = summary.get("total", 0)
+        subject = f"Validation run finished — {failed} failed of {total}"
+        body = (
+            "A validation run has finished.\n"
+            "\n"
+            f"Review documents: {deep_link}\n"
+        )
+        return subject, body
+
+    subject = (
+        f"Document queue update — {needs_review} for review "
+        f"({duplicates} unchanged skipped)"
     )
-
-    subject = f"Validation run finished — {failed} failed of {total}"
     body = (
-        f"A validation run has finished.\n"
-        f"\n"
-        f"Run:     {validation_run_id}\n"
-        f"Total:   {total}\n"
-        f"Passed:  {passed}\n"
-        f"Failed:  {failed}\n"
-        f"Skipped: {skipped}\n"
-        f"\n"
-        f"View the run: {deep_link}\n"
+        "A validation run has finished.\n"
+        "\n"
+        "Queue changes:\n"
+        f"  New documents:     {new_docs}\n"
+        f"  Updated documents: {new_versions}\n"
+        f"  Unchanged skipped: {duplicates}\n"
+        "\n"
+        f"Review new documents: {deep_link}\n"
     )
     return subject, body
 

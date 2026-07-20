@@ -35,6 +35,7 @@ _AUDIT_PRINCIPAL = SystemPrincipal(
 )
 from field_extractor import extract_fields
 from deterministic_evaluator import evaluate_deterministic_rule
+import queue_handler
 
 
 _s3_client = None
@@ -558,6 +559,29 @@ def project_ui_display_fields(fields, mapping):
     return out
 
 
+def _resolve_document_id(data, filename, fields=None):
+    """Resolve the vendor's stable document id from the incoming record.
+
+    Preference order matches the original inline logic that used to live
+    at the tail end of `validate_document`:
+      1. `source_record_id` on the record (JSON: top-level; extracted
+         fields dict: `fields['source_record_id']`).
+      2. Filename parse (`{timestamp}__{visitID}.csv` → visitID).
+      3. `document_id` on the extracted fields (org-configured mapping).
+      4. `"UNKNOWN"` — same last-resort sentinel as before.
+    """
+    document_id = None
+    if isinstance(data, dict):
+        document_id = data.get('source_record_id')
+    if not document_id and fields:
+        document_id = fields.get('source_record_id')
+    if not document_id:
+        document_id = extract_document_id_from_filename(filename)
+    if not document_id and fields:
+        document_id = fields.get('document_id')
+    return document_id or 'UNKNOWN'
+
+
 def validate_document(data, filename, config, org_id, validation_run_id):
     """
     Run all validation rules against a document using multi-threaded per-rule evaluation.
@@ -570,8 +594,35 @@ def validate_document(data, filename, config, org_id, validation_run_id):
         validation_run_id: ID for this validation run
 
     Returns:
-        dict: Validation results including rule statuses and field values
+        dict: Validation results including rule statuses and field values.
+        If ``QUEUE_WRITE_ENABLED`` is on and the incoming record matches
+        the latest queue entry's ``content_hash`` for this document, we
+        short-circuit and return
+        ``{'skipped_duplicate': True, ...}`` — the caller in
+        ``rules_engine_rag`` handles the sentinel row + audit + queue
+        bookkeeping. Field extraction and rule evaluation are skipped
+        entirely in that branch.
     """
+    # Dedup fork — must run BEFORE extract_fields so byte-identical
+    # resends never pay LLM/rules-engine cost. Feature-flagged so the
+    # write path can be shipped dark and turned on after backfill.
+    pointer = None
+    content_hash = None
+    doc_id_for_lookup = _resolve_document_id(data, filename)
+    if queue_handler.is_enabled() and doc_id_for_lookup != 'UNKNOWN':
+        content_hash = queue_handler.compute_content_hash(data)
+        pointer = queue_handler.lookup_pointer(org_id, doc_id_for_lookup)
+        if pointer and pointer.get('content_hash') == content_hash:
+            return {
+                'skipped_duplicate': True,
+                'document_id': doc_id_for_lookup,
+                'organization_id': org_id,
+                'filename': filename,
+                'content_hash': content_hash,
+                'duplicate_of_version_sk': pointer.get('latest_version_sk'),
+                'validation_run_id': validation_run_id,
+            }
+
     field_mappings = config.get('field_mappings', {})
     csv_column_mappings = config.get('csv_column_mappings', {})
     fields = extract_fields(data, field_mappings, csv_column_mappings)
@@ -616,25 +667,10 @@ def validate_document(data, filename, config, org_id, validation_run_id):
     failed = sum(1 for r in rule_results if r['status'] == 'FAIL')
     skipped = sum(1 for r in rule_results if r['status'] == 'SKIP')
 
-    # Document id resolution:
-    #   1. JSON records (RPA + centralreach) carry `source_record_id` at
-    #      the top level; `field_extractor.extract_fields_from_json_record`
-    #      flattens it into `fields`. That's the vendor's canonical id
-    #      for the note — use it so the UI can link the validation
-    #      result back to the underlying document.
-    #   2. Legacy CSV path: parse the id from the filename shape
-    #      `{timestamp}__{visitID}.csv`.
-    #   3. Fallback: a `document_id` field explicitly set by an org's
-    #      field_mappings.
-    #   4. Last resort: `"UNKNOWN"`. Any record hitting this branch
-    #      lands under `DOC#UNKNOWN` in DynamoDB and disappears from
-    #      the UI's per-document view, so it's a loud signal that
-    #      ingest-side id plumbing regressed.
-    document_id = fields.get('source_record_id')
-    if not document_id:
-        document_id = extract_document_id_from_filename(filename)
-    if not document_id:
-        document_id = fields.get('document_id', 'UNKNOWN')
+    # Any record whose id can't be resolved lands under `DOC#UNKNOWN`
+    # in DynamoDB and disappears from the UI's per-document view, so
+    # it's a loud signal that ingest-side id plumbing regressed.
+    document_id = _resolve_document_id(data, filename, fields)
 
     result = {
         'validation_run_id': validation_run_id,
@@ -654,4 +690,8 @@ def validate_document(data, filename, config, org_id, validation_run_id):
     }
     if ui_display_fields:
         result['ui_display_fields'] = ui_display_fields
+    if content_hash is not None:
+        # Hoisted so process_file can persist it on the pointer/version
+        # rows without recomputing.
+        result['content_hash'] = content_hash
     return result

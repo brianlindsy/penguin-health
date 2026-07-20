@@ -201,6 +201,92 @@ export const handlers = [
     })
   }),
 
+  // ---- Document queue ----
+  // Minimal fake queue: one open document with one failing rule, matching
+  // the row seeded on `sample_validation_result` in lambda/tests/conftest.py.
+  // The revenue-card gating test only cares that summary cards render, so a
+  // single entry is enough to make `data.documents` non-empty.
+  http.get('*/api/organizations/:orgId/document-queue', () => {
+    return HttpResponse.json({
+      entries: [
+        {
+          document_id: '12345',
+          organization_id: 'test-org',
+          status: 'open',
+          first_seen_at: '2024-01-15T10:00:00',
+          first_seen_run_id: '20240115-100000',
+          last_updated_at: '2024-01-15T10:00:00',
+          last_seen_at: '2024-01-15T10:00:00',
+          latest_validation_run_id: '20240115-100000',
+          latest_validation_timestamp: '2024-01-15T10:00:00',
+          total_findings: 1,
+          failed_findings: 1,
+          open_findings: 1,
+          resolved_findings: 0,
+          confirmed_findings: 0,
+          version_count: 1,
+          seen_count: 1,
+          field_values: {
+            service_id: 'svc-12345',
+            employee_name: 'Jane Doe',
+            program: 'Alpha',
+            service_type: 'Individual',
+            date: '2024-01-14',
+            diagnosis_code: 'F32.9',
+          },
+          summary: { total_rules: 1, passed: 0, failed: 1, skipped: 0 },
+          rules: [{
+            rule_id: 'rule-001',
+            rule_name: 'Service date required',
+            category: 'Compliance Audit',
+            status: 'FAIL',
+            message: 'Service date not found',
+          }],
+          document_confirmed: false,
+        },
+      ],
+      next_token: null,
+      organization_id: 'test-org',
+    })
+  }),
+
+  http.put(
+    '*/api/organizations/:orgId/document-queue/:docId/findings/:ruleId/confirm',
+    () => HttpResponse.json({
+      finding_confirmed_at: new Date().toISOString(),
+      finding_confirmed_by: 'test@example.com',
+    }),
+  ),
+
+  http.put(
+    '*/api/organizations/:orgId/document-queue/:docId/findings/:ruleId/mark-resolved',
+    () => HttpResponse.json({
+      fixed: true,
+      fixed_at: new Date().toISOString(),
+      fixed_by: 'test@example.com',
+      queue_status: 'resolved',
+    }),
+  ),
+
+  http.put(
+    '*/api/organizations/:orgId/document-queue/:docId/findings/:ruleId/mark-incorrect',
+    () => HttpResponse.json({
+      feedback_given: true,
+      feedback_given_at: new Date().toISOString(),
+      status: 'PASS',
+    }),
+  ),
+
+  http.put(
+    '*/api/organizations/:orgId/document-queue/:docId/confirm-document',
+    () => HttpResponse.json({
+      document_confirmed: true,
+      document_confirmed_at: new Date().toISOString(),
+      document_confirmed_by: 'test@example.com',
+      queue_status: 'confirmed',
+    }),
+  ),
+
   // ---- User permissions CRUD ----
   http.get('*/api/organizations/:orgId/users', ({ params }) => {
     const list = userPermStore.list(params.orgId)

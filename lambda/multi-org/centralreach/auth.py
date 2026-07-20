@@ -23,6 +23,7 @@ Implementations:
 from __future__ import annotations
 
 import json
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -62,9 +63,10 @@ _HTTP_TIMEOUT_SECONDS = 30
 # Retry the full three-step flow on transient CR auth failures — most
 # commonly the legacy-auth step returning HTTP 200 with no `crsd`/`crud`
 # cookies, which we've observed as a brief server-side hiccup that
-# clears on retry. One minute between attempts gives CR time to recover
-# without meaningfully affecting a run that takes tens of minutes.
-_AUTH_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (60.0, 60.0)
+# usually clears on retry. The schedule stretches to ~46 minutes because
+# a prior incident had all short retries fall inside the same CR outage
+# window; a longer tail gives the vendor time to recover.
+_AUTH_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (60.0, 300.0, 900.0, 1800.0)
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,34 @@ HttpPostForm = Callable[[str, dict, dict], dict]
 HttpGetSetCookies = Callable[[str, dict], tuple[dict, dict[str, str]]]
 
 
+# Cap error-body snippets in logs. CR's error responses are small
+# (`{"error": "invalid_client"}`-ish); anything larger is likely an
+# HTML error page whose first bytes are enough to identify.
+_ERROR_BODY_SNIPPET_LIMIT = 500
+
+
+def _body_snippet(raw: bytes) -> str:
+    """Return a short, log-safe string for a response body.
+
+    Truncates to `_ERROR_BODY_SNIPPET_LIMIT` bytes and decodes with
+    `errors="replace"` so binary/mangled content still surfaces
+    without raising.
+    """
+    if not raw:
+        return "<empty>"
+    truncated = raw[:_ERROR_BODY_SNIPPET_LIMIT]
+    suffix = "...[truncated]" if len(raw) > _ERROR_BODY_SNIPPET_LIMIT else ""
+    return truncated.decode("utf-8", errors="replace") + suffix
+
+
+def _error_body_snippet(e: urllib.error.HTTPError) -> str:
+    """Read the body off an HTTPError safely for logging."""
+    try:
+        return _body_snippet(e.read() or b"")
+    except Exception:  # pragma: no cover — defensive; body read shouldn't fail
+        return "<unreadable>"
+
+
 def _http_post_form(url: str, form: dict, headers: dict) -> dict:
     """Default: POST a urlencoded form body, return parsed JSON.
 
@@ -155,17 +185,18 @@ def _http_post_form(url: str, form: dict, headers: dict) -> dict:
             raw = r.read()
     except urllib.error.HTTPError as e:
         raise CentralReachAuthError(
-            f"CR SSO returned HTTP {e.code}"
+            f"CR SSO returned HTTP {e.code}: {_error_body_snippet(e)}"
         ) from e
     except urllib.error.URLError as e:
         raise CentralReachAuthError(
-            f"CR SSO unreachable: {type(e).__name__}"
+            f"CR SSO unreachable: {type(e).__name__}: {e.reason!r}"
         ) from e
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:
         raise CentralReachAuthError(
-            "CR SSO returned non-JSON body"
+            f"CR SSO returned non-JSON body ({len(raw)} bytes): "
+            f"{_body_snippet(raw)}"
         ) from e
 
 
@@ -187,13 +218,14 @@ def _http_post_json(url: str, payload: dict, headers: dict) -> dict:
         with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SECONDS) as r:
             raw = r.read()
             set_cookie_headers = r.headers.get_all("Set-Cookie") or []
+            status = r.status
     except urllib.error.HTTPError as e:
         raise CentralReachAuthError(
-            f"CR legacy-auth returned HTTP {e.code}"
+            f"CR legacy-auth returned HTTP {e.code}: {_error_body_snippet(e)}"
         ) from e
     except urllib.error.URLError as e:
         raise CentralReachAuthError(
-            f"CR legacy-auth unreachable: {type(e).__name__}"
+            f"CR legacy-auth unreachable: {type(e).__name__}: {e.reason!r}"
         ) from e
     # legacy-auth's body is informational; the cookies are the
     # load-bearing return value. We still parse the body so a
@@ -202,7 +234,17 @@ def _http_post_json(url: str, payload: dict, headers: dict) -> dict:
         body_json = json.loads(raw) if raw else {}
     except json.JSONDecodeError:
         body_json = {}
-    return {"body": body_json, "cookies": _parse_set_cookie_headers(set_cookie_headers)}
+    # `status` and `raw_set_cookie_count` are diagnostic only —
+    # surfaced by the missing-cookie error so we can tell whether the
+    # server responded 200-with-no-Set-Cookie (transient) vs. some
+    # other shape.
+    return {
+        "body": body_json,
+        "cookies": _parse_set_cookie_headers(set_cookie_headers),
+        "status": status,
+        "raw_set_cookie_count": len(set_cookie_headers),
+        "raw_body": raw,
+    }
 
 
 def _http_get_set_cookies(
@@ -223,17 +265,18 @@ def _http_get_set_cookies(
             set_cookie_headers = r.headers.get_all("Set-Cookie") or []
     except urllib.error.HTTPError as e:
         raise CentralReachAuthError(
-            f"CR csrf returned HTTP {e.code}"
+            f"CR csrf returned HTTP {e.code}: {_error_body_snippet(e)}"
         ) from e
     except urllib.error.URLError as e:
         raise CentralReachAuthError(
-            f"CR csrf unreachable: {type(e).__name__}"
+            f"CR csrf unreachable: {type(e).__name__}: {e.reason!r}"
         ) from e
     try:
         body_json = json.loads(raw) if raw else {}
     except json.JSONDecodeError as e:
         raise CentralReachAuthError(
-            "CR csrf returned non-JSON body"
+            f"CR csrf returned non-JSON body ({len(raw)} bytes): "
+            f"{_body_snippet(raw)}"
         ) from e
     rotated = _parse_set_cookie_headers(set_cookie_headers)
     return body_json, rotated
@@ -344,8 +387,9 @@ class OAuthAuthenticator(Authenticator):
 
         `retry_backoff_seconds` controls retries of the full three-step
         flow on `CentralReachAuthError`. Its length is the number of
-        *retries after* the first attempt (so `(60.0, 60.0)` means up
-        to three attempts total, sleeping 60s between each).
+        *retries after* the first attempt (so a 4-tuple means up to
+        five attempts total, sleeping each configured duration between
+        them). The default schedule is `_AUTH_RETRY_BACKOFF_SECONDS`.
 
         The remaining `load_credentials` / `http_*` / `sleep` arguments
         are injection points for tests; production callers omit them.
@@ -366,14 +410,34 @@ class OAuthAuthenticator(Authenticator):
         Backoff is a fixed schedule (`_retry_backoff_seconds`) rather
         than jittered — a single Fargate task retrying at deterministic
         offsets is not a thundering-herd risk.
+
+        Each failed attempt logs one line to stderr so incident triage
+        can distinguish "the retry loop never engaged" from "all N
+        attempts failed against the vendor." The final failure re-raises
+        and is logged by the runner.
         """
-        for attempt_idx in range(len(self._retry_backoff_seconds) + 1):
+        total_attempts = len(self._retry_backoff_seconds) + 1
+        for attempt_idx in range(total_attempts):
             try:
                 return self._authenticate_once(org_id)
-            except CentralReachAuthError:
+            except CentralReachAuthError as e:
+                attempt_num = attempt_idx + 1
                 if attempt_idx >= len(self._retry_backoff_seconds):
+                    print(
+                        f"centralreach-auth: attempt {attempt_num}/"
+                        f"{total_attempts} failed, giving up: "
+                        f"{type(e).__name__}: {e}",
+                        file=sys.stderr,
+                    )
                     raise
-                self._sleep(self._retry_backoff_seconds[attempt_idx])
+                sleep_s = self._retry_backoff_seconds[attempt_idx]
+                print(
+                    f"centralreach-auth: attempt {attempt_num}/"
+                    f"{total_attempts} failed, retrying in {sleep_s:g}s: "
+                    f"{type(e).__name__}: {e}",
+                    file=sys.stderr,
+                )
+                self._sleep(sleep_s)
 
     def _authenticate_once(self, org_id: str) -> Session:
         sso_token_url, legacy_auth_url, csrf_url, scope = _resolve_endpoints(
@@ -413,9 +477,19 @@ class OAuthAuthenticator(Authenticator):
         legacy_cookies = legacy_resp.get("cookies") or {}
         missing = _REQUIRED_LEGACY_AUTH_COOKIES - set(legacy_cookies)
         if missing:
+            # Include HTTP status, Set-Cookie count, and a body snippet.
+            # These distinguish "server returned 200 with zero Set-Cookie
+            # headers" (the known transient) from other shapes CR might
+            # produce during an outage (e.g., 200 with an error body,
+            # or Set-Cookie headers that failed to parse).
+            status = legacy_resp.get("status")
+            raw_count = legacy_resp.get("raw_set_cookie_count")
+            raw_body = legacy_resp.get("raw_body") or b""
             raise CentralReachAuthError(
                 f"CR legacy-auth response missing required cookie(s): "
-                f"{sorted(missing)}; got {sorted(legacy_cookies)}"
+                f"{sorted(missing)}; got {sorted(legacy_cookies)} "
+                f"(status={status}, set_cookie_headers={raw_count}, "
+                f"body={_body_snippet(raw_body)})"
             )
 
         # Step 3: GET CSRF token. Send the cookies we just got; the

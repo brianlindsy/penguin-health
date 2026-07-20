@@ -17,20 +17,78 @@ def admin_base_url(monkeypatch):
     monkeypatch.setenv("ADMIN_UI_BASE_URL", "https://app.penguinhealth.io")
 
 
-def test_validation_run_complete_body_contains_only_aggregate_data():
+def test_validation_run_complete_legacy_shape_still_renders():
+    """Callers not yet threaded with `queue_counters` fall back to the
+    pre-cutover subject shape. Body is minimal — just the deep link into
+    the queue's default view. Still no PHI."""
     subject, body = templates.render_validation_run_complete(
         org_id="test-org",
         validation_run_id="20260605-123000",
         summary={"total": 10, "passed": 8, "failed": 1, "skipped": 1},
     )
-    assert "10" in body
-    assert "20260605-123000" in body
-    assert "/organizations/test-org/validation-runs/20260605-123000" in body
-    # The aggregates should appear, but the test asserts on the *kind* of
-    # data — there are no patient fields in this template at all.
-    assert subject
+    # Deep link points at the org's queue default view; no per-run
+    # filter, no run id in the URL.
+    assert "/organizations/test-org/document-queue" in body
+    assert "firstSeenRunId" not in body
+    assert "1 failed" in subject
+    # Rule aggregates and the run id are not surfaced in the body.
+    assert "Total:" not in body
+    assert "Failed:" not in body
+    assert "20260605-123000" not in body
     for forbidden in ("patient", "dob", "ssn", "member_id"):
         assert forbidden not in body.lower()
+
+
+def test_validation_run_complete_reports_queue_delta_when_counters_present():
+    """The reviewer-facing story: how many docs need review, how many
+    unchanged resends we correctly skipped."""
+    subject, body = templates.render_validation_run_complete(
+        org_id="test-org",
+        validation_run_id="20260707-020000",
+        summary={"total": 42, "passed": 30, "failed": 10, "skipped": 2},
+        queue_counters={
+            "new_documents": 12,
+            "new_versions": 3,
+            "duplicate_skips": 87,
+        },
+    )
+    # Subject leads with the reviewer's number: docs that need attention.
+    assert "15 for review" in subject
+    assert "87 unchanged skipped" in subject
+
+    # Body carries the queue-delta section only.
+    assert "New documents:     12" in body
+    assert "Updated documents: 3" in body
+    assert "Unchanged skipped: 87" in body
+
+    # Deep link lands on the queue's default view — no run filter, no
+    # run id in the URL. Reviewers can narrow inside the app if they want.
+    assert "/organizations/test-org/document-queue" in body
+    assert "firstSeenRunId" not in body
+
+    # Rule aggregates and the "Run: <id>" line are not surfaced. The
+    # run id does not appear in the body at all.
+    assert "Total:" not in body
+    assert "Failed:" not in body
+    assert "Run:" not in body
+    assert "20260707-020000" not in body
+
+    for forbidden in ("patient", "dob", "ssn", "member_id"):
+        assert forbidden not in body.lower()
+
+
+def test_validation_run_complete_zero_counters_still_render_cleanly():
+    """A run where nothing new happened still emails cleanly — no crash,
+    subject reads sensibly, body shows the zeros so recipients aren't
+    left wondering whether the counters section was omitted by bug."""
+    subject, body = templates.render_validation_run_complete(
+        org_id="test-org",
+        validation_run_id="20260707-020000",
+        summary={"total": 0, "passed": 0, "failed": 0, "skipped": 0},
+        queue_counters={"new_documents": 0, "new_versions": 0, "duplicate_skips": 0},
+    )
+    assert "0 for review" in subject
+    assert "New documents:     0" in body
 
 
 # Sample PHI-ish strings that absolutely must not leak into the email body

@@ -81,7 +81,7 @@ def _iso(dt: datetime) -> str:
 def _ingest_date(dt: datetime) -> str:
     # Partition folder tracks the org's clinical day, not wall-clock UTC:
     # a cron firing just after 00:00 UTC still belongs to the prior US day.
-    # Eastern matches `parameters._yesterday_eastern` — revisit when a
+    # Eastern matches `parameters._today_eastern` — revisit when a
     # non-Eastern org lands.
     return dt.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 

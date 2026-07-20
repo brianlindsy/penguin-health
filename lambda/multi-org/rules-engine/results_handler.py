@@ -128,6 +128,11 @@ def aggregate_run_summary(validation_run_id, env_config):
     """
     Aggregate summary statistics for a validation run by querying all documents.
 
+    Sentinel rows written by ``queue_handler.write_sentinel_row`` (a file
+    was recognized as a byte-identical resend and skipped) are excluded
+    from the rollup — they carry no real rule outcomes and would otherwise
+    inflate the passed count.
+
     Args:
         validation_run_id: ID of the validation run
         env_config: Environment config with DYNAMODB_TABLE
@@ -155,6 +160,10 @@ def aggregate_run_summary(validation_run_id, env_config):
         if not last_evaluated:
             break
 
+    # Drop queue-duplicate-skip sentinel rows so run totals reflect real
+    # validation work only.
+    items = [i for i in items if not _is_sentinel(i)]
+
     total_docs = len(items)
     docs_passed = 0
     docs_failed = 0
@@ -178,8 +187,21 @@ def aggregate_run_summary(validation_run_id, env_config):
     }
 
 
+def _is_sentinel(item):
+    """A row written by ``queue_handler.write_sentinel_row``.
+
+    Duplicate marker attribute is the primary signal; the pk shape is a
+    belt-and-suspenders backup for pre-migration rows should the schema
+    drift.
+    """
+    if item.get('duplicate_of_version_sk'):
+        return True
+    pk = item.get('pk')
+    return isinstance(pk, str) and '#SKIPPED#' in pk
+
+
 def store_run_summary(validation_run_id, org_id, summary, env_config,
-                      categories=None, dates=None):
+                      categories=None, dates=None, queue_counters=None):
     """
     Store validation run summary for efficient querying by organization.
 
@@ -196,12 +218,21 @@ def store_run_summary(validation_run_id, org_id, summary, env_config,
         dates: Optional list of YYYY-MM-DD ingest dates this run covered.
                Surfaced to the UI so the runs list shows which day's data
                each run examined.
+        queue_counters: Optional dict with `new_documents`, `new_versions`,
+                    `duplicate_skips` — the queue-side write path's own
+                    counters for this leg. On continuation runs only the
+                    final leg's counters are persisted (naked put_item is
+                    last-writer-wins); a cross-leg accumulator would need
+                    an UpdateItem with ADD semantics but is deferred
+                    until reviewers actually miss the delta.
     """
     try:
         table = dynamodb.Table(env_config['DYNAMODB_TABLE'])
 
         timestamp = datetime.utcnow().isoformat()
         date_str = timestamp[:10]
+
+        counters = queue_counters or {}
 
         item = {
             'pk': f"ORG#{org_id}",
@@ -215,13 +246,16 @@ def store_run_summary(validation_run_id, org_id, summary, env_config,
             'passed': summary['passed'],
             'failed': summary['failed'],
             'skipped': summary['skipped'],
+            'queue_new_documents': int(counters.get('new_documents', 0) or 0),
+            'queue_new_versions': int(counters.get('new_versions', 0) or 0),
+            'queue_duplicate_skips': int(counters.get('duplicate_skips', 0) or 0),
             'status': 'completed',
             'categories': list(categories) if categories else [],
             'dates': list(dates) if dates else [],
         }
 
         table.put_item(Item=item)
-        print(f"Stored run summary for {validation_run_id}: {summary}")
+        print(f"Stored run summary for {validation_run_id}: {summary} queue={counters}")
 
     except Exception as e:
         print(f"Error storing run summary in DynamoDB: {str(e)}")

@@ -29,6 +29,7 @@ from results_handler import (
     save_csv_to_s3,
     get_processed_s3_keys,
 )
+import queue_handler
 
 _AUDIT_PRINCIPAL = SystemPrincipal(
     os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'rules-engine-rag')
@@ -84,9 +85,16 @@ def invoke_continuation(org_id, validation_run_id, *,
     print(f"Invoked continuation Lambda for run {validation_run_id}")
 
 
-def _notify_validation_run_complete(org_id, validation_run_id, summary):
+def _notify_validation_run_complete(org_id, validation_run_id, summary,
+                                    queue_counters=None):
     """Best-effort email to opt-in subscribers. Failures here must not
-    crash the run, so we swallow every exception with a single log line."""
+    crash the run, so we swallow every exception with a single log line.
+
+    `queue_counters` is the per-leg counter dict that `process_file`
+    mutates (`new_documents`, `new_versions`, `duplicate_skips`). Passing
+    it through lights up the reviewer-facing "queue changes" section on
+    the email — the primary reason to send this notification post-cutover.
+    """
     if not _NOTIFICATIONS_AVAILABLE:
         return
     try:
@@ -97,6 +105,7 @@ def _notify_validation_run_complete(org_id, validation_run_id, summary):
             org_id=org_id,
             validation_run_id=validation_run_id,
             summary=summary,
+            queue_counters=queue_counters,
         )
         send_email(
             to=recipients,
@@ -258,6 +267,10 @@ def lambda_handler(event, context):
 
         files_found = False
         eligible_count = 0
+        # Per-leg counters. aggregate_run_summary reads all rows written by
+        # the whole run, so cross-leg totals fall out naturally; these are
+        # only used for this leg's log line.
+        queue_counters: dict[str, int] = {}
         for date_str in dates:
             print(f"Listing data/{date_str}/ in bucket {bucket}")
             for key in list_data_folder_keys(bucket, date_str):
@@ -283,9 +296,11 @@ def lambda_handler(event, context):
 
                 eligible_count += 1
                 files_found = True
-                process_file(bucket, key, config, org_id, env_config, validation_run_id)
+                process_file(bucket, key, config, org_id, env_config, validation_run_id,
+                             queue_counters=queue_counters)
 
-        print(f"Processed {eligible_count} eligible files across {len(dates)} date(s)")
+        print(f"Processed {eligible_count} eligible files across {len(dates)} date(s); "
+              f"queue counters (this leg): {queue_counters}")
 
         if not files_found and not already_processed:
             return {
@@ -300,9 +315,11 @@ def lambda_handler(event, context):
                                  if r.get('category')})
         store_run_summary(validation_run_id, org_id, summary, env_config,
                           categories=run_categories,
-                          dates=dates)
+                          dates=dates,
+                          queue_counters=queue_counters)
 
-        _notify_validation_run_complete(org_id, validation_run_id, summary)
+        _notify_validation_run_complete(org_id, validation_run_id, summary,
+                                        queue_counters=queue_counters)
 
         print(f"Generating CSV report for run: {validation_run_id}")
         csv_report, run_items = generate_csv_from_dynamodb(validation_run_id, env_config)
@@ -329,7 +346,8 @@ def lambda_handler(event, context):
         raise e
 
 
-def process_file(bucket, key, config, org_id, env_config, validation_run_id):
+def process_file(bucket, key, config, org_id, env_config, validation_run_id,
+                 queue_counters=None):
     """
     Validate a single JSON or CSV file from data/{date}/.
 
@@ -338,6 +356,16 @@ def process_file(bucket, key, config, org_id, env_config, validation_run_id):
     retry loop on a file that *can't* be parsed, we always write at least
     a sentinel ERROR row to DynamoDB before returning. The continuation
     handler then sees the file as "already processed" and moves on.
+
+    When the document queue is enabled and this file's raw record hashes
+    to the latest queue-pointer's `content_hash`, `validate_document`
+    returns a `skipped_duplicate` sentinel. We then:
+      * bump the pointer's seen_count / last_seen_at
+      * write a skinny "processed" marker row so continuation legs skip
+        this key on retry
+      * emit a `queue_duplicate_skip` audit event
+    …and return WITHOUT calling `store_results` — no new per-doc row, no
+    Bedrock/rule-eval cost paid.
     """
     try:
         response = s3_client.get_object(Bucket=bucket, Key=key)
@@ -349,12 +377,51 @@ def process_file(bucket, key, config, org_id, env_config, validation_run_id):
             data = json.loads(content)
 
         results = validate_document(data, key, config, org_id, validation_run_id)
+
+        if results.get('skipped_duplicate'):
+            doc_id = results.get('document_id', 'UNKNOWN')
+            pointer = queue_handler.lookup_pointer(org_id, doc_id) if doc_id != 'UNKNOWN' else None
+            if pointer:
+                queue_handler.record_duplicate_skip(pointer, validation_run_id)
+                queue_handler.write_sentinel_row(
+                    org_id=org_id,
+                    document_id=doc_id,
+                    validation_run_id=validation_run_id,
+                    s3_key=key,
+                    duplicate_of_version_sk=results.get('duplicate_of_version_sk'),
+                    results_table_name=env_config['DYNAMODB_TABLE'],
+                )
+                if queue_counters is not None:
+                    queue_counters['duplicate_skips'] = queue_counters.get('duplicate_skips', 0) + 1
+                print(f"Skipped duplicate {key} (document_id={doc_id}) — content unchanged")
+                return
+            # Pointer disappeared between the lookup in validate_document
+            # and now (auto-close race or manual delete). Fall through and
+            # re-process as a fresh document so we don't leave the file
+            # invisible.
+            print(f"Duplicate flag set for {key} but pointer vanished — re-processing")
+            results = validate_document(data, key, config, org_id, validation_run_id)
+
         results['s3_key'] = key
         store_results(results, env_config)
 
         doc_id = results.get('document_id', 'UNKNOWN')
         if doc_id == 'UNKNOWN' or doc_id is None:
             print(f"WARNING: No document_id extracted for {key}")
+
+        if queue_handler.is_enabled() and doc_id and doc_id != 'UNKNOWN':
+            pointer = queue_handler.lookup_pointer(org_id, doc_id)
+            branch = queue_handler.upsert_new_or_version(results, pointer)
+            queue_handler.emit_queue_write_audit(
+                call_type=branch,
+                org_id=org_id,
+                document_id=doc_id,
+                validation_run_id=validation_run_id,
+            )
+            if queue_counters is not None:
+                counter_key = 'new_versions' if branch == 'queue_new_version' else 'new_documents'
+                queue_counters[counter_key] = queue_counters.get(counter_key, 0) + 1
+
         print(f"Validated {key} (document_id={doc_id}): {results['summary']}")
 
     except Exception as e:

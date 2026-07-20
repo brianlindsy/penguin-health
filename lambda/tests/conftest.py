@@ -229,6 +229,44 @@ def mock_dynamodb(aws_credentials):
             BillingMode='PAY_PER_REQUEST',
         )
 
+        # penguin-health-document-queue table
+        # Used by: queue_handler + admin_api document-queue endpoints.
+        # Schema mirrors infra/components/database.py DocumentQueueTable.
+        dynamodb.create_table(
+            TableName='penguin-health-document-queue',
+            KeySchema=[
+                {'AttributeName': 'pk', 'KeyType': 'HASH'},
+                {'AttributeName': 'sk', 'KeyType': 'RANGE'},
+            ],
+            AttributeDefinitions=[
+                {'AttributeName': 'pk', 'AttributeType': 'S'},
+                {'AttributeName': 'sk', 'AttributeType': 'S'},
+                {'AttributeName': 'gsi1pk', 'AttributeType': 'S'},
+                {'AttributeName': 'gsi1sk', 'AttributeType': 'S'},
+                {'AttributeName': 'gsi2pk', 'AttributeType': 'S'},
+                {'AttributeName': 'gsi2sk', 'AttributeType': 'S'},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    'IndexName': 'gsi1',
+                    'KeySchema': [
+                        {'AttributeName': 'gsi1pk', 'KeyType': 'HASH'},
+                        {'AttributeName': 'gsi1sk', 'KeyType': 'RANGE'},
+                    ],
+                    'Projection': {'ProjectionType': 'ALL'},
+                },
+                {
+                    'IndexName': 'gsi2',
+                    'KeySchema': [
+                        {'AttributeName': 'gsi2pk', 'KeyType': 'HASH'},
+                        {'AttributeName': 'gsi2sk', 'KeyType': 'RANGE'},
+                    ],
+                    'Projection': {'ProjectionType': 'ALL'},
+                },
+            ],
+            BillingMode='PAY_PER_REQUEST',
+        )
+
         # penguin-health-stedi table
         # Used by: stedi.audit (eligibility audit log + daily counter).
         dynamodb.create_table(
@@ -376,6 +414,35 @@ def sample_validation_result(mock_dynamodb, sample_org_config):
         'passed': 8,
         'failed': 2,
         'skipped': 0,
+    })
+
+    # Queue pointer for the same document. Queue endpoints look up here
+    # first and follow back-pointers into the results row, so tests that
+    # exercise queue mutations against DOC#12345 need this row present.
+    queue_table = mock_dynamodb.Table('penguin-health-document-queue')
+    queue_table.put_item(Item={
+        'pk': 'ORG#test-org',
+        'sk': 'DOC#12345',
+        'gsi1pk': 'ORG#test-org#STATUS#open',
+        'gsi1sk': 'LAST_UPDATED#2024-01-15T10:00:00',
+        'gsi2pk': 'STATUS#open',
+        'gsi2sk': 'LAST_UPDATED#2024-01-15T10:00:00',
+        'document_id': '12345',
+        'organization_id': 'test-org',
+        'status': 'open',
+        'content_hash': 'seed-hash',
+        'latest_version_sk': 'VERSION#2024-01-15T10:00:00',
+        'latest_validation_run_id': '20240115-100000',
+        'latest_validation_timestamp': '2024-01-15T10:00:00',
+        'latest_validation_result_pk': 'DOC#12345',
+        'latest_validation_result_sk': 'VALIDATION#2024-01-15T10:00:00',
+        'first_seen_run_id': '20240115-100000',
+        'first_seen_at': '2024-01-15T10:00:00',
+        'last_updated_at': '2024-01-15T10:00:00',
+        'last_seen_at': '2024-01-15T10:00:00',
+        'version_count': 1,
+        'seen_count': 1,
+        'field_values_snapshot': {'service_id': '12345'},
     })
 
     return table

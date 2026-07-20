@@ -7,7 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
-import { ValidationRunDetailPage } from '../../pages/ValidationRunDetailPage.jsx'
+import { DocumentQueuePage } from '../../pages/DocumentQueuePage.jsx'
 
 vi.mock('../../auth/useAuth.js', () => ({
   useAuth: vi.fn(),
@@ -21,11 +21,11 @@ function setAuth(value) {
 
 function renderPage() {
   return render(
-    <MemoryRouter initialEntries={['/organizations/test-org/validation-runs/20240115-100000']}>
+    <MemoryRouter initialEntries={['/organizations/test-org/document-queue']}>
       <Routes>
         <Route
-          path="/organizations/:orgId/validation-runs/:runId"
-          element={<ValidationRunDetailPage />}
+          path="/organizations/:orgId/document-queue"
+          element={<DocumentQueuePage />}
         />
       </Routes>
     </MemoryRouter>,
@@ -38,7 +38,7 @@ async function waitForCards() {
   })
 }
 
-describe('ValidationRunDetailPage revenue-at-risk card gating', () => {
+describe('DocumentQueuePage revenue-at-risk card gating', () => {
   beforeEach(() => {
     useAuth.mockReset()
   })

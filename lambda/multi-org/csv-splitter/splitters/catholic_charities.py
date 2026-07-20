@@ -36,7 +36,7 @@ class CatholicCharitiesSplitter(BaseCsvSplitter):
     }
 
     # Number of days in the past to include
-    DAYS_AGO = 7
+    DAYS_AGO = 14
 
     # CPT codes allowed through even when 25_Non_Billable == 'yes'
     NON_BILLABLE_ALLOWED_CPT_CODES = {'NOTE', 'Outreach'}

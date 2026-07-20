@@ -112,24 +112,41 @@ export function hasRequiredFields(doc, orgId) {
   return Boolean(fv.diagnosis_code && fv.employee_name)
 }
 
-// Run IDs are emitted as YYYYMMDD-HHMMSS (e.g. "20260421-153039"), so we
-// can recover the run execution time even when the detail API doesn't echo
-// a `timestamp` field. Returns null if the id doesn't match the expected shape.
-function parseRunIdTimestamp(runId) {
-  if (!runId) return null
-  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/.exec(runId)
-  if (!m) return null
-  const [, y, mo, d, h, mi, s] = m
-  const t = new Date(+y, +mo - 1, +d, +h, +mi, +s).getTime()
-  return Number.isNaN(t) ? null : t
+// Queue statuses that can be surfaced in the reviewer status filter. The
+// backing pointer row has `status` in this exact set (see
+// lambda/api/admin_api.py `_QUEUE_STATUSES`).
+const QUEUE_STATUSES = ['open', 'resolved', 'confirmed', 'auto-closed']
+const QUEUE_STATUS_LABEL = {
+  open: 'Open',
+  resolved: 'Resolved',
+  confirmed: 'Confirmed',
+  'auto-closed': 'Auto-closed',
 }
 
-export function ValidationRunDetailPage() {
-  const { orgId, runId } = useParams()
-  const { canViewAnalytics } = usePermissions()
+export function DocumentQueuePage() {
+  const { orgId } = useParams()
+  const perms = usePermissions()
+  const { canViewAnalytics } = perms
   const canViewRevenue = canViewAnalytics('revenue_analysis')
+  // Categories the caller is allowed to run. Empty set means the modal's
+  // category multi-select comes up disabled + "all runnable" wins on the
+  // server anyway; org admins get every category.
+  const runnableCats = useMemo(
+    () => Array.from(perms.runnableCategories?.() || new Set()),
+    [perms],
+  )
+  const [triggerRunOpen, setTriggerRunOpen] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   const docIdFromUrl = searchParams.get('doc')
+  // Debug filter: `?firstSeenRunId=…` narrows the queue to entries first
+  // ingested by a specific overnight run. Handy when triaging a bad run;
+  // reviewers won't hit this in the normal workflow.
+  const firstSeenRunIdFilter = searchParams.get('firstSeenRunId') || null
+  // Reviewer's status filter. Persisted in the URL for shareable views.
+  const initialStatus = searchParams.get('status') || 'open'
+  const [queueStatus, setQueueStatus] = useState(
+    QUEUE_STATUSES.includes(initialStatus) ? initialStatus : 'open',
+  )
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -173,9 +190,6 @@ export function ValidationRunDetailPage() {
   // map rather than per-field useState because the field list is org-driven
   // and only known after data loads.
   const [fieldFilters, setFieldFilters] = useState({})
-  // The detail endpoint doesn't echo a run timestamp, so grab it from the
-  // runs-list endpoint (same source the Validation Results tab uses).
-  const [runTimestamp, setRunTimestamp] = useState(null)
 
   // Update one multi-select filter and sync to the URL. Empty set removes the
   // query param entirely so a "no filters" state has a clean URL. Other query
@@ -190,16 +204,53 @@ export function ValidationRunDetailPage() {
     }, { replace: true })
   }
 
-  // Load validation run data - only depends on orgId and runId
+  // Load queue entries for the current status filter. Includes rules[] so
+  // the card grid can render per-rule badges without an N+1 fetch loop.
+  //
+  // The API caps a single page at 200 entries; we page under the hood via
+  // `next_token` until the server signals exhaustion so reviewers see
+  // every document in the current status bucket, not just the first page.
+  // Each response is streamed into `data.documents` as it arrives so the
+  // grid renders progressively instead of blocking on the last page.
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
-    api.getValidationRun(orgId, runId)
-      .then(result => {
-        setData(result)
-      })
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
-  }, [orgId, runId])
+    setData({ documents: [], organization_id: orgId, queue_status: queueStatus })
+
+    async function loadAllPages() {
+      let nextToken = null
+      const seen = []
+      try {
+        do {
+          const page = await api.listDocumentQueue(orgId, {
+            status: queueStatus,
+            limit: 200,
+            includeRules: true,
+            firstSeenRunId: firstSeenRunIdFilter,
+            nextToken,
+          })
+          if (cancelled) return
+          const entries = page.entries || []
+          seen.push(...entries)
+          // Reshape to the {documents, ...} contract the rest of this
+          // page already knows how to render. Cloning `seen` on every
+          // page keeps React state immutable.
+          setData({
+            documents: [...seen],
+            organization_id: page.organization_id,
+            queue_status: queueStatus,
+          })
+          nextToken = page.next_token || null
+        } while (nextToken)
+      } catch (err) {
+        if (!cancelled) setError(err.message)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    loadAllPages()
+    return () => { cancelled = true }
+  }, [orgId, queueStatus, firstSeenRunIdFilter])
 
   // Handle document selection after data loads
   // This runs when data changes OR when docIdFromUrl changes
@@ -236,21 +287,10 @@ export function ValidationRunDetailPage() {
     }
   }, [data, docIdFromUrl]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch the run's own timestamp from the list endpoint — the detail payload
-  // doesn't include one. Failures are silent; the filter falls back to the
-  // parsed run-ID timestamp (which the list rows use identical).
-  useEffect(() => {
-    let cancelled = false
-    api.listValidationRuns(orgId)
-      .then(resp => {
-        if (cancelled) return
-        const list = (Array.isArray(resp) ? resp : resp?.runs) || []
-        const match = list.find(r => r.validation_run_id === runId)
-        if (match?.timestamp) setRunTimestamp(match.timestamp)
-      })
-      .catch(() => { /* fall back to run-id parsing */ })
-    return () => { cancelled = true }
-  }, [orgId, runId])
+  // (Removed) The run-detail page fetched a single `run.timestamp` here.
+  // Queue entries carry their own `last_updated_at` on each row, so
+  // per-doc filtering by service_date / last_updated is done inline in
+  // the memo below without a separate lookup.
 
   // Helper function to check if all failed rules in a document have been confirmed (but not yet fixed)
   const allFailedRulesConfirmed = (doc) => {
@@ -430,33 +470,21 @@ export function ValidationRunDetailPage() {
       if (serviceCustomEndDate) { const e = parseLocal(serviceCustomEndDate); if (e != null) svcEnd = e + dayMs }
     }
     const serviceFilterActive = svcStart != null || svcEnd != null
-    // Prefer the timestamp we fetched from the list endpoint (same source
-    // that renders the Date column on the Validation Results tab). Fall back
-    // to any timestamp on the detail payload, then to parsing the run id.
-    let runTimestampMs = null
-    const candidates = [runTimestamp, data?.timestamp]
-    for (const c of candidates) {
-      if (!c) continue
-      const parsed = new Date(c).getTime()
-      if (!Number.isNaN(parsed)) { runTimestampMs = parsed; break }
-    }
-    if (runTimestampMs == null) runTimestampMs = parseRunIdTimestamp(runId)
-
     const dateFilterActive = startCutoff != null || endCutoff != null
-    // Fail closed when a window is set but we can't determine the run time —
-    // better to show nothing than to silently ignore the user's filter.
-    const runPassesDateFilter = !dateFilterActive
-      ? true
-      : runTimestampMs == null
-        ? false
-        : (
-            (startCutoff == null || runTimestampMs >= startCutoff) &&
-            (endCutoff == null || runTimestampMs < endCutoff)
-          )
 
-    // Short-circuit: if the run itself falls outside the date window, no
-    // docs from this run are shown.
-    if (!runPassesDateFilter) return []
+    // In the queue view each entry has its own `last_updated_at`, so the
+    // "validation report date" filter runs per-doc rather than run-wide.
+    // (The per-run version of this filter lived here in
+    // ValidationRunDetailPage.)
+    const docPassesLastUpdatedFilter = (doc) => {
+      if (!dateFilterActive) return true
+      const raw = doc.last_updated_at
+      if (!raw) return false
+      const t = new Date(raw).getTime()
+      if (Number.isNaN(t)) return false
+      return (startCutoff == null || t >= startCutoff)
+        && (endCutoff == null || t < endCutoff)
+    }
 
     // Drop duplicate documents that share a service_id, keeping the first
     // occurrence. Docs without a service_id are always kept.
@@ -474,6 +502,10 @@ export function ValidationRunDetailPage() {
       if (!hasRequiredFields(doc, orgId)) {
         return false
       }
+
+      // Last-updated filter (per-doc; replaces the per-run filter that
+      // was here in ValidationRunDetailPage).
+      if (!docPassesLastUpdatedFilter(doc)) return false
 
       // Service date filter (per-doc)
       if (serviceFilterActive) {
@@ -558,7 +590,7 @@ export function ValidationRunDetailPage() {
 
       return true
     })
-  }, [data, runId, runTimestamp, searchTerm, statusFilter, ruleFilter, multiFilters, categoryFilter, dateFilter, customStartDate, customEndDate, serviceDateFilter, serviceCustomStartDate, serviceCustomEndDate, fieldFilters])
+  }, [data, searchTerm, statusFilter, ruleFilter, multiFilters, categoryFilter, dateFilter, customStartDate, customEndDate, serviceDateFilter, serviceCustomStartDate, serviceCustomEndDate, fieldFilters])
 
   // Track if this is the first render to skip the statusFilter effect on mount
   const isFirstRender = useRef(true)
@@ -590,6 +622,29 @@ export function ValidationRunDetailPage() {
   return (
     <OrgWorkspaceLayout>
     <div className="h-full flex flex-col">
+      {/* Admin toolbar */}
+      {perms.isSuperAdmin && (
+        <div className="flex justify-end mb-3">
+          <button
+            onClick={() => setTriggerRunOpen(true)}
+            className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-md hover:bg-blue-700"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            Trigger Run
+          </button>
+        </div>
+      )}
+      {triggerRunOpen && (
+        <TriggerRunModal
+          orgId={orgId}
+          runnableCategories={runnableCats}
+          onClose={() => setTriggerRunOpen(false)}
+          onError={(msg) => setError(msg)}
+        />
+      )}
+
       {/* Summary Cards */}
       <div className={`grid ${canViewRevenue ? 'grid-cols-5' : 'grid-cols-4'} gap-4 mb-6`}>
         <SummaryCard
@@ -657,6 +712,29 @@ export function ValidationRunDetailPage() {
             </button>
           )}
         </div>
+
+        {/* Queue-status filter — the primary reviewer surface. Default 'open';
+            reviewers can flip to see resolved / confirmed / auto-closed
+            entries. Persisted to the URL so views are shareable. */}
+        <FilterChip
+          active={queueStatus !== 'open'}
+          iconPath="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+          value={queueStatus}
+          onChange={(v) => {
+            setQueueStatus(v)
+            setSearchParams(prev => {
+              const next = new URLSearchParams(prev)
+              if (v === 'open') next.delete('status')
+              else next.set('status', v)
+              return next
+            }, { replace: true })
+          }}
+          label="Status"
+        >
+          {QUEUE_STATUSES.map(s => (
+            <option key={s} value={s}>{QUEUE_STATUS_LABEL[s]}</option>
+          ))}
+        </FilterChip>
 
         <FilterChip
           active={ruleFilter !== 'all'}
@@ -820,7 +898,7 @@ export function ValidationRunDetailPage() {
               onConfirmFinding={async (ruleId) => {
                 setConfirmingRuleId(ruleId)
                 try {
-                  await api.confirmFinding(orgId, runId, selectedDoc.document_id, ruleId)
+                  await api.queueConfirmFinding(orgId, selectedDoc.document_id, ruleId)
                   // Update the local state to reflect the rule confirmation
                   const timestamp = new Date().toISOString()
                   setData(prev => ({
@@ -861,7 +939,7 @@ export function ValidationRunDetailPage() {
               onMarkResolved={async (ruleId) => {
                 setResolvingRuleId(ruleId)
                 try {
-                  await api.markResolved(orgId, runId, selectedDoc.document_id, ruleId)
+                  await api.queueMarkResolved(orgId, selectedDoc.document_id, ruleId)
                   // Update local state: set fixed=true, remove finding_confirmed
                   const timestamp = new Date().toISOString()
                   setData(prev => ({
@@ -914,11 +992,11 @@ export function ValidationRunDetailPage() {
                     feedbackText,
                     rule?.rule_text || '',
                     selectedDoc.document_id,
-                    runId,
+                    selectedDoc.latest_validation_run_id,
                     ruleId,
                     rule?.notes || []
                   )
-                  await api.markIncorrect(orgId, runId, selectedDoc.document_id, ruleId, outcome)
+                  await api.queueMarkIncorrect(orgId, selectedDoc.document_id, ruleId, outcome)
 
                   const timestamp = new Date().toISOString()
                   const patch = { status: outcome, feedback_given: true, feedback_given_at: timestamp }
@@ -951,7 +1029,7 @@ export function ValidationRunDetailPage() {
               onConfirmDocument={async () => {
                 setConfirmingDocument(true)
                 try {
-                  const resp = await api.confirmDocument(orgId, runId, selectedDoc.document_id)
+                  const resp = await api.queueConfirmDocument(orgId, selectedDoc.document_id)
                   const patch = {
                     document_confirmed: true,
                     document_confirmed_at: resp.document_confirmed_at,
@@ -1489,6 +1567,33 @@ function RuleTab({ label, count, color }) {
 }
 
 
+// Reviewer action button with an inline "?" that surfaces the button's
+// consequence on hover. Native `title` — no extra tooltip dependency.
+// The "?" gets its own `title` too so screen readers hear the hint when
+// they focus it, and clicks on it don't fire the button's action.
+function ActionButton({ onClick, disabled, colorClass, label, hint }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={hint}
+      className={`inline-flex items-center gap-2 px-4 py-2 text-white text-sm font-medium rounded-md ${colorClass} disabled:opacity-50 disabled:cursor-not-allowed`}
+    >
+      <span>{label}</span>
+      <span
+        role="img"
+        aria-label={hint}
+        title={hint}
+        onClick={(e) => e.stopPropagation()}
+        className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-white/25 text-[10px] font-bold leading-none cursor-help select-none"
+      >
+        ?
+      </span>
+    </button>
+  )
+}
+
+
 function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding, resolvingRuleId, onMarkResolved, markingIncorrectRuleId, setMarkingIncorrectRuleId, incorrectFeedbackText, setIncorrectFeedbackText, incorrectOutcome, setIncorrectOutcome, submittingIncorrect, onMarkIncorrect, isDocConfirmed }) {
   // Extract reasoning from message (format: "STATUS - reasoning")
   const extractReasoning = () => {
@@ -1582,31 +1687,36 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
         </div>
       )}
 
-      {/* Confirm Finding and Mark Incorrect Buttons - only for failed rules that haven't been confirmed or fixed */}
+      {/* Reviewer decision for a failing rule: resolve now, hand off to
+          staff, or (LLM rules only) mark the finding as a false positive.
+          "I Resolved This" flows through `onMarkResolved` → sets
+          `fixed=true`, pushing the doc into the Passed bucket. "Needs
+          Another Staff Member" flows through `onConfirmFinding` → sets
+          `finding_confirmed=true`, pushing the doc into Awaiting Staff. */}
       {canMutate && isFailed && !isConfirmed && !isFixed && !isMarkingIncorrect && (
-        <div className="pt-2">
-          <div className="flex gap-2">
-            <button
-              onClick={() => onConfirmFinding(rule.rule_id)}
-              disabled={isConfirming}
-              className="px-4 py-2 bg-yellow-500 text-white text-sm font-medium rounded-md hover:bg-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isConfirming ? 'Confirming...' : 'Confirm Finding'}
-            </button>
-            {isLlmRule && (
-              <button
-                onClick={() => { setIncorrectOutcome('PASS'); setMarkingIncorrectRuleId(rule.rule_id); }}
-                className="px-4 py-2 bg-gray-500 text-white text-sm font-medium rounded-md hover:bg-gray-600"
-              >
-                Mark Incorrect
-              </button>
-            )}
-          </div>
-          <p className="text-xs text-gray-500 mt-2">
-            {isLlmRule
-              ? 'Confirm if the finding is correct and needs staff action, or mark as incorrect if this is a false positive.'
-              : 'Confirm if the finding is correct and needs staff action.'}
-          </p>
+        <div className="pt-2 flex flex-wrap gap-2">
+          <ActionButton
+            onClick={() => onMarkResolved(rule.rule_id)}
+            disabled={isResolving}
+            colorClass="bg-green-600 hover:bg-green-700"
+            label={isResolving ? 'Marking Resolved...' : 'I Resolved This'}
+            hint="You made the change in the source system. Marks this finding fixed; the doc moves to Passed once every failing rule is resolved."
+          />
+          <ActionButton
+            onClick={() => onConfirmFinding(rule.rule_id)}
+            disabled={isConfirming}
+            colorClass="bg-yellow-500 hover:bg-yellow-600"
+            label={isConfirming ? 'Handing off...' : 'Needs Another Staff Member'}
+            hint="Hand this off — someone else has to make the change. Marks the finding confirmed; the doc moves to Awaiting Staff."
+          />
+          {isLlmRule && (
+            <ActionButton
+              onClick={() => { setIncorrectOutcome('PASS'); setMarkingIncorrectRuleId(rule.rule_id); }}
+              colorClass="bg-gray-500 hover:bg-gray-600"
+              label="Mark Incorrect"
+              hint="The LLM was wrong — this isn't actually a finding. Records feedback and re-classifies the rule outcome."
+            />
+          )}
         </div>
       )}
 
@@ -1763,6 +1873,224 @@ function RuleDetailView({ rule, fieldValues, confirmingRuleId, onConfirmFinding,
           </div>
         )
       })()}
+    </div>
+  )
+}
+
+
+// Cutoff mirrors admin_api.CUTOVER_DATE — anything earlier has no
+// data/{date}/ prefix to validate.
+const RUN_CUTOFF = '2026-05-01'
+
+function _todayLocalISO() {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function _daysInRange(startISO, endISO) {
+  if (!startISO || !endISO) return []
+  const start = new Date(`${startISO}T00:00:00`)
+  const end = new Date(`${endISO}T00:00:00`)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return []
+  if (start > end) return []
+  const out = []
+  const cur = new Date(start)
+  while (cur <= end) {
+    const y = cur.getFullYear()
+    const m = String(cur.getMonth() + 1).padStart(2, '0')
+    const d = String(cur.getDate()).padStart(2, '0')
+    out.push(`${y}-${m}-${d}`)
+    cur.setDate(cur.getDate() + 1)
+  }
+  return out
+}
+
+
+// Admin-only overlay: triggers a validation run for a date range and an
+// optional category subset. Backing endpoint is
+// POST /api/organizations/{orgId}/validation-runs — the same one
+// EventBridge invokes overnight, just with an explicit `dates` list.
+function TriggerRunModal({ orgId, runnableCategories, onClose, onError }) {
+  const today = _todayLocalISO()
+  const [startDate, setStartDate] = useState(today)
+  const [endDate, setEndDate] = useState(today)
+  const [selectedCategories, setSelectedCategories] = useState(new Set())
+  const [submitting, setSubmitting] = useState(false)
+  const [result, setResult] = useState(null)  // { run_id, categories, dates }
+
+  const dates = useMemo(() => _daysInRange(startDate, endDate), [startDate, endDate])
+  const rangeInvalid = dates.length === 0
+  const startTooEarly = startDate < RUN_CUTOFF
+  const endInFuture = endDate > today
+  const disabled = submitting || rangeInvalid || startTooEarly || endInFuture
+
+  const toggleCategory = (cat) => {
+    setSelectedCategories(prev => {
+      const next = new Set(prev)
+      if (next.has(cat)) next.delete(cat)
+      else next.add(cat)
+      return next
+    })
+  }
+
+  const submit = async () => {
+    setSubmitting(true)
+    try {
+      // Empty selection = don't send `categories` → server defaults to
+      // every runnable category for the caller.
+      const cats = selectedCategories.size > 0 ? Array.from(selectedCategories) : null
+      const resp = await api.triggerValidationRun(orgId, cats, dates)
+      setResult({
+        run_id: resp.validation_run_id,
+        categories: resp.categories,
+        dates: resp.dates,
+      })
+    } catch (err) {
+      onError(`Failed to trigger validation run: ${err.message}`)
+      onClose()
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md bg-white rounded-lg shadow-lg p-6"
+      >
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-gray-900">Trigger Validation Run</h2>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600"
+            aria-label="Close"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {result ? (
+          <div className="space-y-3">
+            <div className="p-3 rounded-md border border-green-200 bg-green-50 text-sm text-green-800">
+              <div className="font-medium">Validation run started</div>
+              <div className="text-xs mt-1 font-mono">{result.run_id}</div>
+              <div className="text-xs mt-1">
+                Dates: {result.dates.join(', ')}
+              </div>
+              <div className="text-xs mt-1">
+                Categories: {result.categories.join(', ')}
+              </div>
+            </div>
+            <p className="text-xs text-gray-500">
+              Documents will trickle into the queue as they're validated. Refresh in a few minutes.
+            </p>
+            <div className="flex justify-end">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <label className="text-sm">
+                <span className="block text-gray-700 mb-1">Start date</span>
+                <input
+                  type="date"
+                  value={startDate}
+                  min={RUN_CUTOFF}
+                  max={today}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="block text-gray-700 mb-1">End date</span>
+                <input
+                  type="date"
+                  value={endDate}
+                  min={RUN_CUTOFF}
+                  max={today}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm"
+                />
+              </label>
+            </div>
+            {startTooEarly && (
+              <p className="text-xs text-red-600">Start date must be on or after {RUN_CUTOFF}.</p>
+            )}
+            {endInFuture && (
+              <p className="text-xs text-red-600">End date can't be in the future.</p>
+            )}
+            {rangeInvalid && !startTooEarly && !endInFuture && (
+              <p className="text-xs text-red-600">End date must be on or after start date.</p>
+            )}
+            <p className="text-xs text-gray-500">
+              {dates.length > 0
+                ? `Will run for ${dates.length} day${dates.length === 1 ? '' : 's'}.`
+                : ''}
+            </p>
+
+            {runnableCategories.length > 0 && (
+              <div>
+                <div className="text-sm text-gray-700 mb-1">
+                  Categories <span className="text-xs text-gray-500">(optional; leave empty to run all)</span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {runnableCategories.map(cat => {
+                    const selected = selectedCategories.has(cat)
+                    return (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => toggleCategory(cat)}
+                        className={`px-3 py-1 rounded-full text-xs border ${
+                          selected
+                            ? 'bg-blue-600 border-blue-600 text-white'
+                            : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={onClose}
+                disabled={submitting}
+                className="px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={submit}
+                disabled={disabled}
+                className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {submitting ? 'Starting...' : 'Start Run'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

@@ -9,9 +9,8 @@ import { RunDates } from '../components/RunDates.jsx'
 import { RunTimestamp } from '../components/RunTimestamp.jsx'
 import { usePermissions } from '../auth/usePermissions.js'
 
-const TABS = ['Rules', 'Field Mappings', 'UI Display Fields', 'Validation Results']
+const TABS = ['Rules', 'Field Mappings', 'UI Display Fields']
 const TAB_PARAM_MAP = {
-  'validation': 'Validation Results',
   'rules': 'Rules',
   'field-mappings': 'Field Mappings',
   'ui-display-fields': 'UI Display Fields',
@@ -32,7 +31,6 @@ export function OrganizationDetail() {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
-  const [latestRunId, setLatestRunId] = useState(null)
 
   useEffect(() => {
     Promise.all([
@@ -47,26 +45,6 @@ export function OrganizationDetail() {
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
-  }, [orgId])
-
-  // Grab the most recent validation run so the header can deep-link to it.
-  // Kept separate from the main load so a failure here doesn't blow up the page.
-  useEffect(() => {
-    let cancelled = false
-    api.listValidationRuns(orgId)
-      .then(data => {
-        if (cancelled) return
-        const runs = (Array.isArray(data) ? data : data?.runs) || []
-        if (runs.length === 0) return
-        const sorted = [...runs].sort((a, b) => {
-          const at = a.timestamp ? new Date(a.timestamp).getTime() : 0
-          const bt = b.timestamp ? new Date(b.timestamp).getTime() : 0
-          return bt - at
-        })
-        setLatestRunId(sorted[0].validation_run_id)
-      })
-      .catch(() => { /* silent — button stays disabled */ })
-    return () => { cancelled = true }
   }, [orgId])
 
   const handleSaveRulesConfig = async (configUpdate) => {
@@ -145,27 +123,6 @@ export function OrganizationDetail() {
               </span>
             )}
           </Link>
-          {latestRunId ? (
-            <Link
-              to={`/organizations/${orgId}/validation-runs/${latestRunId}`}
-              className="flex items-center gap-2 px-4 py-2 bg-white border border-blue-600 text-blue-600 rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              Today's Validation
-            </Link>
-          ) : (
-            <span
-              className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-400 rounded-lg text-sm font-medium cursor-not-allowed"
-              title="No validation runs yet"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              Today's Validation
-            </span>
-          )}
         </div>
       </div>
 
@@ -204,10 +161,6 @@ export function OrganizationDetail() {
 
       {activeTab === 'UI Display Fields' && (
         <UIDisplayFieldsTab orgId={orgId} />
-      )}
-
-      {activeTab === 'Validation Results' && (
-        <ValidationResultsTab orgId={orgId} />
       )}
     </div>
   )
@@ -351,7 +304,7 @@ function FieldMappingsTab({ config, onSave, saving, saveMsg }) {
 }
 
 
-// Canonical UI field names the ValidationRunDetailPage knows how to render.
+// Canonical UI field names the DocumentQueuePage knows how to render.
 // Kept in sync with FIELD_LABELS + MULTI_FILTER_FIELDS in that page and with
 // KNOWN_UI_FIELDS in scripts/multi-org/seed_ui_display_fields.py. Anything
 // not in this list still saves (the editor is free-form), but the UI won't
@@ -453,351 +406,3 @@ function UIDisplayFieldsTab({ orgId }) {
 }
 
 
-// Earliest date the date-scoped validation flow supports. Hardcoded both here
-// and on the backend (lambda/api/admin_api.py CUTOVER_DATE) — anything earlier
-// pre-dates the data/{date}/ S3 layout and has no folder to validate.
-const RUN_CUTOVER_DATE = '2026-05-01'
-
-function todayLocalISO() {
-  // Today, formatted as YYYY-MM-DD in the user's local timezone. We send the
-  // string verbatim to the API; the backend treats it as a UTC date. That's
-  // a one-day mismatch only for users near the date line — acceptable for v1.
-  const d = new Date()
-  const yyyy = d.getFullYear()
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd}`
-}
-
-function expandDateRange(startISO, endISO) {
-  // Inclusive day-by-day expansion of [start, end] into ISO strings.
-  if (!startISO || !endISO || startISO > endISO) return []
-  const out = []
-  const cursor = new Date(`${startISO}T00:00:00`)
-  const end = new Date(`${endISO}T00:00:00`)
-  while (cursor <= end) {
-    const yyyy = cursor.getFullYear()
-    const mm = String(cursor.getMonth() + 1).padStart(2, '0')
-    const dd = String(cursor.getDate()).padStart(2, '0')
-    out.push(`${yyyy}-${mm}-${dd}`)
-    cursor.setDate(cursor.getDate() + 1)
-  }
-  return out
-}
-
-function ValidationResultsTab({ orgId }) {
-  const perms = usePermissions()
-  const runnable = useMemo(() => Array.from(perms.runnableCategories()).sort(),
-    [perms])
-  const canRunAny = runnable.length > 0
-  const today = todayLocalISO()
-
-  const [runs, setRuns] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [triggering, setTriggering] = useState(false)
-  const [triggerMsg, setTriggerMsg] = useState('')
-  const [periodFilter, setPeriodFilter] = useState('all')
-  const [customStartDate, setCustomStartDate] = useState('')
-  const [customEndDate, setCustomEndDate] = useState('')
-  // Default to running every category the user is allowed to run.
-  const [selectedCategories, setSelectedCategories] = useState(runnable)
-  const [pickerOpen, setPickerOpen] = useState(false)
-  // Date range for the run itself — bounded by the cutover and today.
-  // Defaults to today/today (single-day run).
-  const [runDateStart, setRunDateStart] = useState(today)
-  const [runDateEnd, setRunDateEnd] = useState(today)
-  const runDates = useMemo(
-    () => expandDateRange(runDateStart, runDateEnd),
-    [runDateStart, runDateEnd],
-  )
-  const datesValid = runDates.length > 0
-    && runDateStart >= RUN_CUTOVER_DATE
-    && runDateEnd <= today
-
-  // Keep `selectedCategories` aligned with `runnable` once permissions arrive.
-  const runnableKey = runnable.join('|')
-  useEffect(() => {
-    setSelectedCategories(runnable)
-    // runnable identity changes every render; runnableKey is the stable signal.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runnableKey])
-
-  const loadRuns = useCallback(() => {
-    setLoading(true)
-    api.listValidationRuns(orgId)
-      .then(data => setRuns(data.runs || []))
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
-  }, [orgId])
-
-  useEffect(() => {
-    loadRuns()
-  }, [loadRuns])
-
-  const toggleCategory = (cat) => {
-    setSelectedCategories(prev =>
-      prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]
-    )
-  }
-
-  const handleTriggerValidation = async () => {
-    if (selectedCategories.length === 0) {
-      setTriggerMsg('Error: select at least one category')
-      return
-    }
-    if (!datesValid) {
-      setTriggerMsg('Error: pick a valid date range')
-      return
-    }
-    setTriggering(true)
-    setTriggerMsg('')
-    setPickerOpen(false)
-    try {
-      await api.triggerValidationRun(orgId, selectedCategories, runDates)
-      setTriggerMsg('Validation run started. Results will appear shortly.')
-      setTimeout(() => {
-        loadRuns()
-        setTriggerMsg('')
-      }, 5000)
-    } catch (err) {
-      setTriggerMsg(`Error: ${err.message}`)
-    } finally {
-      setTriggering(false)
-    }
-  }
-
-  // A run's "date that it took place" = its `timestamp` from listValidationRuns.
-  const filteredRuns = useMemo(() => {
-    const dayMs = 24 * 60 * 60 * 1000
-    const now = Date.now()
-    let startCutoff = null
-    let endCutoff = null
-    if (periodFilter === '24h') startCutoff = now - dayMs
-    else if (periodFilter === '7d') startCutoff = now - 7 * dayMs
-    else if (periodFilter === '30d') startCutoff = now - 30 * dayMs
-    else if (periodFilter === '90d') startCutoff = now - 90 * dayMs
-    else if (periodFilter === 'custom') {
-      if (customStartDate) startCutoff = new Date(customStartDate).getTime()
-      // End cutoff is exclusive — include the full end day.
-      if (customEndDate) endCutoff = new Date(customEndDate).getTime() + dayMs
-    }
-    if (startCutoff == null && endCutoff == null) return runs
-    return runs.filter(r => {
-      if (!r.timestamp) return true
-      const t = new Date(r.timestamp).getTime()
-      if (startCutoff != null && t < startCutoff) return false
-      if (endCutoff != null && t >= endCutoff) return false
-      return true
-    })
-  }, [runs, periodFilter, customStartDate, customEndDate])
-
-  if (loading) return <p className="text-gray-500">Loading validation runs...</p>
-  if (error) return <p className="text-red-600">Error: {error}</p>
-
-  return (
-    <div>
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-lg font-medium text-gray-900">
-          Validation Runs ({filteredRuns.length}{filteredRuns.length !== runs.length ? ` of ${runs.length}` : ''})
-        </h2>
-        <div className="flex items-center gap-3">
-          {triggerMsg && (
-            <span className={`text-sm ${triggerMsg.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
-              {triggerMsg}
-            </span>
-          )}
-          {canRunAny && (
-            <div className="relative flex items-center gap-2">
-              {/* Date range picker — bounded by [cutover, today].
-                  Defaults to single-day (today/today). */}
-              <div className="flex items-center gap-1.5 px-2 py-1 bg-white border border-gray-300 rounded-md">
-                <label className="text-xs text-gray-500" htmlFor="run-date-start">From</label>
-                <input
-                  id="run-date-start"
-                  type="date"
-                  min={RUN_CUTOVER_DATE}
-                  max={today}
-                  value={runDateStart}
-                  disabled={triggering}
-                  onChange={(e) => {
-                    const v = e.target.value
-                    setRunDateStart(v)
-                    if (runDateEnd && v > runDateEnd) setRunDateEnd(v)
-                  }}
-                  className="text-xs text-gray-700 bg-transparent focus:outline-none"
-                  aria-label="Run start date"
-                />
-                <label className="text-xs text-gray-500" htmlFor="run-date-end">to</label>
-                <input
-                  id="run-date-end"
-                  type="date"
-                  min={runDateStart || RUN_CUTOVER_DATE}
-                  max={today}
-                  value={runDateEnd}
-                  disabled={triggering}
-                  onChange={(e) => setRunDateEnd(e.target.value)}
-                  className="text-xs text-gray-700 bg-transparent focus:outline-none"
-                  aria-label="Run end date"
-                />
-              </div>
-              <button
-                onClick={() => setPickerOpen(o => !o)}
-                disabled={triggering}
-                className="px-3 py-2 text-xs text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
-                title="Choose rule categories to validate"
-              >
-                {selectedCategories.length === runnable.length
-                  ? 'All categories'
-                  : `${selectedCategories.length} of ${runnable.length} categories`}
-                <span className="ml-1 text-gray-400">▾</span>
-              </button>
-              {pickerOpen && (
-                <div className="absolute right-32 top-full mt-1 z-10 bg-white border border-gray-200 rounded-md shadow-lg p-3 w-56">
-                  <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                    Categories
-                  </div>
-                  {runnable.map(cat => (
-                    <label key={cat} className="flex items-center gap-2 py-1 text-sm cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={selectedCategories.includes(cat)}
-                        onChange={() => toggleCategory(cat)}
-                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                      />
-                      <span className="text-gray-700">{cat}</span>
-                    </label>
-                  ))}
-                </div>
-              )}
-              <button
-                onClick={handleTriggerValidation}
-                disabled={triggering || selectedCategories.length === 0 || !datesValid}
-                className="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
-              >
-                {triggering ? (
-                  <>
-                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                    Running...
-                  </>
-                ) : (
-                  'Run Validation'
-                )}
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Date filter */}
-      <div className="bg-white rounded-lg border border-gray-200 p-3 mb-4 flex flex-wrap items-end gap-3">
-        <div className="flex flex-col">
-          <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Date</label>
-          <select
-            value={periodFilter}
-            onChange={(e) => setPeriodFilter(e.target.value)}
-            className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="all">All time</option>
-            <option value="24h">Last 24 hours</option>
-            <option value="7d">Last 7 days</option>
-            <option value="30d">Last 30 days</option>
-            <option value="90d">Last 90 days</option>
-            <option value="custom">Custom range</option>
-          </select>
-        </div>
-        {periodFilter === 'custom' && (
-          <>
-            <div className="flex flex-col">
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">From</label>
-              <input
-                type="date"
-                value={customStartDate}
-                onChange={(e) => setCustomStartDate(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div className="flex flex-col">
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">To</label>
-              <input
-                type="date"
-                value={customEndDate}
-                onChange={(e) => setCustomEndDate(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-          </>
-        )}
-        {periodFilter !== 'all' && (
-          <button
-            onClick={() => {
-              setPeriodFilter('all')
-              setCustomStartDate('')
-              setCustomEndDate('')
-            }}
-            className="text-sm text-blue-600 hover:text-blue-800 px-2 py-2"
-          >
-            Clear
-          </button>
-        )}
-      </div>
-
-      {runs.length === 0 ? (
-        <p className="text-gray-500">No validation runs found for this organization.</p>
-      ) : filteredRuns.length === 0 ? (
-        <p className="text-gray-500">No validation runs in the selected date range.</p>
-      ) : (
-        <div className="bg-white shadow rounded-lg overflow-hidden">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Run ID</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Run Time</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Data Dates</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Categories</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Docs</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Pass</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Fail</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Skip</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {filteredRuns.map(run => (
-                <tr key={run.validation_run_id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3">
-                    <Link
-                      to={`/organizations/${orgId}/validation-runs/${run.validation_run_id}`}
-                      className="text-blue-600 hover:text-blue-800 text-sm font-mono"
-                    >
-                      {run.validation_run_id}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-600">
-                    <RunTimestamp value={run.timestamp} />
-                  </td>
-                  <td className="px-4 py-3">
-                    <RunDates dates={run.dates} />
-                  </td>
-                  <td className="px-4 py-3">
-                    <RunCategories categories={run.categories} />
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-900 font-medium">{run.total_documents}</td>
-                  <td className="px-4 py-3 text-sm text-green-600 font-medium">{run.passed}</td>
-                  <td className="px-4 py-3 text-sm text-red-600 font-medium">{run.failed}</td>
-                  <td className="px-4 py-3 text-sm text-yellow-600 font-medium">{run.skipped}</td>
-                  <td className="px-4 py-3">
-                    <ValidationStatusBadge status={run.failed > 0 ? 'FAIL' : 'PASS'} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  )
-}

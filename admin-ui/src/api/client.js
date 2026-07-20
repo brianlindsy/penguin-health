@@ -192,29 +192,63 @@ export const api = {
   getValidationResult: (orgId, runId, docId) =>
     request(`/api/organizations/${orgId}/validation-runs/${runId}/documents/${docId}`),
 
-  confirmFinding: (orgId, runId, docId, ruleId) =>
-    request(`/api/organizations/${orgId}/validation-runs/${runId}/documents/${docId}/confirm-finding`, {
-      method: 'PUT',
-      body: JSON.stringify({ rule_id: ruleId }),
-    }),
+  // ----- Document queue (reviewer surface) -----
+  // Queue = one entry per unique document, fed by nightly validation runs.
+  // Byte-identical resends never appear here; content changes append a new
+  // version. See lambda/api/admin_api.py `/api/organizations/{orgId}/document-queue/*`.
 
-  markResolved: (orgId, runId, docId, ruleId) =>
-    request(`/api/organizations/${orgId}/validation-runs/${runId}/documents/${docId}/mark-resolved`, {
-      method: 'PUT',
-      body: JSON.stringify({ rule_id: ruleId }),
-    }),
+  listDocumentQueue: (orgId, {
+    status,
+    program,
+    serviceType,
+    payerDescription,
+    firstSeenRunId,
+    limit,
+    nextToken,
+    includeRules,
+  } = {}) => {
+    const qs = new URLSearchParams()
+    if (status) qs.set('status', Array.isArray(status) ? status.join(',') : status)
+    if (program?.length) qs.set('program', program.join(','))
+    if (serviceType?.length) qs.set('service_type', serviceType.join(','))
+    if (payerDescription?.length) qs.set('payer_description', payerDescription.join(','))
+    if (firstSeenRunId) qs.set('first_seen_run_id', firstSeenRunId)
+    if (limit != null) qs.set('limit', String(limit))
+    if (nextToken) qs.set('next_token', nextToken)
+    if (includeRules) qs.set('include', 'rules')
+    const suffix = qs.toString() ? `?${qs}` : ''
+    return request(`/api/organizations/${orgId}/document-queue${suffix}`)
+  },
 
-  markIncorrect: (orgId, runId, docId, ruleId, outcome = 'PASS') =>
-    request(`/api/organizations/${orgId}/validation-runs/${runId}/documents/${docId}/mark-incorrect`, {
-      method: 'PUT',
-      body: JSON.stringify({ rule_id: ruleId, outcome }),
-    }),
+  getDocumentQueueEntry: (orgId, docId) =>
+    request(`/api/organizations/${orgId}/document-queue/${encodeURIComponent(docId)}`),
 
-  confirmDocument: (orgId, runId, docId) =>
-    request(`/api/organizations/${orgId}/validation-runs/${runId}/documents/${docId}/confirm-document`, {
-      method: 'PUT',
-      body: JSON.stringify({}),
-    }),
+  listDocumentQueueVersions: (orgId, docId) =>
+    request(`/api/organizations/${orgId}/document-queue/${encodeURIComponent(docId)}/history`),
+
+  queueConfirmFinding: (orgId, docId, ruleId) =>
+    request(
+      `/api/organizations/${orgId}/document-queue/${encodeURIComponent(docId)}/findings/${encodeURIComponent(ruleId)}/confirm`,
+      { method: 'PUT', body: JSON.stringify({}) },
+    ),
+
+  queueMarkResolved: (orgId, docId, ruleId) =>
+    request(
+      `/api/organizations/${orgId}/document-queue/${encodeURIComponent(docId)}/findings/${encodeURIComponent(ruleId)}/mark-resolved`,
+      { method: 'PUT', body: JSON.stringify({}) },
+    ),
+
+  queueMarkIncorrect: (orgId, docId, ruleId, outcome = 'PASS') =>
+    request(
+      `/api/organizations/${orgId}/document-queue/${encodeURIComponent(docId)}/findings/${encodeURIComponent(ruleId)}/mark-incorrect`,
+      { method: 'PUT', body: JSON.stringify({ outcome }) },
+    ),
+
+  queueConfirmDocument: (orgId, docId) =>
+    request(
+      `/api/organizations/${orgId}/document-queue/${encodeURIComponent(docId)}/confirm-document`,
+      { method: 'PUT', body: JSON.stringify({}) },
+    ),
 
   // Analytics: NL query
   nlQuery: (orgId, question) =>

@@ -808,3 +808,278 @@ def test_ingest_date_uses_eastern_wall_clock_for_partition():
     # must be 2026-06-30, not 2026-07-01.
     late_night_utc = datetime(2026, 7, 1, 2, 30, tzinfo=timezone.utc)
     assert pipeline_mod._ingest_date(late_night_utc) == "2026-06-30"
+
+
+# ----- ingest-cursor dedupe -----------------------------------------------
+
+
+@pytest.fixture
+def cursor_table():
+    """In-memory DDB stand-in for the ingest-cursor table."""
+    with mock_aws():
+        ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        table = ddb.create_table(
+            TableName="penguin-health-centralreach-ingest-cursor-test",
+            KeySchema=[
+                {"AttributeName": "pk", "KeyType": "HASH"},
+                {"AttributeName": "sk", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "pk", "AttributeType": "S"},
+                {"AttributeName": "sk", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.wait_until_exists()
+        yield table
+
+
+def test_dedupe_skips_previously_ingested_entry_without_calling_cr(
+    s3, audit_collector, cursor_table,
+):
+    """Pinned: when the cursor already has a row for (org, entry.id),
+    the pipeline skips before any CR API call. Zero preview/resource
+    fetches, zero Bedrock work — the whole point of the cache."""
+    events, collector = audit_collector
+    entry = _make_entry()
+
+    # Pre-seed the cursor so the entry looks already-ingested.
+    cursor_table.put_item(Item={
+        "pk": "ORG#demo",
+        "sk": f"ENTRY#{entry.id}",
+        "first_ingested_at": "2026-06-01T12:00:00Z",
+        "first_ingest_run_id": "run-previous",
+        "pdf_s3_key": "pdfs/2026-06-01/x.pdf",
+        "record_s3_key": "data/2026-06-01/x.json",
+    })
+
+    client = FakeClient()  # no scripted responses — none should be needed
+
+    summary = run_ingest(
+        client=client,
+        org_id="demo",
+        date_range=DateRange(start_date="2026-06-28", end_date="2026-06-28"),
+        actor=_ACTOR,
+        utc_offset_minutes=300,
+        ingest_run_id="run-abc",
+        entries=[entry],
+        now_fn=_fixed_now,
+        s3_client=s3,
+        audit_emit_fn=collector,
+        cursor_table=cursor_table,
+        dedupe_enabled=True,
+    )
+
+    assert summary.processed_count == 0
+    assert summary.skipped_by_reason == {"already_ingested": 1}
+    assert client.calls == []  # no CR API calls on the skip path
+    # One audit event: the dedupe-skip emission, no per-entry ingest audit.
+    assert len(events) == 1
+    assert events[0]["call_type"] == "centralreach_ingest_dedupe_skip"
+    assert events[0]["resource"]["id"] == str(entry.id)
+
+
+def test_dedupe_marks_entry_on_successful_ingest(
+    s3, audit_collector, cursor_table,
+):
+    """Pinned: a successful ingest writes the presence row so the next
+    run's has_ingested returns True. Diagnostic fields
+    (pdf_s3_key, record_s3_key, ingest_run_id) are captured."""
+    events, collector = audit_collector
+    entry = _make_entry()
+    preview = _make_preview()
+
+    client = FakeClient(
+        preview_by_entry_id={entry.id: _build_raw_preview_from(preview)},
+        resourceurl_by_resource_id={
+            preview.files[0].id: _SUCCESS_RESOURCE_PAYLOAD,
+        },
+    )
+
+    run_ingest(
+        client=client,
+        org_id="demo",
+        date_range=DateRange(start_date="2026-06-28", end_date="2026-06-28"),
+        actor=_ACTOR,
+        utc_offset_minutes=300,
+        ingest_run_id="run-abc",
+        entries=[entry],
+        now_fn=_fixed_now,
+        s3_client=s3,
+        audit_emit_fn=collector,
+        cursor_table=cursor_table,
+        dedupe_enabled=True,
+    )
+
+    item = cursor_table.get_item(
+        Key={"pk": "ORG#demo", "sk": f"ENTRY#{entry.id}"},
+    )["Item"]
+    assert item["first_ingest_run_id"] == "run-abc"
+    assert item["pdf_s3_key"].startswith("pdfs/")
+    assert item["record_s3_key"].startswith("data/")
+
+
+def test_dedupe_does_not_mark_on_failure(s3, audit_collector, cursor_table):
+    """Pinned: failed entries must NOT get a cursor row — next run
+    needs to retry them."""
+    events, collector = audit_collector
+    entry = _make_entry()
+    client = FakeClient(
+        preview_by_entry_id={entry.id: CentralReachAPIError("boom")},
+    )
+
+    run_ingest(
+        client=client,
+        org_id="demo",
+        date_range=DateRange(start_date="2026-06-28", end_date="2026-06-28"),
+        actor=_ACTOR,
+        utc_offset_minutes=300,
+        ingest_run_id="run-abc",
+        entries=[entry],
+        now_fn=_fixed_now,
+        s3_client=s3,
+        audit_emit_fn=collector,
+        cursor_table=cursor_table,
+        dedupe_enabled=True,
+    )
+
+    item = cursor_table.get_item(
+        Key={"pk": "ORG#demo", "sk": f"ENTRY#{entry.id}"},
+    ).get("Item")
+    assert item is None
+
+
+def test_dedupe_does_not_mark_on_skip(s3, audit_collector, cursor_table):
+    """Pinned: skipped entries (draft/no-pdf/etc) must NOT get a
+    cursor row either — a draft that's later signed should still be
+    ingestible on the next run.
+
+    The one exception is the already_ingested skip itself, which
+    trivially doesn't write because the row already exists.
+    """
+    events, collector = audit_collector
+    entry = _make_entry()  # unsigned; preview returns no files
+
+    client = FakeClient(
+        preview_by_entry_id={entry.id: _build_raw_preview_from(_DRAFT_PREVIEW)},
+    )
+
+    run_ingest(
+        client=client,
+        org_id="demo",
+        date_range=DateRange(start_date="2026-06-28", end_date="2026-06-28"),
+        actor=_ACTOR,
+        utc_offset_minutes=300,
+        ingest_run_id="run-abc",
+        entries=[entry],
+        now_fn=_fixed_now,
+        s3_client=s3,
+        audit_emit_fn=collector,
+        cursor_table=cursor_table,
+        dedupe_enabled=True,
+    )
+
+    item = cursor_table.get_item(
+        Key={"pk": "ORG#demo", "sk": f"ENTRY#{entry.id}"},
+    ).get("Item")
+    assert item is None
+
+
+def test_dedupe_disabled_ignores_cursor_and_ingests_as_before(
+    s3, audit_collector, cursor_table,
+):
+    """Pinned: with the feature flag off, an existing cursor row does
+    NOT skip the entry — the pipeline behaves exactly as it did before
+    this change lands. Also confirms nothing is written to the cursor
+    table when the flag is off."""
+    events, collector = audit_collector
+    entry = _make_entry()
+    preview = _make_preview()
+
+    # Seed a cursor row that WOULD skip if dedupe were on.
+    cursor_table.put_item(Item={
+        "pk": "ORG#demo",
+        "sk": f"ENTRY#{entry.id}",
+        "first_ingested_at": "2026-06-01T12:00:00Z",
+    })
+
+    client = FakeClient(
+        preview_by_entry_id={entry.id: _build_raw_preview_from(preview)},
+        resourceurl_by_resource_id={
+            preview.files[0].id: _SUCCESS_RESOURCE_PAYLOAD,
+        },
+    )
+
+    summary = run_ingest(
+        client=client,
+        org_id="demo",
+        date_range=DateRange(start_date="2026-06-28", end_date="2026-06-28"),
+        actor=_ACTOR,
+        utc_offset_minutes=300,
+        ingest_run_id="run-abc",
+        entries=[entry],
+        now_fn=_fixed_now,
+        s3_client=s3,
+        audit_emit_fn=collector,
+        cursor_table=cursor_table,
+        dedupe_enabled=False,
+    )
+
+    assert summary.processed_count == 1
+    # Cursor row unchanged — no first_ingest_run_id key from this run.
+    item = cursor_table.get_item(
+        Key={"pk": "ORG#demo", "sk": f"ENTRY#{entry.id}"},
+    )["Item"]
+    assert "first_ingest_run_id" not in item
+
+
+def test_dedupe_force_reingest_bypasses_skip_and_reprocesses(
+    s3, audit_collector, cursor_table,
+):
+    """Pinned: operator-set force_reingest flag processes the entry
+    even when a cursor row exists. Used for manual reprocessing
+    without deleting cursor rows."""
+    events, collector = audit_collector
+    entry = _make_entry()
+    preview = _make_preview()
+
+    cursor_table.put_item(Item={
+        "pk": "ORG#demo",
+        "sk": f"ENTRY#{entry.id}",
+        "first_ingested_at": "2026-06-01T12:00:00Z",
+        "first_ingest_run_id": "run-previous",
+        "pdf_s3_key": "pdfs/old.pdf",
+        "record_s3_key": "data/old.json",
+    })
+
+    client = FakeClient(
+        preview_by_entry_id={entry.id: _build_raw_preview_from(preview)},
+        resourceurl_by_resource_id={
+            preview.files[0].id: _SUCCESS_RESOURCE_PAYLOAD,
+        },
+    )
+
+    summary = run_ingest(
+        client=client,
+        org_id="demo",
+        date_range=DateRange(start_date="2026-06-28", end_date="2026-06-28"),
+        actor=_ACTOR,
+        utc_offset_minutes=300,
+        ingest_run_id="run-abc",
+        entries=[entry],
+        now_fn=_fixed_now,
+        s3_client=s3,
+        audit_emit_fn=collector,
+        cursor_table=cursor_table,
+        dedupe_enabled=True,
+        force_reingest=True,
+    )
+
+    assert summary.processed_count == 1
+    # First-ingest metadata is preserved (ConditionExpression no-op on
+    # the second mark_ingested). Force-reingest does NOT rewrite the
+    # provenance — only the ingest itself is redone.
+    item = cursor_table.get_item(
+        Key={"pk": "ORG#demo", "sk": f"ENTRY#{entry.id}"},
+    )["Item"]
+    assert item["first_ingest_run_id"] == "run-previous"
