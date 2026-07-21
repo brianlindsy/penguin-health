@@ -283,18 +283,15 @@ def test_build_record_encounter_fields():
         captured_at="2026-06-28T22:00:00Z",
     )
     assert rec.encounter.visit_date == "2026-06-28"
-    assert rec.encounter.provider_display == "Ann Smith, BCBA"
+    assert rec.encounter.provider_display == "Ann Smith"
     assert rec.encounter.note_type == "Treatment Planning - BCBA"
 
 
-def test_build_record_provider_falls_back_to_entry_when_preview_empty():
-    """If preview's providerSignatureName is empty (unsigned draft),
-    fall back to the entry's provider first+last names."""
-    preview = _make_preview(
-        provider_full_name="",
-        provider_signature_present=False,
-        signed_at=None,
-    )
+def test_build_record_provider_display_uses_entry_first_last_name():
+    """provider_display is the billing entry's rendering provider —
+    the first+last name from the entry, regardless of what the preview
+    endpoint's providerSignatureName holds."""
+    preview = _make_preview(provider_full_name="Signer Someone Else, BCBA")
     rec = build_record(
         entry=_make_entry(),
         preview=preview,

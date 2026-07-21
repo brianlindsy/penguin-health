@@ -209,15 +209,13 @@ def _split_procedure_code(raw: str | None) -> tuple[str, str]:
     return parts[0].strip(), parts[1].strip()
 
 
-def _provider_display(entry: BillingEntry, preview: PreviewResponse) -> str:
-    """Pick the most authoritative provider name.
+def _provider_display(entry: BillingEntry) -> str:
+    """Concatenate the billing entry's provider first and last name.
 
-    Preview's `providerSignatureName` is the signed-by name (most
-    accurate when the entry is signed). Falls back to the billing
-    entry's provider first/last when preview's value is empty.
+    The billing entry's provider fields are the session's rendering
+    provider — the person who delivered the service, distinct from
+    any signer on the note.
     """
-    if preview.provider_full_name:
-        return preview.provider_full_name
     return f"{entry.provider_first_name} {entry.provider_last_name}".strip()
 
 
@@ -278,7 +276,7 @@ def build_record(
 
     encounter = CentralReachEncounter(
         visit_date=_visit_date(entry.date_of_service),
-        provider_display=_provider_display(entry, preview),
+        provider_display=_provider_display(entry),
         note_type=note_type,
     )
 
