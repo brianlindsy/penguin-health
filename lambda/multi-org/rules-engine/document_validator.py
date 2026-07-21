@@ -31,7 +31,7 @@ from audit import SystemPrincipal, emit as audit_emit
 from bedrock_client import invoke_claude_model, MODEL_ID
 
 _AUDIT_PRINCIPAL = SystemPrincipal(
-    os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'rules-engine-rag')
+    os.environ.get('RULES_ENGINE_TASK_NAME', 'rules-engine-rag')
 )
 from field_extractor import extract_fields
 from deterministic_evaluator import evaluate_deterministic_rule

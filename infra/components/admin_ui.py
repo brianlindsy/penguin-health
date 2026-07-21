@@ -73,12 +73,14 @@ class AdminUi(Construct):
                  deep_jobs_table: dynamodb.ITable,
                  stedi_table: dynamodb.ITable,
                  document_queue_table: dynamodb.ITable,
-                 centralreach_state_machine=None) -> None:
-        # centralreach_state_machine is optional so the admin UI can be
-        # deployed standalone (e.g., a dev stack without the CentralReach
-        # ingest path). When provided, the admin Lambda gets the ARN as
-        # an env var + IAM grants to call StartExecution /
-        # ListExecutions / DescribeExecution on it.
+                 centralreach_state_machine=None,
+                 rules_engine_state_machine=None) -> None:
+        # centralreach_state_machine and rules_engine_state_machine are
+        # optional so the admin UI can be deployed standalone (e.g., a
+        # dev stack without the ingest / validation runtimes). When
+        # provided, the admin Lambda gets the ARN as an env var + IAM
+        # grants to call StartExecution / ListExecutions /
+        # DescribeExecution on the state machine.
         super().__init__(scope, id)
 
         # ----- Cognito -----
@@ -522,15 +524,14 @@ class AdminUi(Construct):
             ],
         ))
 
-        # Lambda invoke permissions: rules-engine for validation runs,
-        # plus the deep-analytics worker which the api function kicks off
-        # asynchronously when a deep-analysis job is requested.
+        # Lambda invoke permissions: the deep-analytics worker which the
+        # api function kicks off asynchronously when a deep-analysis job
+        # is requested. Rules-engine validation runs are triggered
+        # through Step Functions instead (see the rules_engine_state_machine
+        # block below).
         self.api_function.add_to_role_policy(iam.PolicyStatement(
             actions=["lambda:InvokeFunction"],
-            resources=[
-                f"arn:aws:lambda:{config.AWS_REGION}:*:function:{config.PROJECT_NAME}-rules-engine-rag",
-                self.deep_worker_function.function_arn,
-            ],
+            resources=[self.deep_worker_function.function_arn],
         ))
 
         # Analytics: Athena query execution scoped to per-org workgroups.
@@ -644,6 +645,20 @@ class AdminUi(Construct):
                     centralreach_state_machine.state_machine_arn,
                     execution_arn_pattern,
                 ],
+            ))
+
+        # ----- Rules Engine: state-machine ARN + StartExecution grant ----
+        # `lambda/api/admin_api.py` triggers validation runs via
+        # StartExecution against this state machine. Same pattern the
+        # CentralReach block above uses.
+        if rules_engine_state_machine is not None:
+            self.api_function.add_environment(
+                "RULES_ENGINE_STATE_MACHINE_ARN",
+                rules_engine_state_machine.state_machine_arn,
+            )
+            self.api_function.add_to_role_policy(iam.PolicyStatement(
+                actions=["states:StartExecution"],
+                resources=[rules_engine_state_machine.state_machine_arn],
             ))
 
         # ----- API Gateway HTTP API -----

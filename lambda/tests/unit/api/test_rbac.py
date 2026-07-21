@@ -114,14 +114,14 @@ class TestCategoryValidation:
 
 class TestTriggerValidationRunRBAC:
     def test_member_without_runnable_categories_gets_403(
-        self, mock_dynamodb, sample_org_config, member_event, seed_user_perms, mocker
+        self, mock_dynamodb, sample_org_config, member_event, seed_user_perms,
+        rules_engine_sfn,
     ):
         from api.admin_api import trigger_validation_run
         seed_user_perms(
             'member@example.com', 'test-org',
             report_permissions={'Billing': ['view']},
         )
-        mocker.patch('api.admin_api.lambda_client')
 
         resp = trigger_validation_run(
             event=member_event,
@@ -131,15 +131,14 @@ class TestTriggerValidationRunRBAC:
         assert resp['statusCode'] == 403
 
     def test_member_with_run_can_trigger_subset(
-        self, mock_dynamodb, sample_org_config, member_event, seed_user_perms, mocker
+        self, mock_dynamodb, sample_org_config, member_event, seed_user_perms,
+        rules_engine_sfn,
     ):
         from api.admin_api import trigger_validation_run
         seed_user_perms(
             'member@example.com', 'test-org',
             report_permissions={'Billing': ['run'], 'Intake': ['view', 'run']},
         )
-        fake_lambda = mocker.patch('api.admin_api.lambda_client')
-        fake_lambda.invoke.return_value = {'StatusCode': 202}
 
         resp = trigger_validation_run(
             event=member_event,
@@ -150,20 +149,21 @@ class TestTriggerValidationRunRBAC:
         body = json.loads(resp['body'])
         assert sorted(body['categories']) == ['Billing', 'Intake']
 
-        # Forwarded payload includes categories
-        invoke_call = fake_lambda.invoke.call_args
-        payload = json.loads(invoke_call.kwargs['Payload'])
-        assert sorted(payload['categories']) == ['Billing', 'Intake']
+        # Forwarded state-machine input includes categories
+        call = rules_engine_sfn.start_execution.call_args
+        sfn_input = json.loads(call.kwargs['input'])
+        assert sorted(sfn_input['categories']) == ['Billing', 'Intake']
+        assert sfn_input['mode'] == 'manual'
 
     def test_member_requesting_disallowed_category_rejected(
-        self, mock_dynamodb, sample_org_config, member_event, seed_user_perms, mocker
+        self, mock_dynamodb, sample_org_config, member_event, seed_user_perms,
+        rules_engine_sfn,
     ):
         from api.admin_api import trigger_validation_run
         seed_user_perms(
             'member@example.com', 'test-org',
             report_permissions={'Billing': ['run']},
         )
-        mocker.patch('api.admin_api.lambda_client')
 
         resp = trigger_validation_run(
             event=member_event,
@@ -174,11 +174,10 @@ class TestTriggerValidationRunRBAC:
         assert 'Quality Assurance' in json.loads(resp['body'])['error']
 
     def test_default_categories_when_omitted(
-        self, mock_dynamodb, sample_org_config, super_admin_event, mocker
+        self, mock_dynamodb, sample_org_config, super_admin_event,
+        rules_engine_sfn,
     ):
         from api.admin_api import trigger_validation_run
-        fake_lambda = mocker.patch('api.admin_api.lambda_client')
-        fake_lambda.invoke.return_value = {'StatusCode': 202}
 
         resp = trigger_validation_run(
             event=super_admin_event,

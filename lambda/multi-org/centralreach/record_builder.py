@@ -25,7 +25,6 @@ Field mapping (per the design doc):
 | extracted_fields.signed_at      | preview.signed_at                   |
 | extracted_fields.provider_signature | preview.provider_signature_present |
 | extracted_fields.supervisor_signature | same (v1 templates)         |
-| extracted_fields.supervisor_name | preview.provider_full_name         |
 | extracted_fields.billing_list_* | Every non-identity column CR        |
 |                                 | returned on the list endpoint,      |
 |                                 | mapped 1:1 from PascalCase to       |
@@ -53,10 +52,10 @@ a short-name alias. This keeps one value under one key — no
 ambiguity for rule authors, no dead aliases to keep in sync.
 
 Fields sourced from the preview endpoint (`signed_at`, `provider_signature`,
-`supervisor_signature`, `supervisor_name`) do not use a prefix; the
-preview endpoint's values are the record's authoritative signature
-metadata, and adding a `preview_` prefix would create noise without
-resolving ambiguity (nothing else sources those names).
+`supervisor_signature`) do not use a prefix; the preview endpoint's
+values are the record's authoritative signature metadata, and adding
+a `preview_` prefix would create noise without resolving ambiguity
+(nothing else sources those names).
 
 The list-endpoint dump skips patient/provider identity columns (they
 already flow through `patient.patient_hash` / `encounter.provider_display`
@@ -304,10 +303,6 @@ def build_record(
     }
     if preview.signed_at:
         extracted_fields["signed_at"] = preview.signed_at
-    if preview.provider_full_name:
-        # `provider_signature_name` is documented in the design as
-        # the supervisor_name source.
-        extracted_fields["supervisor_name"] = preview.provider_full_name
 
     # Bedrock-extracted note fields. Every one is optional; None means
     # "not present on the note" and gets omitted so a rule can

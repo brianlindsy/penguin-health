@@ -22,6 +22,7 @@ from components.audit_layer import AuditLayer
 from components.analytics import Analytics
 from components.jwks_hosting import JwksHosting
 from components.centralreach import CentralReach
+from components.rules_engine import RulesEngine
 from components.document_queue import DocumentQueue
 
 
@@ -38,12 +39,25 @@ class PenguinHealthStack(Stack):
         db = Database(self, "Database")
 
         # ----- CentralReach (Fargate + Step Functions + per-org schedules) -----
-        # Stand up before AdminUi so the admin Lambda can be wired with
-        # the state-machine ARN + StartExecution / DescribeExecution
-        # grants needed by lambda/api/centralreach_api.py.
+        # Stand up first so its ECS cluster + VPC can be reused by the
+        # rules-engine Fargate component below, and so its state-machine
+        # ARN is available for wiring into the admin Lambda.
         centralreach = CentralReach(self, "CentralReach",
             org_config_table=db.org_config_table,
             ingest_cursor_table=db.centralreach_ingest_cursor_table,
+        )
+
+        # ----- Rules Engine (Fargate + Step Functions + per-org schedules) -----
+        # Reuses the CentralReach VPC + ECS cluster. Task role is
+        # independent, so a compromised runner can't reach CR credentials
+        # or the ingest cursor table.
+        rules_engine = RulesEngine(self, "RulesEngine",
+            cluster=centralreach.cluster,
+            vpc=centralreach.vpc,
+            org_config_table=db.org_config_table,
+            validation_results_table=db.validation_results_table,
+            narrative_hashes_table=db.narrative_hashes_table,
+            document_queue_table=db.document_queue_table,
         )
 
         # ----- Admin UI -----
@@ -55,14 +69,12 @@ class PenguinHealthStack(Stack):
             stedi_table=db.stedi_table,
             document_queue_table=db.document_queue_table,
             centralreach_state_machine=centralreach.state_machine,
+            rules_engine_state_machine=rules_engine.state_machine,
         )
 
         # ----- Audit Engine -----
         audit_engine = AuditEngine(self, "AuditEngine",
             org_config_table=db.org_config_table,
-            validation_results_table=db.validation_results_table,
-            narrative_hashes_table=db.narrative_hashes_table,
-            document_queue_table=db.document_queue_table,
             notifications_topic=db.notifications_topic,
         )
 
@@ -83,20 +95,21 @@ class PenguinHealthStack(Stack):
                 admin_ui.fhir_eligibility_poller_fn,
                 audit_engine.process_fn,
                 audit_engine.textract_handler_fn,
-                audit_engine.rules_engine_fn,
                 audit_engine.csv_splitter_fn,
                 audit_engine.fhir_materializer_fn,
                 document_queue.autoclose_fn,
             ],
         )
 
-        # The CentralReach Fargate task emits audit events directly via
-        # boto3, not through AuditLayer.emitting_fns (which is
-        # Lambda-only). The audit DDB table and Firehose stream are both
-        # CMK-encrypted, so the task role needs encrypt/decrypt on the
-        # audit CMK — same grant the emitting Lambdas get via
-        # `emitting_fns`.
-        audit.key.grant_encrypt_decrypt(centralreach.task_role)
+        # Fargate tasks emit audit events directly via boto3, not through
+        # AuditLayer.emitting_fns (which is Lambda-only). The audit DDB
+        # table and Firehose stream are both CMK-encrypted, so each task
+        # role needs the same grants an emitting Lambda gets: encrypt/
+        # decrypt on the audit CMK, PutItem on the DDB table, and
+        # PutRecord on the Firehose stream. `_grant_emit` centralizes
+        # that; call it for each Fargate task role that emits.
+        for task_role in (centralreach.task_role, rules_engine.task_role):
+            audit._grant_emit_to_role(task_role)
 
         # ----- Analytics (Athena + Glue) -----
         analytics = Analytics(self, "Analytics")
@@ -148,10 +161,6 @@ class PenguinHealthStack(Stack):
             value=audit_engine.textract_handler_fn.function_arn,
             description="textract-result-handler-multi-org Lambda ARN",
         )
-        CfnOutput(self, "RulesEngineFnArn",
-            value=audit_engine.rules_engine_fn.function_arn,
-            description="rules-engine-rag Lambda ARN",
-        )
         CfnOutput(self, "CsvSplitterFnArn",
             value=audit_engine.csv_splitter_fn.function_arn,
             description="csv-splitter-multi-org Lambda ARN",
@@ -159,6 +168,20 @@ class PenguinHealthStack(Stack):
         CfnOutput(self, "NotificationsTopicArn",
             value=db.notifications_topic.topic_arn,
             description="SNS topic ARN for Textract notifications",
+        )
+
+        # ----- Outputs: Rules Engine -----
+        CfnOutput(self, "RulesEngineStateMachineArn",
+            value=rules_engine.state_machine.state_machine_arn,
+            description="Step Functions state machine that wraps the rules-engine Fargate task",
+        )
+        CfnOutput(self, "RulesEngineRunnerImageUri",
+            value=rules_engine.image_asset.image_uri,
+            description="ECR image URI for the rules-engine Fargate container",
+        )
+        CfnOutput(self, "RulesEngineLogGroupName",
+            value=rules_engine.log_group.log_group_name,
+            description="CloudWatch log group for rules-engine Fargate stdout/stderr",
         )
 
         # ----- Outputs: Audit Layer -----

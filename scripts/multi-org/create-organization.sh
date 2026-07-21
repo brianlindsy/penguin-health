@@ -442,10 +442,12 @@ echo -e "${BLUE}Step 6: Grant S3 access to multi-org Lambdas${NC}"
 
 # Base set — always need access to the org bucket. Integration-specific
 # Lambdas (fhir-eligibility-poller) are appended conditionally below.
+# The rules-engine runs as a Fargate task and already has a wildcard
+# `penguin-health-*` grant on its task role, so it doesn't need per-org
+# policy stitching here.
 MULTI_ORG_LAMBDAS=(
     "penguin-health-process-raw-charts-multi-org"
     "penguin-health-textract-result-handler-multi-org"
-    "penguin-health-rules-engine-rag"
     "penguin-health-csv-splitter-multi-org"
     "penguin-health-encounter-materializer"
 )

@@ -1,14 +1,15 @@
 """
-Rules Engine RAG Lambda - Validates documents against configurable LLM rules.
+Rules Engine RAG - Validates documents against configurable LLM rules.
 
 Uses Claude Sonnet 4.5 via AWS Bedrock for structured JSON rule evaluation.
 Loads organization configuration and rules from DynamoDB.
 
-This module is the Lambda entry point. Core functionality is split into:
-- bedrock_client.py: Claude model invocation with JSON extraction
-- document_validator.py: Per-rule validation with multi-threading
-- results_handler.py: DynamoDB storage and CSV reporting
-- field_extractor.py: Text field extraction
+Runs as a Fargate task (see `fargate/rules_engine/main.py`) — one task
+per validation run. Core functionality is split into:
+  - bedrock_client.py: Claude model invocation with JSON extraction
+  - document_validator.py: Per-rule validation with multi-threading
+  - results_handler.py: DynamoDB storage and CSV reporting
+  - field_extractor.py: Text field extraction
 """
 
 import json
@@ -32,12 +33,12 @@ from results_handler import (
 import queue_handler
 
 _AUDIT_PRINCIPAL = SystemPrincipal(
-    os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'rules-engine-rag')
+    os.environ.get('RULES_ENGINE_TASK_NAME', 'rules-engine-rag')
 )
 from parquet_writer import save_parquet_to_s3
 
 try:
-    # Bundled as a flat `notifications` package via rules-engine asset.
+    # Bundled as a flat `notifications` package via the rules-engine image.
     from notifications import (
         send_email,
         get_subscribers,
@@ -45,7 +46,7 @@ try:
     )
     from notifications.templates import render_validation_run_complete
     _NOTIFICATIONS_AVAILABLE = True
-except ImportError:  # pragma: no cover — fail-safe if asset is older than the code
+except ImportError:  # pragma: no cover — fail-safe if the image is older than the code
     _NOTIFICATIONS_AVAILABLE = False
 
 # Earliest date the new layout supports. Validation runs targeting earlier
@@ -55,34 +56,6 @@ CUTOVER_DATE = '2026-05-01'
 DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 s3_client = boto3.client('s3')
-lambda_client = boto3.client('lambda')
-
-
-def invoke_continuation(org_id, validation_run_id, *,
-                        categories=None, dates=None):
-    """Invoke self to continue processing remaining files.
-
-    Continuation legs always carry concrete `dates`, never the relative
-    `date_window` form — the first leg has already resolved that.
-    """
-    function_name = os.environ.get('AWS_LAMBDA_FUNCTION_NAME')
-
-    payload = {
-        'organization_id': org_id,
-        'validation_run_id': validation_run_id,
-        'is_continuation': True,
-    }
-    if categories is not None:
-        payload['categories'] = categories
-    if dates is not None:
-        payload['dates'] = dates
-
-    lambda_client.invoke(
-        FunctionName=function_name,
-        InvocationType='Event',  # Async - don't wait
-        Payload=json.dumps(payload),
-    )
-    print(f"Invoked continuation Lambda for run {validation_run_id}")
 
 
 def _notify_validation_run_complete(org_id, validation_run_id, summary,
@@ -90,9 +63,9 @@ def _notify_validation_run_complete(org_id, validation_run_id, summary,
     """Best-effort email to opt-in subscribers. Failures here must not
     crash the run, so we swallow every exception with a single log line.
 
-    `queue_counters` is the per-leg counter dict that `process_file`
-    mutates (`new_documents`, `new_versions`, `duplicate_skips`). Passing
-    it through lights up the reviewer-facing "queue changes" section on
+    `queue_counters` is the counter dict that `process_file` mutates
+    (`new_documents`, `new_versions`, `duplicate_skips`). Passing it
+    through lights up the reviewer-facing "queue changes" section on
     the email — the primary reason to send this notification post-cutover.
     """
     if not _NOTIFICATIONS_AVAILABLE:
@@ -188,8 +161,7 @@ def resolve_dates(event):
     Decide which YYYY-MM-DD ingest dates this run should validate.
 
     Priority order:
-      1. `dates: [...]` from the event (API caller path; also used by every
-         continuation leg).
+      1. `dates: [...]` from the event (API caller path).
       2. `date_window: {...}` from the event (EventBridge schedule path).
       3. Fallback: today (UTC).
     """
@@ -200,19 +172,17 @@ def resolve_dates(event):
     return [today_utc().isoformat()]
 
 
-def lambda_handler(event, context):
+def run_validation(event):
     """
-    Lambda function to validate processed JSON/CSV documents against configurable rules.
+    Validate processed JSON/CSV documents against configurable rules.
 
     Expects event with:
     - organization_id: required.
-    - validation_run_id: optional. If absent, a new ID is generated. Passing
-      it ensures retries / continuations land in the same run.
+    - validation_run_id: optional. If absent, a new ID is generated.
     - dates: optional list of YYYY-MM-DD strings to validate.
     - date_window: optional relative date instruction from EventBridge,
       e.g. {"days_back_from_today": [1]} (Tue-Fri) or [3, 2, 1] (Monday).
     - categories: optional list of rule categories to filter by.
-    - is_continuation: True when self-invoked after a timeout split.
     """
     org_id = event.get('organization_id')
     if not org_id:
@@ -237,113 +207,86 @@ def lambda_handler(event, context):
     print(f"Run targets dates: {dates}")
 
     validation_run_id = event.get('validation_run_id') or datetime.utcnow().strftime('%Y%m%d-%H%M%S')
-    is_continuation = event.get('is_continuation', False)
 
-    if is_continuation:
-        print(f"Continuing validation run: {validation_run_id}")
-    else:
-        print(f"Starting validation run: {validation_run_id}")
-        # Audit the run kickoff. Continuations don't re-emit because they
-        # are conceptually the same run — Athena queries can correlate via
-        # external_control_number=validation_run_id.
-        audit_emit(
-            action='execute',
-            resource={'type': 'ValidationRun', 'id': validation_run_id,
-                      'org': org_id},
-            actor=_AUDIT_PRINCIPAL.as_actor(),
-            org_id=org_id,
-            purpose_of_use='DOC_PROCESSING',
-            call_type='validation_run_start',
-            external_control_number=validation_run_id,
-        )
+    print(f"Starting validation run: {validation_run_id}")
+    audit_emit(
+        action='execute',
+        resource={'type': 'ValidationRun', 'id': validation_run_id,
+                  'org': org_id},
+        actor=_AUDIT_PRINCIPAL.as_actor(),
+        org_id=org_id,
+        purpose_of_use='DOC_PROCESSING',
+        call_type='validation_run_start',
+        external_control_number=validation_run_id,
+    )
 
-    try:
-        bucket = env_config['BUCKET_NAME']
+    bucket = env_config['BUCKET_NAME']
 
-        # Files already processed by a prior leg of this run. Empty for the
-        # first leg; non-empty only on continuations.
-        already_processed = get_processed_s3_keys(validation_run_id, env_config)
-        print(f"Already processed in this run: {len(already_processed)} files")
+    # Files already processed by an earlier run with the same ID (an
+    # operator-triggered rerun). Empty on the normal path.
+    already_processed = get_processed_s3_keys(validation_run_id, env_config)
+    if already_processed:
+        print(f"Skipping {len(already_processed)} files already processed under this run id")
 
-        files_found = False
-        eligible_count = 0
-        # Per-leg counters. aggregate_run_summary reads all rows written by
-        # the whole run, so cross-leg totals fall out naturally; these are
-        # only used for this leg's log line.
-        queue_counters: dict[str, int] = {}
-        for date_str in dates:
-            print(f"Listing data/{date_str}/ in bucket {bucket}")
-            for key in list_data_folder_keys(bucket, date_str):
-                if key in already_processed:
-                    continue
+    files_found = False
+    eligible_count = 0
+    # aggregate_run_summary reads all rows written by the run, so summary
+    # totals fall out naturally; these counters drive the reviewer email.
+    queue_counters: dict[str, int] = {}
+    for date_str in dates:
+        print(f"Listing data/{date_str}/ in bucket {bucket}")
+        for key in list_data_folder_keys(bucket, date_str):
+            if key in already_processed:
+                continue
+            eligible_count += 1
+            files_found = True
+            process_file(bucket, key, config, org_id, env_config, validation_run_id,
+                         queue_counters=queue_counters)
 
-                # Check remaining time before each file (leave 2 min buffer).
-                remaining_ms = context.get_remaining_time_in_millis()
-                if remaining_ms < 120_000:
-                    print(f"Timeout approaching ({remaining_ms}ms remaining). Invoking continuation...")
-                    invoke_continuation(
-                        org_id, validation_run_id,
-                        categories=categories or None,
-                        dates=dates,
-                    )
-                    return {
-                        'statusCode': 200,
-                        'body': json.dumps({
-                            'status': 'continuing',
-                            'validation_run_id': validation_run_id,
-                        })
-                    }
+    print(f"Processed {eligible_count} eligible files across {len(dates)} date(s); "
+          f"queue counters: {queue_counters}")
 
-                eligible_count += 1
-                files_found = True
-                process_file(bucket, key, config, org_id, env_config, validation_run_id,
-                             queue_counters=queue_counters)
-
-        print(f"Processed {eligible_count} eligible files across {len(dates)} date(s); "
-              f"queue counters (this leg): {queue_counters}")
-
-        if not files_found and not already_processed:
-            return {
-                'statusCode': 200,
-                'body': json.dumps('No files to validate')
-            }
-
-        # Store run summary for efficient UI querying
-        print(f"Aggregating run summary for: {validation_run_id}")
-        summary = aggregate_run_summary(validation_run_id, env_config)
-        run_categories = sorted({r.get('category') for r in config['rules']
-                                 if r.get('category')})
-        store_run_summary(validation_run_id, org_id, summary, env_config,
-                          categories=run_categories,
-                          dates=dates,
-                          queue_counters=queue_counters)
-
-        _notify_validation_run_complete(org_id, validation_run_id, summary,
-                                        queue_counters=queue_counters)
-
-        print(f"Generating CSV report for run: {validation_run_id}")
-        csv_report, run_items = generate_csv_from_dynamodb(validation_run_id, env_config)
-        save_csv_to_s3(csv_report, validation_run_id, env_config)
-
-        # Snapshot the run to Parquet for Athena analytics. The same items
-        # that built the CSV pivot are reused, so this is a single S3 write
-        # with no extra DynamoDB read. Failures here must not fail the run.
-        try:
-            save_parquet_to_s3(run_items, validation_run_id, env_config)
-        except Exception as e:
-            print(f"WARN: failed to save Parquet snapshot for {validation_run_id}: {e}")
-
+    if not files_found and not already_processed:
         return {
-            'statusCode': 200,
-            'body': json.dumps({
-                'message': 'Validation completed successfully',
-                'validation_run_id': validation_run_id
-            })
+            'status': 'no_files',
+            'validation_run_id': validation_run_id,
+            'organization_id': org_id,
+            'dates': dates,
         }
 
+    print(f"Aggregating run summary for: {validation_run_id}")
+    summary = aggregate_run_summary(validation_run_id, env_config)
+    run_categories = sorted({r.get('category') for r in config['rules']
+                             if r.get('category')})
+    store_run_summary(validation_run_id, org_id, summary, env_config,
+                      categories=run_categories,
+                      dates=dates,
+                      queue_counters=queue_counters)
+
+    _notify_validation_run_complete(org_id, validation_run_id, summary,
+                                    queue_counters=queue_counters)
+
+    print(f"Generating CSV report for run: {validation_run_id}")
+    csv_report, run_items = generate_csv_from_dynamodb(validation_run_id, env_config)
+    save_csv_to_s3(csv_report, validation_run_id, env_config)
+
+    # Snapshot the run to Parquet for Athena analytics. The same items
+    # that built the CSV pivot are reused, so this is a single S3 write
+    # with no extra DynamoDB read. Failures here must not fail the run.
+    try:
+        save_parquet_to_s3(run_items, validation_run_id, env_config)
     except Exception as e:
-        print(f"Error in lambda_handler: {str(e)}")
-        raise e
+        print(f"WARN: failed to save Parquet snapshot for {validation_run_id}: {e}")
+
+    return {
+        'status': 'ok',
+        'validation_run_id': validation_run_id,
+        'organization_id': org_id,
+        'dates': dates,
+        'eligible_count': eligible_count,
+        'summary': summary,
+        'queue_counters': queue_counters,
+    }
 
 
 def process_file(bucket, key, config, org_id, env_config, validation_run_id,
@@ -354,15 +297,13 @@ def process_file(bucket, key, config, org_id, env_config, validation_run_id,
     Files stay where they are — no move-to-processing, no archive — so the
     same file can be re-validated by a future run. To avoid an infinite
     retry loop on a file that *can't* be parsed, we always write at least
-    a sentinel ERROR row to DynamoDB before returning. The continuation
-    handler then sees the file as "already processed" and moves on.
+    a sentinel ERROR row to DynamoDB before returning.
 
     When the document queue is enabled and this file's raw record hashes
     to the latest queue-pointer's `content_hash`, `validate_document`
     returns a `skipped_duplicate` sentinel. We then:
       * bump the pointer's seen_count / last_seen_at
-      * write a skinny "processed" marker row so continuation legs skip
-        this key on retry
+      * write a skinny "processed" marker row so re-runs skip this key
       * emit a `queue_duplicate_skip` audit event
     …and return WITHOUT calling `store_results` — no new per-doc row, no
     Bedrock/rule-eval cost paid.
@@ -425,9 +366,9 @@ def process_file(bucket, key, config, org_id, env_config, validation_run_id,
         print(f"Validated {key} (document_id={doc_id}): {results['summary']}")
 
     except Exception as e:
-        # Write a sentinel row so the continuation handler doesn't retry this
-        # file on every invocation. Keyed by s3_key so it counts toward
-        # "already processed" without colliding with a real result.
+        # Write a sentinel row so a rerun with the same validation_run_id
+        # doesn't retry this file forever. Keyed by s3_key so it counts
+        # toward "already processed" without colliding with a real result.
         print(f"Error processing {key}: {str(e)}")
         store_results({
             'validation_run_id': validation_run_id,

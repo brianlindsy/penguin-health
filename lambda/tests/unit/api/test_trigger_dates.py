@@ -1,9 +1,9 @@
 """
-Tests for the new `dates` field on POST /validation-runs.
+Tests for the `dates` field on POST /validation-runs.
 
 The trigger endpoint validates that requested dates are well-formed,
 within the allowed range [2026-05-01, today_utc], and forwards them to
-the rules engine in the async Lambda invocation payload.
+the rules-engine state machine as the SFN execution input.
 """
 
 import json
@@ -18,11 +18,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 @freeze_time("2026-05-15")
 class TestTriggerValidationRunDates:
     def test_default_dates_is_today(
-        self, mock_dynamodb, sample_org_config, super_admin_event, mocker,
+        self, mock_dynamodb, sample_org_config, super_admin_event,
+        rules_engine_sfn,
     ):
         from api.admin_api import trigger_validation_run
-        fake = mocker.patch('api.admin_api.lambda_client')
-        fake.invoke.return_value = {'StatusCode': 202}
 
         resp = trigger_validation_run(
             event=super_admin_event,
@@ -33,16 +32,15 @@ class TestTriggerValidationRunDates:
         body = json.loads(resp['body'])
         assert body['dates'] == ['2026-05-15']
 
-        invoke_kwargs = fake.invoke.call_args.kwargs
-        payload = json.loads(invoke_kwargs['Payload'])
-        assert payload['dates'] == ['2026-05-15']
+        call = rules_engine_sfn.start_execution.call_args
+        sfn_input = json.loads(call.kwargs['input'])
+        assert sfn_input['dates'] == ['2026-05-15']
 
     def test_explicit_dates_accepted(
-        self, mock_dynamodb, sample_org_config, super_admin_event, mocker,
+        self, mock_dynamodb, sample_org_config, super_admin_event,
+        rules_engine_sfn,
     ):
         from api.admin_api import trigger_validation_run
-        fake = mocker.patch('api.admin_api.lambda_client')
-        fake.invoke.return_value = {'StatusCode': 202}
 
         resp = trigger_validation_run(
             event=super_admin_event,
@@ -53,10 +51,10 @@ class TestTriggerValidationRunDates:
         assert json.loads(resp['body'])['dates'] == ['2026-05-12', '2026-05-13']
 
     def test_pre_cutover_date_rejected(
-        self, mock_dynamodb, sample_org_config, super_admin_event, mocker,
+        self, mock_dynamodb, sample_org_config, super_admin_event,
+        rules_engine_sfn,
     ):
         from api.admin_api import trigger_validation_run
-        mocker.patch('api.admin_api.lambda_client')
 
         resp = trigger_validation_run(
             event=super_admin_event,
@@ -67,10 +65,10 @@ class TestTriggerValidationRunDates:
         assert 'cutover' in json.loads(resp['body'])['error']
 
     def test_future_date_rejected(
-        self, mock_dynamodb, sample_org_config, super_admin_event, mocker,
+        self, mock_dynamodb, sample_org_config, super_admin_event,
+        rules_engine_sfn,
     ):
         from api.admin_api import trigger_validation_run
-        mocker.patch('api.admin_api.lambda_client')
 
         resp = trigger_validation_run(
             event=super_admin_event,
@@ -81,10 +79,10 @@ class TestTriggerValidationRunDates:
         assert 'future' in json.loads(resp['body'])['error']
 
     def test_malformed_date_rejected(
-        self, mock_dynamodb, sample_org_config, super_admin_event, mocker,
+        self, mock_dynamodb, sample_org_config, super_admin_event,
+        rules_engine_sfn,
     ):
         from api.admin_api import trigger_validation_run
-        mocker.patch('api.admin_api.lambda_client')
 
         resp = trigger_validation_run(
             event=super_admin_event,
@@ -95,10 +93,10 @@ class TestTriggerValidationRunDates:
         assert 'Malformed' in json.loads(resp['body'])['error']
 
     def test_empty_dates_list_rejected(
-        self, mock_dynamodb, sample_org_config, super_admin_event, mocker,
+        self, mock_dynamodb, sample_org_config, super_admin_event,
+        rules_engine_sfn,
     ):
         from api.admin_api import trigger_validation_run
-        mocker.patch('api.admin_api.lambda_client')
 
         resp = trigger_validation_run(
             event=super_admin_event,
@@ -108,11 +106,10 @@ class TestTriggerValidationRunDates:
         assert resp['statusCode'] == 400
 
     def test_duplicate_dates_deduplicated(
-        self, mock_dynamodb, sample_org_config, super_admin_event, mocker,
+        self, mock_dynamodb, sample_org_config, super_admin_event,
+        rules_engine_sfn,
     ):
         from api.admin_api import trigger_validation_run
-        fake = mocker.patch('api.admin_api.lambda_client')
-        fake.invoke.return_value = {'StatusCode': 202}
 
         resp = trigger_validation_run(
             event=super_admin_event,
@@ -123,15 +120,14 @@ class TestTriggerValidationRunDates:
         assert json.loads(resp['body'])['dates'] == ['2026-05-10', '2026-05-11']
 
     def test_dates_and_categories_both_forwarded(
-        self, mock_dynamodb, sample_org_config, member_event, seed_user_perms, mocker,
+        self, mock_dynamodb, sample_org_config, member_event, seed_user_perms,
+        rules_engine_sfn,
     ):
         from api.admin_api import trigger_validation_run
         seed_user_perms(
             'member@example.com', 'test-org',
             report_permissions={'Billing': ['run']},
         )
-        fake = mocker.patch('api.admin_api.lambda_client')
-        fake.invoke.return_value = {'StatusCode': 202}
 
         resp = trigger_validation_run(
             event=member_event,
@@ -139,10 +135,10 @@ class TestTriggerValidationRunDates:
             body={'categories': ['Billing'], 'dates': ['2026-05-12']},
         )
         assert resp['statusCode'] == 202
-        invoke_kwargs = fake.invoke.call_args.kwargs
-        payload = json.loads(invoke_kwargs['Payload'])
-        assert payload['categories'] == ['Billing']
-        assert payload['dates'] == ['2026-05-12']
+        call = rules_engine_sfn.start_execution.call_args
+        sfn_input = json.loads(call.kwargs['input'])
+        assert sfn_input['categories'] == ['Billing']
+        assert sfn_input['dates'] == ['2026-05-12']
 
 
 @freeze_time("2026-05-15")
@@ -152,12 +148,11 @@ class TestTriggerValidationRunAudit:
     the caller's identity."""
 
     def test_success_emits_execute_event(
-        self, mock_dynamodb, sample_org_config, super_admin_event, mocker,
+        self, mock_dynamodb, sample_org_config, super_admin_event,
+        rules_engine_sfn,
     ):
         from api.admin_api import trigger_validation_run
         from boto3.dynamodb.conditions import Key
-        fake = mocker.patch('api.admin_api.lambda_client')
-        fake.invoke.return_value = {'StatusCode': 202}
 
         resp = trigger_validation_run(
             event=super_admin_event,
@@ -180,14 +175,14 @@ class TestTriggerValidationRunAudit:
         assert row['event']['http_status'] == 202
 
     def test_permission_denied_still_audits(
-        self, mock_dynamodb, sample_org_config, org_user_event, mocker,
+        self, mock_dynamodb, sample_org_config, org_user_event,
+        rules_engine_sfn,
     ):
         """A 403 response is exactly the case we want audited — someone
         without run permission clicked the button. The audit row records
         the attempt with a failure outcome."""
         from api.admin_api import trigger_validation_run
         from boto3.dynamodb.conditions import Key
-        mocker.patch('api.admin_api.lambda_client')
 
         resp = trigger_validation_run(
             event=org_user_event,

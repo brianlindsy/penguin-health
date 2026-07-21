@@ -23,7 +23,7 @@ dynamodb = boto3.resource('dynamodb')
 s3_client = boto3.client('s3')
 
 _AUDIT_PRINCIPAL = SystemPrincipal(
-    os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'rules-engine-rag')
+    os.environ.get('RULES_ENGINE_TASK_NAME', 'rules-engine-rag')
 )
 
 

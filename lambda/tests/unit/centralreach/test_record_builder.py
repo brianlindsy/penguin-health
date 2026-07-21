@@ -330,7 +330,7 @@ def test_build_record_extracted_fields():
     assert ef["service_code"] == "97155"
     assert ef["provider_signature"] is True
     assert ef["supervisor_signature"] is True
-    assert ef["supervisor_name"] == "Ann Smith, BCBA"
+    assert "supervisor_name" not in ef
     assert ef["signed_at"] == "2026-06-28T22:59:32.0000000Z"
     # List-endpoint values only appear under the `billing_list_` prefix
     # (no short-name aliases). Duplicate contract is pinned in

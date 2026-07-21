@@ -235,12 +235,10 @@ Keep `call_type` to one value per feature.
 ## Infrastructure
 
 The IAM permission to write these metrics is namespace-scoped — each
-Lambda role can only emit to `PenguinHealth/LLMCost`, not any other
-namespace:
+role can only emit to `PenguinHealth/LLMCost`, not any other namespace:
 
-- **Rules engine** — granted in
-  [infra/components/audit_engine.py](../../../infra/components/audit_engine.py)
-  on `self.rules_engine_fn`.
+- **Rules engine** — granted on the Fargate task role in
+  [infra/components/rules_engine.py](../../../infra/components/rules_engine.py).
 - **Admin API + deep worker** — granted in
   [infra/components/admin_ui.py](../../../infra/components/admin_ui.py)
   in the shared loop after the Bedrock grants.
@@ -249,11 +247,11 @@ Bundling: `bedrock_client.py`, `claude_cost.py`, and `rate_limiter.py`
 are pulled into the admin-API and deep-worker Lambda assets via
 `DirectoryBundler` (see the `shared_llm_modules` list in
 [admin_ui.py](../../../infra/components/admin_ui.py)). The rules-engine
-Lambda's `PipInstallBundler` lists them in `rules_engine_modules` in
-[audit_engine.py](../../../infra/components/audit_engine.py). In both
-cases they land flat at the asset root, so
+Fargate image copies the whole rules-engine directory into `/app/` via
+[fargate/rules_engine/Dockerfile](../../../fargate/rules_engine/Dockerfile).
+In both cases the modules land at the Python path root, so
 `from bedrock_client import invoke_claude_model` and
-`import claude_cost` work identically across all three Lambdas.
+`import claude_cost` work identically everywhere.
 
 ## Testing
 

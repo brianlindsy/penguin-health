@@ -1,0 +1,9 @@
+# Pin specific versions so the image builds reproducibly. Bump
+# deliberately.
+#
+# boto3 for S3, DynamoDB, Bedrock, SES, EventBridge, CloudWatch.
+# fastparquet writes the end-of-run Parquet snapshot to S3 for the
+# analytics/validation-runs/ prefix Athena queries against; it pulls
+# pandas + numpy + cramjam transitively.
+boto3==1.35.0
+fastparquet==2024.11.0

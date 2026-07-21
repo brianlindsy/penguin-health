@@ -12,7 +12,7 @@ work land here:
   * ``upsert_new_or_version`` / ``record_duplicate_skip`` /
     ``write_sentinel_row`` — invoked from ``rules_engine_rag.process_file``
     after ``validate_document`` returns, to persist the queue state and
-    keep continuation legs' "already-processed" tracking honest.
+    keep same-run reruns' "already-processed" tracking honest.
 
 Feature-flagged via ``QUEUE_WRITE_ENABLED``; callers guard on
 ``is_enabled()``.
@@ -34,7 +34,7 @@ from audit import SystemPrincipal, emit as audit_emit
 _dynamodb = boto3.resource("dynamodb")
 
 _AUDIT_PRINCIPAL = SystemPrincipal(
-    os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "rules-engine-rag")
+    os.environ.get("RULES_ENGINE_TASK_NAME", "rules-engine-rag")
 )
 
 # Denormalized filter columns copied off latest field_values onto the

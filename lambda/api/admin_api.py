@@ -64,8 +64,24 @@ deep_jobs_table = dynamodb.Table(
 from bedrock_client import _BEDROCK_BOTO_CONFIG
 bedrock = boto3.client('bedrock-runtime', config=_BEDROCK_BOTO_CONFIG)
 
-RULES_ENGINE_LAMBDA = 'penguin-health-rules-engine-rag'
+RULES_ENGINE_STATE_MACHINE_ARN_ENV = 'RULES_ENGINE_STATE_MACHINE_ARN'
 DEEP_WORKER_LAMBDA = os.environ.get('DEEP_WORKER_LAMBDA', 'penguin-health-deep-analytics-worker')
+
+# Lazy-cached Step Functions client. Import-time creation would break
+# tests that patch the boto3 module before admin_api is imported.
+_stepfunctions_client = None
+
+
+def _stepfunctions():
+    global _stepfunctions_client
+    if _stepfunctions_client is None:
+        _stepfunctions_client = boto3.client('stepfunctions')
+    return _stepfunctions_client
+
+
+def _reset_stepfunctions_for_tests(client=None):
+    global _stepfunctions_client
+    _stepfunctions_client = client
 
 # Deep-job item retention (24h after creation). DynamoDB TTL is best-effort
 # and may run hours late, but is fine here — jobs are display-only.
@@ -1924,42 +1940,49 @@ def trigger_validation_run(event, path_params, body, **kwargs):
     if err:
         return response(404, {'error': err})
 
+    state_machine_arn = os.environ.get(RULES_ENGINE_STATE_MACHINE_ARN_ENV)
+    if not state_machine_arn:
+        return response(500, {
+            'error': f'{RULES_ENGINE_STATE_MACHINE_ARN_ENV} env var is not set',
+        })
+
     try:
-        # Generate validation_run_id upfront so retries use the same ID
+        # Generate validation_run_id upfront so the frontend can display
+        # it immediately and any retry lands in the same run.
         from datetime import datetime, timezone
         validation_run_id = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
 
-        # Invoke rules engine Lambda asynchronously
-        lambda_response = lambda_client.invoke(
-            FunctionName=RULES_ENGINE_LAMBDA,
-            InvocationType='Event',  # Async invocation
-            Payload=json.dumps({
+        # SFN execution names must be unique for the state machine and
+        # 1-80 chars. `run-{id}` fits and namespaces the id so the
+        # execution list is scannable.
+        execution_name = f'run-{validation_run_id}'
+        _stepfunctions().start_execution(
+            stateMachineArn=state_machine_arn,
+            name=execution_name,
+            # StartExecution honors literal `null` values (unlike CDK's
+            # EventBridge input marshaller), so we pass null directly
+            # for `date_window` — the admin API never sets a relative
+            # window, only explicit dates.
+            input=json.dumps({
                 'organization_id': org_id,
                 'validation_run_id': validation_run_id,
+                'mode': 'manual',
                 'categories': run_categories,
                 'dates': dates,
+                'date_window': None,
             }),
         )
 
-        status_code = lambda_response.get('StatusCode', 0)
-
-        if status_code == 202:  # Accepted for async invocation
-            print(f"Triggered validation run {validation_run_id} for {org_id} "
-                  f"categories={run_categories} dates={dates}")
-            return response(202, {
-                'message': 'Validation run triggered successfully',
-                'organization_id': org_id,
-                'validation_run_id': validation_run_id,
-                'categories': run_categories,
-                'dates': dates,
-                'status': 'processing',
-            })
-        else:
-            print(f"Unexpected status code from Lambda: {status_code}")
-            return response(500, {'error': f'Lambda invocation returned status {status_code}'})
-
-    except lambda_client.exceptions.ResourceNotFoundException:
-        return response(500, {'error': f'Rules engine Lambda not found: {RULES_ENGINE_LAMBDA}'})
+        print(f"Triggered validation run {validation_run_id} for {org_id} "
+              f"categories={run_categories} dates={dates}")
+        return response(202, {
+            'message': 'Validation run triggered successfully',
+            'organization_id': org_id,
+            'validation_run_id': validation_run_id,
+            'categories': run_categories,
+            'dates': dates,
+            'status': 'processing',
+        })
     except Exception as e:
         print(f"Error triggering validation: {e}")
         return response(500, {'error': str(e)})

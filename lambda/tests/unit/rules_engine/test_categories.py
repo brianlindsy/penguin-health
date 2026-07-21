@@ -2,7 +2,7 @@
 Tests for category-based filtering and persistence in rules-engine.
 
 Covers:
-- filter_rules_by_categories: pure function used in lambda_handler
+- filter_rules_by_categories: pure function used in run_validation
 - store_run_summary: persists `categories` field on the run record
 """
 

@@ -189,11 +189,11 @@
       "description": "LLM-based match tolerant of titles, credentials, abbreviations. Pass when both fields are empty (no supervision required).",
       "type": "llm",
       "enabled": true,
-      "rule_text": "Compare supervisor_name_value and supervisor_signature_value with human-level reasoning. Pass when (a) both are empty (rule does not apply, e.g., BCBA-direct sessions with no required supervision), or (b) both are filled and refer to the same person - minor formatting differences such as titles (Dr., Mr., Mrs.), credentials (MA, MD, BCBA, LCSW), middle initials, hyphenation, or name ordering should be considered matches. Fail when (a) exactly one of the two fields is filled while the other is empty (incomplete sign-off), or (b) both are filled but the names clearly refer to different people. When in doubt about whether two names match, lean toward pass - false mismatches create noise for reviewers.",
+      "rule_text": "Compare supervisor_name_value against the entries in supervisor_signature_names_value with human-level reasoning. Pass when (a) both are empty (rule does not apply, e.g., BCBA-direct sessions with no required supervision), or (b) supervisor_name_value is filled and refers to the same person as any entry in supervisor_signature_names_value - minor formatting differences such as titles (Dr., Mr., Mrs.), credentials (MA, MD, BCBA, LCSW), middle initials, hyphenation, or name ordering should be considered matches. Fail when (a) exactly one side is filled while the other is empty (incomplete sign-off), or (b) both are filled but no entry in supervisor_signature_names_value refers to the same person as supervisor_name_value. When in doubt about whether two names match, lean toward pass - false mismatches create noise for reviewers.",
       "fields_to_extract": [
-        {"name": "supervisor_name_value", "type": "string", "description": "Passthrough of supervisor_name."},
-        {"name": "supervisor_signature_value", "type": "string", "description": "Passthrough of supervisor_signature."},
-        {"name": "names_refer_to_same_person", "type": "boolean", "description": "True if the name and signature plausibly refer to the same person despite formatting differences."},
+        {"name": "supervisor_name_value", "type": "string", "description": "Passthrough of note_supervisor_name."},
+        {"name": "supervisor_signature_names_value", "type": "array", "description": "Passthrough of note_supervisor_signature_names."},
+        {"name": "names_refer_to_same_person", "type": "boolean", "description": "True if supervisor_name_value matches any entry in supervisor_signature_names_value despite formatting differences."},
         {"name": "discrepancy_notes", "type": "string", "description": "Brief explanation of any difference. Empty if they match exactly."}
       ]
     }

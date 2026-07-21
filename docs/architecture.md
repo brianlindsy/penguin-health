@@ -52,9 +52,16 @@ flowchart LR
         FhirPoller[fhir-eligibility-poller<br/>Py 3.13, 256MB, 10min]
         ProcessRaw[process-raw-charts-multi-org<br/>Py 3.14, 256MB, 15min]
         TextractHandler[textract-result-handler-multi-org<br/>Py 3.14, 512MB, 5min]
-        RulesEngine[rules-engine-rag<br/>Py 3.13, 512MB, 15min]
         CsvSplitter[csv-splitter-multi-org<br/>Py 3.14, 256MB, 60s]
         FhirMat[fhir-encounter-materializer<br/>Py 3.13, 512MB, 15min]
+    end
+
+    %% ============== FARGATE ==============
+    subgraph FARGATE["Fargate + Step Functions"]
+        RulesSFN[Step Functions<br/>penguin-health-rules-engine<br/>4h timeout, RUN_JOB sync]
+        RulesTask[Fargate task<br/>penguin-health-rules-engine-runner<br/>Py 3.11, 2vCPU/4GB, private subnets]
+        CRSFN[Step Functions<br/>penguin-health-centralreach-ingest<br/>600min timeout, RUN_JOB sync]
+        CRTask[Fargate task<br/>penguin-health-centralreach-runner<br/>Py 3.11, 1vCPU/2GB, private subnets]
     end
 
     %% ============== EVENTS ==============
@@ -123,7 +130,8 @@ flowchart LR
     AdminAPI -->|GetTable, GetPartitions| GlueDB1
     AdminAPI -->|GetObject, PutObject<br/>athena-results/, agent-io/| PerOrg
     AdminAPI -->|InvokeFunction Event| DeepWorker
-    AdminAPI -->|InvokeFunction Event<br/>rules-engine-rag| RulesEngine
+    AdminAPI -->|StartExecution<br/>manual run| RulesSFN
+    AdminAPI -->|StartExecution<br/>manual ingest| CRSFN
     AdminAPI -->|verify| StediAPI
     AdminAPI -->|SES SendEmail| SES
 
@@ -153,15 +161,14 @@ flowchart LR
     TextractHandler -->|read org chart_config| OrgCfg
 
     %% Rules engine
-    EBCron -->|cron, per org payload| RulesEngine
-    AdminAPI -->|InvokeFunction Event<br/>manual run| RulesEngine
-    RulesEngine -->|R/W charts + Parquet| PerOrg
-    RulesEngine -->|read rules + chart_config| OrgCfg
-    RulesEngine -->|store findings + summaries| ValRes
-    RulesEngine -->|InvokeModel + crossregion profile| Bedrock
-    RulesEngine -->|InvokeFunction self<br/>continuation| RulesEngine
-    RulesEngine -->|SES SendEmail<br/>+ EMAIL_AUDIT# row| Stedi
-    RulesEngine -->|SES SendEmail| SES
+    EBCron -->|cron, per org input| RulesSFN
+    RulesSFN -->|RunTask sync<br/>ORG_ID/RUN_ID/MODE/DATES| RulesTask
+    RulesTask -->|R/W charts + Parquet| PerOrg
+    RulesTask -->|read rules + chart_config| OrgCfg
+    RulesTask -->|store findings + summaries| ValRes
+    RulesTask -->|InvokeModel + crossregion profile| Bedrock
+    RulesTask -->|SES SendEmail<br/>+ EMAIL_AUDIT# row| Stedi
+    RulesTask -->|SES SendEmail| SES
 
     %% FHIR materializer
     FhirMat -->|read FHIR_CONFIG| OrgCfg
@@ -307,9 +314,9 @@ flowchart LR
 
 ---
 
-## 4. Compute — eight Lambda functions
+## 4. Compute — seven Lambda functions + two Fargate tasks
 
-All Lambdas are tagged `Project=penguin-health`, `ManagedBy=cdk`. Region `us-east-1`. All eight emit audit events via `audit.emit` and therefore receive the audit-layer IAM grants + `AUDIT_TABLE_NAME` + `AUDIT_FIREHOSE_NAME` env vars from `AuditLayer._grant_emit`.
+All Lambdas are tagged `Project=penguin-health`, `ManagedBy=cdk`. Region `us-east-1`. All seven Lambdas emit audit events via `audit.emit` and receive the audit-layer IAM grants + `AUDIT_TABLE_NAME` + `AUDIT_FIREHOSE_NAME` env vars from `AuditLayer._grant_emit`. The two Fargate tasks (rules-engine + CentralReach) emit the same events; their task roles get equivalent IAM via `AuditLayer._grant_emit_to_role`, and the env vars are set on the task definition directly.
 
 ### 4.1 `penguin-health-admin-api` (`AdminApiFunction`)
 - Runtime: Python 3.14, 256 MB, 60 s. Handler `admin_api.lambda_handler`.
@@ -321,7 +328,8 @@ All Lambdas are tagged `Project=penguin-health`, `ManagedBy=cdk`. Region `us-eas
   - `bedrock:InvokeModel` on `anthropic.*` foundation models + cross-region inference profiles.
   - Athena Start/Get/Stop on `workgroup/penguin-health-analytics-*`; Glue read on the `penguin_health_analytics` DB.
   - S3 R/W on `penguin-health-*` (per-org buckets for Athena reads + result/agent-io writes).
-  - `lambda:InvokeFunction` on `penguin-health-rules-engine-rag` and the deep-worker.
+  - `lambda:InvokeFunction` on the deep-worker.
+  - `states:StartExecution` on the rules-engine + CentralReach state machines; `states:ListExecutions|DescribeExecution` on the CentralReach state machine + its execution ARN pattern.
   - `ses:SendEmail|SendRawEmail` resource `*` (tighten when SES identity is verified).
   - `cloudwatch:PutMetricData` scoped to namespace `PenguinHealth/LLMCost`.
 
@@ -349,18 +357,26 @@ All Lambdas are tagged `Project=penguin-health`, `ManagedBy=cdk`. Region `us-eas
 - Emits `audit_emit(action="read", call_type="textract_result", external_control_number=job_id)` — `external_control_number` joins this row to the `textract_start` row in Athena.
 - IAM: S3 R/W on `penguin-health-*`, `textract:GetDocumentAnalysis`, read on org-config.
 
-### 4.6 `penguin-health-rules-engine-rag` (`RulesEngineRagFn`)
-- Runtime: Python 3.13 (fastparquet → pandas/numpy/cramjam wheels), 512 MB, 15 min. Handler `rules_engine_rag.lambda_handler`.
-- Code modules: `rules_engine_rag.py`, `multi_org_config.py`, `rate_limiter.py`, `bedrock_client.py`, `claude_cost.py`, `document_validator.py`, `deterministic_evaluator.py`, `results_handler.py`, `field_extractor.py`, `parquet_writer.py`, plus bundled `notifications/` + `audit/`.
-- Two trigger types:
-  1. **EventBridge cron**, two rules per org:
-     - `{org}-validation-monday` — `cron(minute=M, hour=H, week_day=MON)` payload `{date_window: {days_back_from_today: [2,1,0]}}` (catches Sat/Sun + Mon)
-     - `{org}-validation-daily` — `cron(week_day=TUE-FRI)` payload `{date_window: {days_back_from_today: [0]}}`
-     - Per-org examples in code: `catholic-charities-multi-org` at 10:00 UTC; `circles-of-care` at 11:15 UTC.
-  2. **Async invoke from admin-api** when a user clicks "run now."
-- Continuation: self-invokes asynchronously with `is_continuation: true` + concrete `dates` + remaining `categories` when about to hit the 15-min timeout.
-- Outputs: one row per (document, rule) into `penguin-health-validation-results`, run-summary item, CSV report uploaded to `validation-reports/`, and an end-of-run Parquet snapshot under `analytics/validation_results/validation_date=YYYY-MM-DD/` (fastparquet). Sends `EVENT_VALIDATION_RUN_COMPLETE` SES email + writes `EMAIL_AUDIT#` row to `penguin-health-stedi`.
-- IAM: S3 R/W `penguin-health-*`, read org-config, R/W validation-results, `bedrock:InvokeModel *`, `aws-marketplace:Subscribe|ViewSubscriptions` (cross-region inference profiles), `cloudwatch:PutMetricData PenguinHealth/LLMCost`, `lambda:InvokeFunction` self, `ses:SendEmail`, `dynamodb:PutItem|Query|GetItem` on `penguin-health-stedi` (+ gsi1) + org-config gsi1 for SUBSCRIPTION query.
+### 4.6 Rules engine — Fargate task `penguin-health-rules-engine-runner`
+_Not a Lambda._ Runs as an ECS Fargate task wrapped by a Step Functions state machine (`penguin-health-rules-engine`). Migrated off Lambda on 2026-07-20; the previous `penguin-health-rules-engine-rag` Lambda and its self-invoking continuation pattern are retired. Owned by [infra/components/rules_engine.py](../infra/components/rules_engine.py).
+- **Container**: `python:3.11-slim-bookworm`, non-root, 2 vCPU / 4 GB, private subnets on the shared CentralReach VPC. Image built by CDK's `DockerImageAsset` from [fargate/rules_engine/Dockerfile](../fargate/rules_engine/Dockerfile) with the repo root as build context. Deps: `boto3`, `fastparquet` (pandas/numpy/cramjam transitive).
+- **Entry point** [fargate/rules_engine/main.py](../fargate/rules_engine/main.py) marshals env vars → an event dict, then calls `rules_engine_rag.run_validation`. Exit code 0 = success, 1 = error, 2 = bad input.
+- **Env vars injected per run** by the state machine's container overrides: `ORG_ID`, `RUN_ID` (JSON-encoded, `"null"` when unset), `MODE`, `CATEGORIES` / `DATES` / `DATE_WINDOW` (JSON-encoded). Static task-def env: `ORG_CONFIG_TABLE_NAME`, `NARRATIVE_HASH_TABLE`, `DOCUMENT_QUEUE_TABLE`, `QUEUE_WRITE_ENABLED=true`, `AUDIT_TABLE_NAME`, `AUDIT_FIREHOSE_NAME`, `RULES_ENGINE_TASK_NAME`, email + admin-URL config.
+- **Trigger paths**:
+  1. **EventBridge cron**, two rules per org, targets are `SfnStateMachine`:
+     - `{org}-validation-monday` — `cron(hour=H, minute=M, week_day=MON)` input `{date_window: {days_back_from_today: [2,1,0]}}` (weekend catch-up).
+     - `{org}-validation-daily` — `cron(week_day=TUE-FRI)` input `{date_window: {days_back_from_today: [0]}}`.
+     - Per-org UTC slots: `catholic-charities-multi-org` 10:00, `circles-of-care` 11:15, `supportive-care` 12:00.
+     - CDK's `RuleTargetInput.from_object` strips literal `null` top-level values, so the optional keys (`validation_run_id` / `categories` / `dates`) travel as the placeholder string `"__NULL__"`; the runner's `_plain_env` collapses it back to absent.
+  2. **`states:StartExecution`** from `admin-api` on "run now." Input includes explicit `validation_run_id` (a UTC-timestamp string minted upfront so the frontend can show it) + `categories` + `dates` + `mode: "manual"`.
+- **State machine shape** (`penguin-health-rules-engine`, 4h timeout, RUN_JOB pattern):
+  ```
+  NormalizeRunInputs (Pass — JsonToString each optional key) → RunRulesEngineTask (ECS RunTask, sync) → Succeed
+  ```
+- **Outputs**: one row per (document, rule) into `penguin-health-validation-results`, a run-summary item, CSV report at `validation-reports/{run_id}.csv`, and an end-of-run Parquet snapshot under `analytics/validation_results/validation_date=YYYY-MM-DD/` (fastparquet). Sends `EVENT_VALIDATION_RUN_COMPLETE` SES email + writes `EMAIL_AUDIT#` row to `penguin-health-stedi`.
+- **IAM (task role)**: S3 R/W `penguin-health-*`, read org-config (+ gsi1 for SUBSCRIPTION query), R/W validation-results, GetItem/PutItem on narrative-hashes, GetItem/PutItem/UpdateItem on document-queue, `bedrock:InvokeModel` on `anthropic.*` + inference profiles, `aws-marketplace:Subscribe|ViewSubscriptions`, `cloudwatch:PutMetricData PenguinHealth/LLMCost`, `ses:SendEmail`, PutItem/Query/GetItem on `penguin-health-stedi` (+ gsi1). Audit-layer grants (Firehose PutRecord, PutItem on audit DDB, KMS encrypt/decrypt) via `AuditLayer._grant_emit_to_role`.
+- **Logs**: CloudWatch `/aws/ecs/penguin-health-rules-engine-runner`, 3-month retention.
+- **No self-continuation**: Fargate task can run for hours, so the Lambda-era self-invoke logic is removed. Same-run reruns (operator-issued `RUN_ID`) still short-circuit already-processed S3 keys via `get_processed_s3_keys`.
 
 ### 4.7 `penguin-health-csv-splitter-multi-org` (`CsvSplitterFn`)
 - Runtime: Python 3.14, 256 MB, 60 s. Handler `csv_splitter_multi_org.lambda_handler`.
@@ -411,13 +427,13 @@ Every call to `audit.emit(action=..., resource=..., actor=..., org_id=..., ...)`
 - DB `penguin_health_audit`, table `audit_events`, EXTERNAL_TABLE Parquet, partition projection `year:integer 2026-2035`, `month:integer 01-12`, `day:integer 01-31`. No `MSCK REPAIR` required.
 - Column list (`_AUDIT_EVENT_COLUMNS` in `audit_layer.py`): `event_id, event_time, schema_version, action, outcome, purpose_of_use, org_id, agent_type, agent_id, agent_email, agent_groups, client_ip, user_agent, source_lambda, request_id, resource_type, resource_id, patient_hash, patient_first_initial, patient_last_initial, patient_dob, member_id_last4, payer_id, payer_name, call_type, external_control_number, duration_ms, result_summary, http_status, error_class`. **Forbidden fields:** full SSN, full member IDs, full names, prompt bodies, FHIR resource bodies, Textract JSON, raw exception messages.
 
-### 5.6 IAM (`AuditLayer._grant_emit`)
-Each emitter Lambda gets scoped statements (no wildcards on resources):
+### 5.6 IAM (`AuditLayer._grant_emit` / `_grant_emit_to_role`)
+Each emitter Lambda gets scoped statements (no wildcards on resources) via `_grant_emit`; each Fargate task role gets the same statements via `_grant_emit_to_role`:
 - `firehose:PutRecord|PutRecordBatch` on the exact stream ARN.
 - `dynamodb:PutItem` on the exact audit-table ARN.
 - `dynamodb:Query` on the table + its `gsi1`.
 - `kms:GenerateDataKey + Decrypt` on the audit CMK (`grant_encrypt_decrypt`).
-- Env vars injected: `AUDIT_TABLE_NAME`, `AUDIT_FIREHOSE_NAME`.
+- Env vars injected (Lambda path): `AUDIT_TABLE_NAME`, `AUDIT_FIREHOSE_NAME`. Fargate tasks set these on the task definition instead.
 
 ---
 
@@ -495,26 +511,29 @@ Three external tables per org (`{thing}_{org_underscored}`) all reading the org'
 
 ---
 
-## 11. Bucket / Lambda blast-radius matrix
+## 11. Bucket / role blast-radius matrix
 
-| Lambda | DDB R/W | DDB R | S3 R/W | KMS | Secrets | External |
+| Compute | DDB R/W | DDB R | S3 R/W | KMS | Secrets | External |
 |---|---|---|---|---|---|---|
-| admin-api | org-config, validation-results, analytics-reports, deep-jobs, stedi | – | `penguin-health-*` (Athena + agent-io) | audit-CMK enc/dec | `penguin-health/stedi/*` | Bedrock, Athena, Glue, SES |
+| admin-api | org-config, validation-results, analytics-reports, deep-jobs, stedi | – | `penguin-health-*` (Athena + agent-io) | audit-CMK enc/dec | `penguin-health/stedi/*` | Bedrock, Athena, Glue, SES, Step Functions |
 | deep-analytics-worker | deep-jobs | org-config | `penguin-health-*` (Athena + agent-io) | audit-CMK enc/dec | – | Bedrock, Athena, Glue, SES |
 | fhir-eligibility-poller | stedi, audit | org-config | – | `penguin-health-fhir-*` sign, audit enc/dec | `penguin-health/stedi/*` | FHIR vendors, Stedi, SES |
 | process-raw-charts | audit | – | `penguin-health-*` | audit-CMK enc/dec | – | Textract Start |
 | textract-result-handler | audit | org-config | `penguin-health-*` | audit-CMK enc/dec | – | Textract Get |
-| rules-engine-rag | validation-results, stedi (EMAIL_AUDIT) | org-config | `penguin-health-*` | audit-CMK enc/dec | – | Bedrock, SES |
 | csv-splitter | audit | org-config | `penguin-health-*` | audit-CMK enc/dec | – | EventBridge PutEvents |
 | fhir-encounter-materializer | audit | org-config | `penguin-health-*` | `penguin-health-fhir-*` sign, audit enc/dec | – | FHIR vendors, Athena, Glue |
+| rules-engine-runner (Fargate) | validation-results, narrative-hashes, document-queue, stedi (EMAIL_AUDIT), audit | org-config | `penguin-health-*` | audit-CMK enc/dec | – | Bedrock, SES |
+| centralreach-runner (Fargate) | centralreach-ingest-cursor, audit | org-config | `penguin-health-*` (`data/*`, `pdfs/*` write) | audit-CMK enc/dec | `penguin-health/centralreach/*/credentials` | CentralReach vendor, Bedrock, EventBridge PutEvents |
 
-The `penguin-health-*` wildcard intentionally does NOT match the JWKS bucket (`phealth-fhir-jwks`) or the audit bucket (`penguin-health-audit`, which has Object Lock COMPLIANCE + bucket-policy denial of destructive actions). The audit bucket name *does* match the prefix wildcard, but the Lambdas can only **write Firehose records into the audit substrate** — they have no S3 write permission scoped to the audit bucket itself (Firehose's role writes objects); the bucket-policy deny on destructive actions is the second line of defense.
+The `penguin-health-*` wildcard intentionally does NOT match the JWKS bucket (`phealth-fhir-jwks`) or the audit bucket (`penguin-health-audit`, which has Object Lock COMPLIANCE + bucket-policy denial of destructive actions). The audit bucket name *does* match the prefix wildcard, but no role has S3 write permission scoped to the audit bucket itself — everything writes via Firehose, whose own role is the only one that puts objects there.
 
 ---
 
 ## 12. CloudFormation outputs (consumed by deploy scripts + manual ops)
 - `UserPoolId`, `UserPoolClientId`, `ApiUrl`, `CloudFrontUrl`, `FrontendBucketName`, `DistributionId`
-- `ProcessRawChartsFnArn`, `TextractHandlerFnArn`, `RulesEngineFnArn`, `CsvSplitterFnArn`, `NotificationsTopicArn`
+- `ProcessRawChartsFnArn`, `TextractHandlerFnArn`, `CsvSplitterFnArn`, `NotificationsTopicArn`
+- `RulesEngineStateMachineArn`, `RulesEngineRunnerImageUri`, `RulesEngineLogGroupName`
+- `CentralReachStateMachineArn`, `CentralReachClusterName`, `CentralReachRunnerImageUri`, `CentralReachLogGroupName`
 - `AuditBucketName`, `AuditTableName`, `AuditFirehoseName`, `AuditKeyArn`
 - `AthenaWorkGroup{org_underscored}` (one per org)
 - `JwksBucketName`, `JwksBaseUrl`, `JwksDistributionId`

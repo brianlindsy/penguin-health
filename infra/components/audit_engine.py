@@ -1,6 +1,8 @@
 """
 Audit Engine construct: Lambda functions for the multi-org document
-processing pipeline (Textract, result handling, rules validation).
+processing pipeline (Textract, CSV splitting, FHIR encounter
+materialization). The per-rule validation loop that used to live here
+runs as a Fargate task now — see `components/rules_engine.py`.
 """
 
 import os
@@ -28,9 +30,6 @@ class AuditEngine(Construct):
 
     def __init__(self, scope: Construct, id: str, *,
                  org_config_table: dynamodb.ITable,
-                 validation_results_table: dynamodb.ITable,
-                 narrative_hashes_table: dynamodb.ITable,
-                 document_queue_table: dynamodb.ITable,
                  notifications_topic: sns.ITopic) -> None:
         super().__init__(scope, id)
 
@@ -39,7 +38,6 @@ class AuditEngine(Construct):
         csv_splitter_dir = os.path.join(lambda_dir, "csv-splitter")
         fhir_dir = os.path.join(lambda_dir, "fhir")
         fhir_materializer_dir = os.path.join(lambda_dir, "fhir-materializer")
-        notifications_pkg_dir = os.path.join(lambda_dir, "notifications")
         audit_pkg_dir = os.path.join(lambda_dir, "audit")
 
         # Wildcard ARN for all per-org PHI buckets (`penguin-health-{org_id}`).
@@ -129,146 +127,6 @@ class AuditEngine(Construct):
         notifications_topic.add_subscription(
             subscriptions.LambdaSubscription(self.textract_handler_fn)
         )
-
-        # ----- rules-engine-rag -----
-        # Module files for the rules engine (refactored for maintainability).
-        # Pinned to Python 3.13 (rest of stack runs 3.14) because fastparquet
-        # and its pandas/numpy deps don't yet ship Linux wheels for 3.14.
-        rules_engine_modules = [
-            "rules_engine_rag.py",      # Lambda entry point
-            "multi_org_config.py",       # DynamoDB org config loading
-            "rate_limiter.py",           # Rate limiting for Bedrock API
-            "bedrock_client.py",         # Claude model invocation
-            "claude_cost.py",            # Per-org CloudWatch cost emission
-            "document_validator.py",     # Per-rule LLM validation with multi-threading
-            "deterministic_evaluator.py", # Code-based deterministic rule evaluation
-            "results_handler.py",        # DynamoDB storage and CSV reports
-            "field_extractor.py",        # Text field extraction
-            "parquet_writer.py",         # End-of-run Parquet snapshot for Athena
-            "queue_handler.py",          # Ongoing document queue: hash, lookup, upsert
-        ]
-
-        rules_engine_requirements = [
-            # fastparquet pulls pandas, numpy, cramjam transitively via
-            # PipInstallBundler (which doesn't pass --no-deps), so listing
-            # fastparquet alone is enough.
-            "fastparquet==2024.11.0",
-        ]
-
-        self.rules_engine_fn = _lambda.Function(self, "RulesEngineRagFn",
-            function_name=f"{config.PROJECT_NAME}-rules-engine-rag",
-            runtime=_lambda.Runtime.PYTHON_3_13,
-            handler="rules_engine_rag.lambda_handler",
-            code=_lambda.Code.from_asset(
-                rules_engine_dir,
-                exclude=["*"] + [f"!{m}" for m in rules_engine_modules],
-                bundling=BundlingOptions(
-                    image=_lambda.Runtime.PYTHON_3_13.bundling_image,
-                    local=PipInstallBundler(
-                        source_paths=[
-                            os.path.join(rules_engine_dir, m)
-                            for m in rules_engine_modules
-                        ],
-                        source_dirs=[
-                            (notifications_pkg_dir, "notifications"),
-                            (audit_pkg_dir, "audit"),
-                        ],
-                        requirements=rules_engine_requirements,
-                        python_version="3.13",
-                    ),
-                ),
-            ),
-            timeout=Duration.minutes(15),  # Max Lambda timeout for continuation pattern
-            memory_size=512,
-            environment={
-                "ORG_CONFIG_TABLE_NAME": org_config_table.table_name,
-                "STEDI_TABLE_NAME": "penguin-health-stedi",
-                "NARRATIVE_HASH_TABLE": narrative_hashes_table.table_name,
-                "DOCUMENT_QUEUE_TABLE": document_queue_table.table_name,
-                # Feature flag: rules engine writes to the queue only when
-                # this is "true". Live after the backfill cutover on
-                # 2026-07-19.
-                "QUEUE_WRITE_ENABLED": "true",
-                "EMAIL_FROM_ADDRESS": "noreply@penguinhealth.io",
-                "EMAIL_REPLY_TO": "noreply@penguinhealth.io",
-                "ADMIN_UI_BASE_URL": "https://app.penguinhealth.io",
-            },
-        )
-
-        self.rules_engine_fn.add_to_role_policy(s3_policy)
-        org_config_table.grant_read_data(self.rules_engine_fn)
-        validation_results_table.grant_read_write_data(self.rules_engine_fn)
-        # Least-privilege grants for the supportive-care "narratives must be
-        # individualized" rule: point GetItem + PutItem only, no Scan/Query.
-        narrative_hashes_table.grant(
-            self.rules_engine_fn,
-            "dynamodb:GetItem",
-            "dynamodb:PutItem",
-        )
-        # Document queue writes: pointer + version rows on the base table.
-        # Rules engine never queries the queue's GSIs — those are for the
-        # admin API's reviewer views and the auto-close scan — so no
-        # /index/* grant here.
-        document_queue_table.grant(
-            self.rules_engine_fn,
-            "dynamodb:GetItem",
-            "dynamodb:PutItem",
-            "dynamodb:UpdateItem",
-        )
-
-        # Bedrock permissions for LLM-based rule evaluation
-        self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["bedrock:InvokeModel"],
-            resources=["*"],
-        ))
-        # AWS Marketplace permissions required for cross-region inference profiles
-        self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe"],
-            resources=["*"],
-        ))
-        # Per-org Claude cost attribution metrics. Namespace-scoped so this
-        # role can't write outside PenguinHealth/LLMCost.
-        self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["cloudwatch:PutMetricData"],
-            resources=["*"],
-            conditions={
-                "StringEquals": {
-                    "cloudwatch:namespace": "PenguinHealth/LLMCost"
-                }
-            },
-        ))
-        # Permission to invoke itself for continuation pattern
-        # Use ARN pattern to avoid circular dependency
-        self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["lambda:InvokeFunction"],
-            resources=[
-                f"arn:aws:lambda:{config.AWS_REGION}:*:function:{config.PROJECT_NAME}-rules-engine-rag"
-            ],
-        ))
-        # Email notifications: SES send + DynamoDB write on penguin-health-stedi
-        # for the EMAIL_AUDIT# rows that mirror the existing AUDIT# pattern.
-        # Sending identity isn't yet verified; tighten resource to the
-        # identity ARN once DNS verification of penguinhealth.io completes.
-        self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["ses:SendEmail", "ses:SendRawEmail"],
-            resources=["*"],
-        ))
-        self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
-            actions=[
-                "dynamodb:PutItem",
-                "dynamodb:Query",
-                "dynamodb:GetItem",
-            ],
-            resources=[
-                f"arn:aws:dynamodb:{config.AWS_REGION}:*:table/penguin-health-stedi",
-                f"arn:aws:dynamodb:{config.AWS_REGION}:*:table/penguin-health-stedi/index/*",
-            ],
-        ))
-        # Read subscriber list (SUBSCRIPTION gsi1pk on penguin-health-org-config).
-        self.rules_engine_fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["dynamodb:Query"],
-            resources=[f"{org_config_table.table_arn}/index/*"],
-        ))
 
         # ----- csv-splitter-multi-org -----
         # Splits bulk CSV files uploaded via SFTP into individual chart files
@@ -424,53 +282,4 @@ class AuditEngine(Construct):
             ),
             targets=[targets.LambdaFunction(self.fhir_materializer_fn)],
         )
-
-        # ----- Scheduled validation runs -----
-        # Two rules per org so the cron expression itself encodes the
-        # Monday-vs-rest split:
-        #   Monday    -> validate Sat + Sun + today's (Mon) ingest, since the
-        #                weekend's data was never picked up by an earlier run.
-        #   Other day -> validate today's ingest only.
-        # The relative `date_window` is resolved to concrete dates by the
-        # rules engine at run time — cron is when, payload is what to look at.
-        for org_id, hour, minute, rule_prefix, label in [
-            ("catholic-charities-multi-org", "10", "0",
-             "catholic-charities-validation", "CatholicCharities"),
-            ("circles-of-care", "11", "15",
-             "circles-of-care-validation", "CirclesOfCare"),
-            # 12:00 UTC = 07:00 EST / 08:00 EDT. Runs 5h after the 02:00 ET
-            # CentralReach ingest, so same-day data is available.
-            ("supportive-care", "12", "0",
-             "supportive-care-validation", "SupportiveCare"),
-        ]:
-            # Monday at HH:MM UTC — validates Sat, Sun, and today (Mon).
-            events.Rule(self, f"{label}MondayValidationSchedule",
-                rule_name=f"{config.PROJECT_NAME}-{rule_prefix}-monday",
-                schedule=events.Schedule.cron(hour=hour, minute=minute, week_day="MON"),
-                targets=[
-                    targets.LambdaFunction(
-                        self.rules_engine_fn,
-                        event=events.RuleTargetInput.from_object({
-                            "organization_id": org_id,
-                            "date_window": {"days_back_from_today": [2, 1, 0]},
-                        })
-                    )
-                ],
-            )
-
-            # Tue-Fri at HH:MM UTC — validates today's ingest only.
-            # Sat/Sun deliveries go unvalidated until Monday's catch-up run.
-            events.Rule(self, f"{label}DailyValidationSchedule",
-                rule_name=f"{config.PROJECT_NAME}-{rule_prefix}-daily",
-                schedule=events.Schedule.cron(hour=hour, minute=minute, week_day="TUE-FRI"),
-                targets=[
-                    targets.LambdaFunction(
-                        self.rules_engine_fn,
-                        event=events.RuleTargetInput.from_object({
-                            "organization_id": org_id,
-                            "date_window": {"days_back_from_today": [0]},
-                        })
-                    )
-                ],
-            )
 

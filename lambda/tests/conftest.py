@@ -91,6 +91,48 @@ def _reset_audit_clients():
         pass
 
 
+@pytest.fixture
+def rules_engine_sfn(mocker):
+    """Wire a mock Step Functions client + env var for the rules-engine
+    state machine, replacing the pre-migration `lambda_client.invoke`
+    fixture. Tests that trigger a validation run request this fixture
+    and then assert on `rules_engine_sfn.start_execution.call_args`.
+
+    The env var lives on the process (not the fixture) because the
+    handler reads it inline. Tests that need a different ARN can
+    `monkeypatch.setenv(...)` directly.
+
+    Reset every `admin_api` module object we can find — the module is
+    reachable under both `admin_api` (via lambda/api on sys.path) and
+    `api.admin_api` (via lambda as pytest rootdir). Python treats those
+    as separate module objects with separate `_stepfunctions_client`
+    globals; missing one leaves the tests using the moto-mocked client.
+    """
+    os.environ["RULES_ENGINE_STATE_MACHINE_ARN"] = (
+        "arn:aws:states:us-east-1:111111111111:stateMachine:penguin-health-rules-engine"
+    )
+    fake = mocker.MagicMock()
+    fake.start_execution.return_value = {
+        "executionArn": (
+            "arn:aws:states:us-east-1:111111111111:execution:"
+            "penguin-health-rules-engine:run-test"
+        ),
+        "startDate": "2026-05-15T00:00:00Z",
+    }
+    reset_targets = []
+    for module_name in ("admin_api", "api.admin_api"):
+        try:
+            module = __import__(module_name, fromlist=["_reset_stepfunctions_for_tests"])
+        except ImportError:
+            continue
+        module._reset_stepfunctions_for_tests(fake)
+        reset_targets.append(module)
+    yield fake
+    for module in reset_targets:
+        module._reset_stepfunctions_for_tests(None)
+    os.environ.pop("RULES_ENGINE_STATE_MACHINE_ARN", None)
+
+
 # -----------------------------------------------------------------------------
 # DynamoDB Mock Fixture
 # -----------------------------------------------------------------------------

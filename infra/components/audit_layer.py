@@ -529,23 +529,35 @@ class AuditLayer(Construct):
         construction for Lambdas that are created later than this
         construct (e.g. lazy-built per-feature Lambdas).
         """
-        fn.add_to_role_policy(iam.PolicyStatement(
+        self._grant_emit_to_role(fn.role)
+        # Emitting Lambdas read the target names out of env vars set at
+        # deploy time. Fargate tasks receive the same env vars via their
+        # task definition instead.
+        fn.add_environment("AUDIT_TABLE_NAME", self.table.table_name)
+        fn.add_environment("AUDIT_FIREHOSE_NAME",
+                           self.stream.delivery_stream_name or
+                           f"{config.PROJECT_NAME}-audit")
+
+    def _grant_emit_to_role(self, role: iam.IRole) -> None:
+        """Attach the same IAM the Lambda grant does, but on a role only.
+
+        Used for Fargate task roles (`centralreach.py`, `rules_engine.py`)
+        — the containers set `AUDIT_TABLE_NAME` / `AUDIT_FIREHOSE_NAME`
+        as task-definition env vars, so this method only handles IAM.
+        """
+        role.add_to_principal_policy(iam.PolicyStatement(
             actions=["firehose:PutRecord", "firehose:PutRecordBatch"],
             resources=[self.stream.attr_arn],
         ))
-        fn.add_to_role_policy(iam.PolicyStatement(
+        role.add_to_principal_policy(iam.PolicyStatement(
             actions=["dynamodb:PutItem"],
             resources=[self.table.table_arn],
         ))
-        fn.add_to_role_policy(iam.PolicyStatement(
+        role.add_to_principal_policy(iam.PolicyStatement(
             actions=["dynamodb:Query"],
             resources=[
                 self.table.table_arn,
                 f"{self.table.table_arn}/index/gsi1",
             ],
         ))
-        self.key.grant_encrypt_decrypt(fn)
-        fn.add_environment("AUDIT_TABLE_NAME", self.table.table_name)
-        fn.add_environment("AUDIT_FIREHOSE_NAME",
-                           self.stream.delivery_stream_name or
-                           f"{config.PROJECT_NAME}-audit")
+        self.key.grant_encrypt_decrypt(role)
