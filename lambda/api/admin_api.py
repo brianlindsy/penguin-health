@@ -813,16 +813,13 @@ def _query_all(table, **kwargs):
 
 
 def _document_program(item):
-    """Read the program label off a validation-result row.
+    """Read the program label off a validation-result or queue-table row.
 
-    Prefers the canonical UI projection (`ui_display_fields.program`) so a
-    per-org rename via UI_DISPLAY_FIELDS doesn't silently break the filter,
-    and falls back to the raw `field_values.program`.
+    Validation-results rows carry the raw dict as `field_values`; queue-table
+    rows persist it as `field_values_snapshot`. Check both so RBAC works on
+    either shape.
     """
-    udf = item.get('ui_display_fields') or {}
-    if 'program' in udf:
-        return udf.get('program')
-    fv = item.get('field_values') or {}
+    fv = item.get('field_values') or item.get('field_values_snapshot') or {}
     return fv.get('program')
 
 
