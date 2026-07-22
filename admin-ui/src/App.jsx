@@ -30,9 +30,10 @@ function DocumentQueueRedirect() {
 // Root landing: users whose Cognito profile carries a `custom:organization_id`
 // go straight to their queue. Super-admins / unassigned users keep landing
 // on the org picker so they can pick one.
-function RootLanding({ user }) {
-  if (user?.organizationId) {
-    return <Navigate to={`/organizations/${user.organizationId}/document-queue`} replace />
+export function RootLanding() {
+  const { userClaims } = useAuth()
+  if (userClaims?.organizationId) {
+    return <Navigate to={`/organizations/${userClaims.organizationId}/document-queue`} replace />
   }
   return <OrganizationsPage />
 }
@@ -85,7 +86,7 @@ function App() {
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         {/* Users tied to a specific org land on their queue by default;
             super-admins without an assigned org still hit the picker. */}
-        <Route path="/" element={<RootLanding user={user} />} />
+        <Route path="/" element={<RootLanding />} />
         <Route path="/organizations/:orgId" element={<OrganizationDetail />} />
         <Route
           path="/organizations/:orgId/rules/new"
