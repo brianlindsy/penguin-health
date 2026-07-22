@@ -15,6 +15,8 @@ per validation run. Core functionality is split into:
 import json
 import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 import boto3
@@ -54,6 +56,19 @@ except ImportError:  # pragma: no cover — fail-safe if the image is older than
 CUTOVER_DATE = '2026-05-01'
 
 DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+# Files are processed concurrently — each file already runs its rules in
+# a 10-way inner pool, so total in-flight Bedrock calls ~= FILE_WORKERS *
+# rule_workers. Kept well under the 10,000 RPM rate limiter budget.
+_FILE_WORKERS_DEFAULT = 20
+
+
+class _NullContext:
+    def __enter__(self): return self
+    def __exit__(self, *_): return False
+
+
+_NULL_CTX = _NullContext()
 
 s3_client = boto3.client('s3')
 
@@ -233,15 +248,39 @@ def run_validation(event):
     # aggregate_run_summary reads all rows written by the run, so summary
     # totals fall out naturally; these counters drive the reviewer email.
     queue_counters: dict[str, int] = {}
+    counters_lock = threading.Lock()
+
+    keys_to_process = []
     for date_str in dates:
         print(f"Listing data/{date_str}/ in bucket {bucket}")
         for key in list_data_folder_keys(bucket, date_str):
             if key in already_processed:
                 continue
-            eligible_count += 1
-            files_found = True
-            process_file(bucket, key, config, org_id, env_config, validation_run_id,
-                         queue_counters=queue_counters)
+            keys_to_process.append(key)
+
+    eligible_count = len(keys_to_process)
+    files_found = eligible_count > 0
+
+    file_workers = int(os.environ.get('FILE_WORKERS', _FILE_WORKERS_DEFAULT))
+    max_workers = max(1, min(file_workers, eligible_count)) if eligible_count else 1
+    print(f"Processing {eligible_count} files with {max_workers} workers")
+
+    if eligible_count:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(
+                    process_file, bucket, key, config, org_id, env_config,
+                    validation_run_id,
+                    queue_counters=queue_counters,
+                    counters_lock=counters_lock,
+                )
+                for key in keys_to_process
+            ]
+            for future in as_completed(futures):
+                # Surface unexpected exceptions — process_file catches its
+                # own errors and writes a sentinel row, so this only fires
+                # on programming bugs.
+                future.result()
 
     print(f"Processed {eligible_count} eligible files across {len(dates)} date(s); "
           f"queue counters: {queue_counters}")
@@ -290,7 +329,7 @@ def run_validation(event):
 
 
 def process_file(bucket, key, config, org_id, env_config, validation_run_id,
-                 queue_counters=None):
+                 queue_counters=None, counters_lock=None):
     """
     Validate a single JSON or CSV file from data/{date}/.
 
@@ -333,7 +372,8 @@ def process_file(bucket, key, config, org_id, env_config, validation_run_id,
                     results_table_name=env_config['DYNAMODB_TABLE'],
                 )
                 if queue_counters is not None:
-                    queue_counters['duplicate_skips'] = queue_counters.get('duplicate_skips', 0) + 1
+                    with (counters_lock or _NULL_CTX):
+                        queue_counters['duplicate_skips'] = queue_counters.get('duplicate_skips', 0) + 1
                 print(f"Skipped duplicate {key} (document_id={doc_id}) — content unchanged")
                 return
             # Pointer disappeared between the lookup in validate_document
@@ -361,7 +401,8 @@ def process_file(bucket, key, config, org_id, env_config, validation_run_id,
             )
             if queue_counters is not None:
                 counter_key = 'new_versions' if branch == 'queue_new_version' else 'new_documents'
-                queue_counters[counter_key] = queue_counters.get(counter_key, 0) + 1
+                with (counters_lock or _NULL_CTX):
+                    queue_counters[counter_key] = queue_counters.get(counter_key, 0) + 1
 
         print(f"Validated {key} (document_id={doc_id}): {results['summary']}")
 

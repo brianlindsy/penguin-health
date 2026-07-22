@@ -210,13 +210,13 @@ class RulesEngine(Construct):
             removal_policy=RemovalPolicy.RETAIN,
         )
 
-        # 2 vCPU / 4 GB is a starting point tuned for headroom over the
-        # Lambda's 512 MB: fastparquet + pandas + parallel per-rule
-        # thread pool. Tune after the first weeks of runs.
+        # 4 vCPU / 8 GB sized for file-level parallelism in the runner
+        # (see FILE_WORKERS in rules_engine_rag). Fargate requires ≥8 GB
+        # at 4 vCPU.
         self.task_definition = ecs.FargateTaskDefinition(
             self, "RulesEngineRunnerTaskDef",
-            cpu=2048,
-            memory_limit_mib=4096,
+            cpu=4096,
+            memory_limit_mib=8192,
             task_role=self.task_role,
             family=f"{config.PROJECT_NAME}-rules-engine-runner",
         )
@@ -411,6 +411,6 @@ class RulesEngine(Construct):
             definition_body=sfn.DefinitionBody.from_chainable(normalize),
             # Larger orgs' Monday catch-up historically ran ~30-40 minutes;
             # 4 hours is generous headroom.
-            timeout=Duration.hours(4),
+            timeout=Duration.hours(10),
             tracing_enabled=True,
         )
