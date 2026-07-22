@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { OrgWorkspaceLayout } from '../components/OrgWorkspaceLayout.jsx'
@@ -147,9 +147,92 @@ export function DocumentQueuePage() {
   const [queueStatus, setQueueStatus] = useState(
     QUEUE_STATUSES.includes(initialStatus) ? initialStatus : 'open',
   )
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
+  // Per-status bucket cache. Each entry:
+  //   { documents, nextToken, hasMore, loaded, loading, backgroundLoading }
+  // `loaded` flips true after the first page arrives so we can render
+  // immediately without waiting on the full paginated walk. `hasMore`
+  // mirrors the presence of a `next_token`. `backgroundLoading` marks
+  // buckets currently being prefetched off the critical render path so
+  // the status chip can render a small spinner beside them.
+  //
+  // We keep this in a ref (mutable, not re-rendered) and bump
+  // `bucketsVersion` on every meaningful change so React re-renders. This
+  // lets the async pagers append pages without stale-closure bugs from
+  // reading a snapshot of state.
+  const emptyBucket = () => ({
+    documents: [],
+    nextToken: null,
+    hasMore: true,
+    loaded: false,
+    loading: false,
+    backgroundLoading: false,
+  })
+  const bucketsRef = useRef(Object.fromEntries(QUEUE_STATUSES.map(s => [s, emptyBucket()])))
+  const [, setBucketsVersion] = useState(0)
+  const bumpBuckets = useCallback(() => setBucketsVersion(v => v + 1), [])
   const [error, setError] = useState('')
+
+  // Cancellation token for the current filter set — any inflight or
+  // background fetch checks this before writing back to bucketsRef so a
+  // filter change (org, firstSeenRunId, program/service_type/payer) invalidates
+  // stale results instead of poisoning the new cache.
+  const fetchTokenRef = useRef(0)
+
+  // Track buckets whose first page has been requested for the active
+  // fetch token so we don't double-fetch. Reset when the token changes.
+  const requestedFirstPageRef = useRef(new Set())
+
+  // Reset the whole cache — used when a filter changes and prior results
+  // no longer apply.
+  const resetBuckets = useCallback(() => {
+    bucketsRef.current = Object.fromEntries(QUEUE_STATUSES.map(s => [s, emptyBucket()]))
+    requestedFirstPageRef.current = new Set()
+    if (fullWalkStartedRef.current) fullWalkStartedRef.current.clear()
+    fetchTokenRef.current += 1
+    bumpBuckets()
+  }, [bumpBuckets])
+
+  // Derived view of the currently-selected bucket, shaped like the old
+  // `data` object so the rest of the component can keep reading it.
+  const activeBucket = bucketsRef.current[queueStatus] || emptyBucket()
+  const data = useMemo(
+    () => ({
+      documents: activeBucket.documents,
+      organization_id: orgId,
+      queue_status: queueStatus,
+    }),
+    [activeBucket.documents, orgId, queueStatus],
+  )
+  // `loading` gates the initial full-page spinner. We block the screen
+  // only until the currently-selected bucket has its first page — other
+  // buckets stream in via background fetches without hiding the UI.
+  const loading = !activeBucket.loaded && activeBucket.loading
+
+  // True while the bucket feeding the summary cards still has pages in
+  // flight. The cards render a small spinner next to their count while
+  // this is true so climbing numbers read as "still loading" rather
+  // than as a doc-state churn.
+  const statsLoading = activeBucket.loading || activeBucket.backgroundLoading || activeBucket.hasMore
+
+  // Apply an in-place patch to a single document across all cached
+  // buckets (a doc can appear in more than one bucket after a status
+  // transition — e.g. a resolved doc that used to be open — and the
+  // reviewer should see the patch reflected wherever it lands next).
+  // Bumps the bucket version so React re-renders the derived `data`.
+  const patchDocInBuckets = useCallback((docId, updater) => {
+    for (const status of QUEUE_STATUSES) {
+      const bucket = bucketsRef.current[status]
+      if (!bucket) continue
+      let changed = false
+      const nextDocs = bucket.documents.map(d => {
+        if (d.document_id !== docId) return d
+        changed = true
+        return updater(d)
+      })
+      if (changed) bucket.documents = nextDocs
+    }
+    bumpBuckets()
+  }, [bumpBuckets])
   const [selectedDoc, setSelectedDoc] = useState(null)
   const [selectedRule, setSelectedRule] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
@@ -204,53 +287,137 @@ export function DocumentQueuePage() {
     }, { replace: true })
   }
 
-  // Load queue entries for the current status filter. Includes rules[] so
-  // the card grid can render per-rule badges without an N+1 fetch loop.
-  //
-  // The API caps a single page at 200 entries; we page under the hood via
-  // `next_token` until the server signals exhaustion so reviewers see
-  // every document in the current status bucket, not just the first page.
-  // Each response is streamed into `data.documents` as it arrives so the
-  // grid renders progressively instead of blocking on the last page.
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    setData({ documents: [], organization_id: orgId, queue_status: queueStatus })
+  // Fetch a single page for a bucket and append it to that bucket's
+  // cache. Guards against out-of-order writes via `fetchTokenRef` (a
+  // filter change bumps the token, so late responses under the old
+  // filter are discarded). Returns the raw page response, or null if
+  // the bucket is already exhausted / already fetching / cancelled.
+  const loadNextPage = useCallback(async (status, { background = false } = {}) => {
+    const token = fetchTokenRef.current
+    const bucket = bucketsRef.current[status]
+    if (!bucket || !bucket.hasMore) return null
+    // Serialize: don't stack concurrent fetches on the same bucket.
+    if (bucket.loading) return null
 
-    async function loadAllPages() {
-      let nextToken = null
-      const seen = []
-      try {
-        do {
-          const page = await api.listDocumentQueue(orgId, {
-            status: queueStatus,
-            limit: 200,
-            includeRules: true,
-            firstSeenRunId: firstSeenRunIdFilter,
-            nextToken,
-          })
-          if (cancelled) return
-          const entries = page.entries || []
-          seen.push(...entries)
-          // Reshape to the {documents, ...} contract the rest of this
-          // page already knows how to render. Cloning `seen` on every
-          // page keeps React state immutable.
-          setData({
-            documents: [...seen],
-            organization_id: page.organization_id,
-            queue_status: queueStatus,
-          })
-          nextToken = page.next_token || null
-        } while (nextToken)
-      } catch (err) {
-        if (!cancelled) setError(err.message)
-      } finally {
-        if (!cancelled) setLoading(false)
+    bucket.loading = true
+    if (background) bucket.backgroundLoading = true
+    bumpBuckets()
+
+    try {
+      const page = await api.listDocumentQueue(orgId, {
+        status,
+        limit: 200,
+        includeRules: true,
+        firstSeenRunId: firstSeenRunIdFilter,
+        nextToken: bucket.nextToken,
+      })
+      if (token !== fetchTokenRef.current) return null
+
+      const entries = page.entries || []
+      const current = bucketsRef.current[status]
+      current.documents = [...current.documents, ...entries]
+      current.nextToken = page.next_token || null
+      current.hasMore = Boolean(page.next_token)
+      current.loaded = true
+      return page
+    } catch (err) {
+      if (token === fetchTokenRef.current) setError(err.message)
+      return null
+    } finally {
+      const current = bucketsRef.current[status]
+      if (current) {
+        current.loading = false
+        if (background && !current.hasMore) current.backgroundLoading = false
       }
+      bumpBuckets()
     }
-    loadAllPages()
-    return () => { cancelled = true }
-  }, [orgId, queueStatus, firstSeenRunIdFilter])
+  }, [orgId, firstSeenRunIdFilter, bumpBuckets])
+
+  // Wipe the cache whenever the filter set that scopes results changes,
+  // so subsequent effects load fresh data instead of stale entries under
+  // the old filter.
+  useEffect(() => {
+    resetBuckets()
+  }, [orgId, firstSeenRunIdFilter, resetBuckets])
+
+  // Kick off the first page for the currently-visible bucket. If the
+  // user flips to a different status, that bucket's first page is
+  // fetched on demand here (deduped via `requestedFirstPageRef`).
+  useEffect(() => {
+    const bucket = bucketsRef.current[queueStatus]
+    if (!bucket || bucket.loaded || bucket.loading) return
+    if (requestedFirstPageRef.current.has(queueStatus)) return
+    requestedFirstPageRef.current.add(queueStatus)
+    loadNextPage(queueStatus)
+  }, [queueStatus, loadNextPage])
+
+  // Track which buckets we've kicked off a full background walk for
+  // under the current fetch token. Prevents duplicate walkers when the
+  // effect re-runs on version bumps.
+  const fullWalkStartedRef = useRef(new Set())
+
+  // Fully paginate the "open" (failed docs) bucket to completion. This
+  // runs as soon as the first page of `open` renders so reviewers see
+  // every failed document without needing to scroll — the rest of the
+  // pages stream in behind the initial render.
+  useEffect(() => {
+    const openBucket = bucketsRef.current['open']
+    if (!openBucket?.loaded) return
+    if (!openBucket.hasMore) return
+    if (fullWalkStartedRef.current.has('open')) return
+    fullWalkStartedRef.current.add('open')
+
+    const token = fetchTokenRef.current
+    openBucket.backgroundLoading = true
+    bumpBuckets()
+    ;(async () => {
+      while (token === fetchTokenRef.current) {
+        const current = bucketsRef.current['open']
+        if (!current || !current.hasMore) break
+        const page = await loadNextPage('open', { background: true })
+        if (!page) break
+      }
+      const current = bucketsRef.current['open']
+      if (current) current.backgroundLoading = false
+      bumpBuckets()
+    })()
+  }, [activeBucket.loaded, loadNextPage, bumpBuckets])
+
+  // Only after "open" is fully paginated do we start prefetching the
+  // other buckets. Failed documents are the primary reviewer surface,
+  // so we finish them first before spending bandwidth on the rest.
+  useEffect(() => {
+    const openBucket = bucketsRef.current['open']
+    if (!openBucket?.loaded || openBucket.hasMore) return
+
+    const token = fetchTokenRef.current
+    const others = QUEUE_STATUSES.filter(s => s !== 'open')
+
+    for (const status of others) {
+      const bucket = bucketsRef.current[status]
+      if (!bucket || bucket.loaded || bucket.loading) continue
+      if (fullWalkStartedRef.current.has(status)) continue
+      fullWalkStartedRef.current.add(status)
+      requestedFirstPageRef.current.add(status)
+      bucket.backgroundLoading = true
+      ;(async () => {
+        while (token === fetchTokenRef.current) {
+          const current = bucketsRef.current[status]
+          if (!current || !current.hasMore) break
+          const page = await loadNextPage(status, { background: true })
+          if (!page) break
+        }
+        const current = bucketsRef.current[status]
+        if (current) current.backgroundLoading = false
+        bumpBuckets()
+      })()
+    }
+  }, [
+    bucketsRef.current['open']?.loaded,
+    bucketsRef.current['open']?.hasMore,
+    loadNextPage,
+    bumpBuckets,
+  ])
 
   // Handle document selection after data loads
   // This runs when data changes OR when docIdFromUrl changes
@@ -592,6 +759,33 @@ export function DocumentQueuePage() {
     })
   }, [data, searchTerm, statusFilter, ruleFilter, multiFilters, categoryFilter, dateFilter, customStartDate, customEndDate, serviceDateFilter, serviceCustomStartDate, serviceCustomEndDate, fieldFilters])
 
+  // Infinite scroll sentinel — sits at the bottom of the document list.
+  // When it enters the viewport we request the next page for the active
+  // bucket. Uses IntersectionObserver rather than a scroll handler so we
+  // don't fight the browser on scroll performance.
+  const listScrollRef = useRef(null)
+  const listSentinelRef = useRef(null)
+  useEffect(() => {
+    const sentinel = listSentinelRef.current
+    const root = listScrollRef.current
+    if (!sentinel || !root) return
+    const bucket = bucketsRef.current[queueStatus]
+    if (!bucket || !bucket.hasMore) return
+    const observer = new IntersectionObserver(
+      entries => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue
+          const b = bucketsRef.current[queueStatus]
+          if (!b || !b.hasMore || b.loading) return
+          loadNextPage(queueStatus)
+        }
+      },
+      { root, rootMargin: '200px 0px', threshold: 0 },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [queueStatus, activeBucket.documents.length, activeBucket.hasMore, activeBucket.loading, loadNextPage])
+
   // Track if this is the first render to skip the statusFilter effect on mount
   const isFirstRender = useRef(true)
 
@@ -617,7 +811,6 @@ export function DocumentQueuePage() {
 
   if (loading) return <OrgWorkspaceLayout><div className="flex items-center justify-center h-64"><p className="text-gray-500">Loading validation run...</p></div></OrgWorkspaceLayout>
   if (error) return <OrgWorkspaceLayout><div className="p-4"><p className="text-red-600">Error: {error}</p></div></OrgWorkspaceLayout>
-  if (!data) return <OrgWorkspaceLayout><div className="p-4"><p className="text-gray-500">Validation run not found</p></div></OrgWorkspaceLayout>
 
   return (
     <OrgWorkspaceLayout>
@@ -645,7 +838,10 @@ export function DocumentQueuePage() {
         />
       )}
 
-      {/* Summary Cards */}
+      {/* Summary Cards. `statsLoading` mirrors whether the source bucket
+          for these numbers still has pages arriving; each card shows a
+          small spinner while that's true so reviewers can see the counts
+          are actively climbing rather than final. */}
       <div className={`grid ${canViewRevenue ? 'grid-cols-5' : 'grid-cols-4'} gap-4 mb-6`}>
         <SummaryCard
           label="NEEDS ACTION"
@@ -653,6 +849,7 @@ export function DocumentQueuePage() {
           color="red"
           active={statusFilter === 'needs_action'}
           onClick={() => setStatusFilter(statusFilter === 'needs_action' ? 'all' : 'needs_action')}
+          loading={statsLoading}
         />
         <SummaryCard
           label="AWAITING STAFF"
@@ -660,6 +857,7 @@ export function DocumentQueuePage() {
           color="yellow"
           active={statusFilter === 'awaiting_staff'}
           onClick={() => setStatusFilter(statusFilter === 'awaiting_staff' ? 'all' : 'awaiting_staff')}
+          loading={statsLoading}
         />
         <SummaryCard
           label="PASSED"
@@ -667,6 +865,7 @@ export function DocumentQueuePage() {
           color="green"
           active={statusFilter === 'passed'}
           onClick={() => setStatusFilter(statusFilter === 'passed' ? 'all' : 'passed')}
+          loading={statsLoading}
         />
         <SummaryCard
           label="CONFIRMED"
@@ -674,6 +873,7 @@ export function DocumentQueuePage() {
           color="green"
           active={statusFilter === 'confirmed'}
           onClick={() => setStatusFilter(statusFilter === 'confirmed' ? 'all' : 'confirmed')}
+          loading={statsLoading}
         />
         {canViewRevenue && (
           <SummaryCard
@@ -682,6 +882,7 @@ export function DocumentQueuePage() {
             subtext={`${stats.needsAction + stats.awaitingStaff} blocked claim${(stats.needsAction + stats.awaitingStaff) !== 1 ? 's' : ''}`}
             color="blue"
             onClick={() => {}}
+            loading={statsLoading}
           />
         )}
       </div>
@@ -715,26 +916,48 @@ export function DocumentQueuePage() {
 
         {/* Queue-status filter — the primary reviewer surface. Default 'open';
             reviewers can flip to see resolved / confirmed / auto-closed
-            entries. Persisted to the URL so views are shareable. */}
-        <FilterChip
-          active={queueStatus !== 'open'}
-          iconPath="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-          value={queueStatus}
-          onChange={(v) => {
-            setQueueStatus(v)
-            setSearchParams(prev => {
-              const next = new URLSearchParams(prev)
-              if (v === 'open') next.delete('status')
-              else next.set('status', v)
-              return next
-            }, { replace: true })
-          }}
-          label="Status"
-        >
-          {QUEUE_STATUSES.map(s => (
-            <option key={s} value={s}>{QUEUE_STATUS_LABEL[s]}</option>
-          ))}
-        </FilterChip>
+            entries. Persisted to the URL so views are shareable.
+            Buckets still being background-prefetched get a "…" suffix on
+            their option label; if the active bucket itself is still
+            loading pages we render a small spinner beside the chip so
+            reviewers know why counts might grow. */}
+        <div className="inline-flex items-center gap-1.5">
+          <FilterChip
+            active={queueStatus !== 'open'}
+            iconPath="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+            value={queueStatus}
+            onChange={(v) => {
+              setQueueStatus(v)
+              setSearchParams(prev => {
+                const next = new URLSearchParams(prev)
+                if (v === 'open') next.delete('status')
+                else next.set('status', v)
+                return next
+              }, { replace: true })
+            }}
+            label="Status"
+          >
+            {QUEUE_STATUSES.map(s => {
+              const b = bucketsRef.current[s]
+              const stillLoading = b && (b.loading || b.backgroundLoading || (!b.loaded && !requestedFirstPageRef.current.has(s)))
+              return (
+                <option key={s} value={s}>
+                  {QUEUE_STATUS_LABEL[s]}{stillLoading ? ' …' : ''}
+                </option>
+              )
+            })}
+          </FilterChip>
+          {(activeBucket.loading || activeBucket.backgroundLoading) && (
+            <svg
+              className="animate-spin h-3.5 w-3.5 text-gray-400"
+              fill="none" viewBox="0 0 24 24"
+              aria-label="Loading more documents"
+            >
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+            </svg>
+          )}
+        </div>
 
         <FilterChip
           active={ruleFilter !== 'all'}
@@ -855,7 +1078,7 @@ export function DocumentQueuePage() {
               {filteredDocs.length} Document{filteredDocs.length !== 1 ? 's' : ''}
             </span>
           </div>
-          <div className="flex-1 overflow-y-auto max-h-[calc(5*9rem)]">
+          <div ref={listScrollRef} className="flex-1 overflow-y-auto max-h-[calc(5*9rem)]">
             {filteredDocs.map(doc => (
               <DocumentListItem
                 key={doc.document_id}
@@ -880,8 +1103,23 @@ export function DocumentQueuePage() {
                 }}
               />
             ))}
-            {filteredDocs.length === 0 && (
+            {filteredDocs.length === 0 && !activeBucket.loading && (
               <p className="p-4 text-sm text-gray-500">No documents match your filters.</p>
+            )}
+            {activeBucket.hasMore && (
+              <div ref={listSentinelRef} className="flex items-center justify-center py-3">
+                {activeBucket.loading ? (
+                  <span className="inline-flex items-center gap-2 text-xs text-gray-500">
+                    <svg className="animate-spin h-3.5 w-3.5 text-gray-400" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                    </svg>
+                    Loading more…
+                  </span>
+                ) : (
+                  <span className="text-xs text-gray-400">Scroll for more</span>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -901,20 +1139,13 @@ export function DocumentQueuePage() {
                   await api.queueConfirmFinding(orgId, selectedDoc.document_id, ruleId)
                   // Update the local state to reflect the rule confirmation
                   const timestamp = new Date().toISOString()
-                  setData(prev => ({
-                    ...prev,
-                    documents: prev.documents.map(d =>
-                      d.document_id === selectedDoc.document_id
-                        ? {
-                            ...d,
-                            rules: d.rules.map(r =>
-                              r.rule_id === ruleId
-                                ? { ...r, finding_confirmed: true, finding_confirmed_at: timestamp }
-                                : r
-                            )
-                          }
-                        : d
-                    )
+                  patchDocInBuckets(selectedDoc.document_id, d => ({
+                    ...d,
+                    rules: d.rules.map(r =>
+                      r.rule_id === ruleId
+                        ? { ...r, finding_confirmed: true, finding_confirmed_at: timestamp }
+                        : r
+                    ),
                   }))
                   // Update selected doc's rules
                   setSelectedDoc(prev => ({
@@ -942,20 +1173,13 @@ export function DocumentQueuePage() {
                   await api.queueMarkResolved(orgId, selectedDoc.document_id, ruleId)
                   // Update local state: set fixed=true, remove finding_confirmed
                   const timestamp = new Date().toISOString()
-                  setData(prev => ({
-                    ...prev,
-                    documents: prev.documents.map(d =>
-                      d.document_id === selectedDoc.document_id
-                        ? {
-                            ...d,
-                            rules: d.rules.map(r =>
-                              r.rule_id === ruleId
-                                ? { ...r, fixed: true, fixed_at: timestamp, finding_confirmed: undefined, finding_confirmed_at: undefined }
-                                : r
-                            )
-                          }
-                        : d
-                    )
+                  patchDocInBuckets(selectedDoc.document_id, d => ({
+                    ...d,
+                    rules: d.rules.map(r =>
+                      r.rule_id === ruleId
+                        ? { ...r, fixed: true, fixed_at: timestamp, finding_confirmed: undefined, finding_confirmed_at: undefined }
+                        : r
+                    ),
                   }))
                   // Update selected doc's rules
                   setSelectedDoc(prev => ({
@@ -1000,13 +1224,9 @@ export function DocumentQueuePage() {
 
                   const timestamp = new Date().toISOString()
                   const patch = { status: outcome, feedback_given: true, feedback_given_at: timestamp }
-                  setData(prev => ({
-                    ...prev,
-                    documents: prev.documents.map(d =>
-                      d.document_id === selectedDoc.document_id
-                        ? { ...d, rules: d.rules.map(r => r.rule_id === ruleId ? { ...r, ...patch } : r) }
-                        : d
-                    )
+                  patchDocInBuckets(selectedDoc.document_id, d => ({
+                    ...d,
+                    rules: d.rules.map(r => r.rule_id === ruleId ? { ...r, ...patch } : r),
                   }))
                   setSelectedDoc(prev => ({
                     ...prev,
@@ -1035,12 +1255,7 @@ export function DocumentQueuePage() {
                     document_confirmed_at: resp.document_confirmed_at,
                     document_confirmed_by: resp.document_confirmed_by,
                   }
-                  setData(prev => ({
-                    ...prev,
-                    documents: prev.documents.map(d =>
-                      d.document_id === selectedDoc.document_id ? { ...d, ...patch } : d
-                    )
-                  }))
+                  patchDocInBuckets(selectedDoc.document_id, d => ({ ...d, ...patch }))
                   setSelectedDoc(prev => ({ ...prev, ...patch }))
                 } catch (err) {
                   setError(`Failed to confirm document: ${err.message}`)
@@ -1259,7 +1474,7 @@ function CustomDateRange({ label, start, onStartChange, end, onEndChange, onClea
 }
 
 
-function SummaryCard({ label, value, subtext, color, active, onClick }) {
+function SummaryCard({ label, value, subtext, color, active, onClick, loading = false }) {
   // Active = soft transparent tint, matching the card's accent color.
   const activeStyles = {
     red: 'border-red-300 bg-red-500/10',
@@ -1282,8 +1497,18 @@ function SummaryCard({ label, value, subtext, color, active, onClick }) {
         active ? activeStyles[color] : 'border-gray-200 bg-white hover:border-gray-300'
       }`}
     >
-      <div className={`text-2xl font-bold ${active ? textStyles[color] : 'text-gray-900'}`}>
-        {value}
+      <div className={`flex items-center gap-2 text-2xl font-bold ${active ? textStyles[color] : 'text-gray-900'}`}>
+        <span>{value}</span>
+        {loading && (
+          <svg
+            className={`animate-spin h-4 w-4 ${active ? textStyles[color] : 'text-gray-400'}`}
+            fill="none" viewBox="0 0 24 24"
+            aria-label="Updating"
+          >
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+          </svg>
+        )}
       </div>
       <div className={`text-xs font-medium uppercase tracking-wide ${active ? textStyles[color] : 'text-gray-500'}`}>
         {label}
